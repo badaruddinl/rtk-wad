@@ -41,9 +41,21 @@ and proves that the waiting command proceeds after the lock is released.
 | `rtk-wsl` | Git status and README read using the release binary | None | 14.3 s wall time; treat as a WSL startup outlier, not a performance claim |
 | Flowpeek | Git status and README discovery using the same release binary | None | 10.7 s wall time; treat as a WSL startup outlier, not a performance claim |
 
+The first two normal post-freeze development cycles used the newly installed
+release binary after the CI branch build. Both completed without failure or
+fallback: `rtk-wsl` took 9.2 s and Flowpeek 7.2 s. The variance is consistent with
+WSL startup behavior; it is not yet sufficient to define a performance threshold.
+
 The package archive contained source, tests, scripts, documentation, and Cargo
 metadata only. It did not contain `target/`, workstation configuration, or raw
 dogfooding logs.
 
 See `docs/ALPHA_RELEASE_CHECKLIST.md` for the remaining freeze and publication
 decisions.
+
+## Post-freeze development cycle
+
+The next development branch adds a Windows CI workflow with separate Rust-quality
+and packaging/recovery jobs. The WSL process contract remains required; the first
+workflow run is evidence about runner support, not an assumption that hosted
+Windows runners provide the same WSL configuration as the workstation.
