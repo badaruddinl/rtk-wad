@@ -1,26 +1,44 @@
 use std::env;
 use std::ffi::OsString;
-use std::process::{Command, ExitCode};
+use std::process::{Child, Command, ExitCode, ExitStatus};
+use std::thread;
+use std::time::Duration;
 
 const DEFAULT_DISTRO: &str = "Ubuntu";
 const DEFAULT_LOCK_PATH: &str = "/tmp/rtk-wsl.lock";
 const DEFAULT_LOCK_WAIT_SECONDS: &str = "120";
+const CANCEL_SCRIPT: &str = r#"
+if [ -r "$1" ]; then
+    worker=$(cat "$1")
+    case "$worker" in
+        *[!0-9]*|'') exit 1 ;;
+    esac
+    kill -INT -- "-$worker"
+fi
+"#;
 const LAUNCH_SCRIPT: &str = r#"
 lock_wait=$1
 lock_path=$2
 rtk_path=$3
-shift 3
+cancel_token=$4
+shift 4
 
 if [ -z "$rtk_path" ]; then
     rtk_path="$HOME/.local/bin/rtk"
 fi
 
 user=${USER:-}
-exec /usr/bin/flock -w "$lock_wait" "$lock_path" /usr/bin/env -i \
+cleanup() { rm -f "$cancel_token"; }
+trap cleanup EXIT
+/usr/bin/setsid /usr/bin/flock -w "$lock_wait" "$lock_path" /usr/bin/env -i \
     HOME="$HOME" \
     USER="$user" \
     PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-    "$rtk_path" "$@"
+    "$rtk_path" "$@" &
+worker=$!
+printf '%s' "$worker" > "$cancel_token"
+wait "$worker"
+exit $?
 "#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,7 +147,7 @@ fn windows_path_to_wsl_path(path: &str) -> Option<String> {
     ))
 }
 
-fn rtk_arguments(arguments: Vec<OsString>, config: &Config) -> Vec<OsString> {
+fn rtk_arguments(arguments: Vec<OsString>, config: &Config, cancel_token: &str) -> Vec<OsString> {
     let mut forwarded = arguments;
 
     if forwarded
@@ -160,9 +178,94 @@ fn rtk_arguments(arguments: Vec<OsString>, config: &Config) -> Vec<OsString> {
         OsString::from(&config.lock_wait),
         OsString::from(&config.lock_path),
         OsString::from(config.rtk_path.as_deref().unwrap_or("")),
+        OsString::from(cancel_token),
     ]);
     command.extend(forwarded);
     command
+}
+
+fn cancel_token() -> String {
+    format!("/tmp/rtk-wsl-{}.cancel", std::process::id())
+}
+
+fn cancel_arguments(config: &Config, token: &str) -> Vec<OsString> {
+    let mut command = vec![OsString::from("-d"), OsString::from(&config.distro)];
+    if let Some(user) = &config.user {
+        command.extend([OsString::from("-u"), OsString::from(user)]);
+    }
+    command.extend([
+        OsString::from("--exec"),
+        OsString::from("/bin/sh"),
+        OsString::from("-c"),
+        OsString::from(CANCEL_SCRIPT),
+        OsString::from("rtk-wsl-cancel"),
+        OsString::from(token),
+    ]);
+    command
+}
+
+#[cfg(target_os = "windows")]
+mod console {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+    unsafe extern "system" {
+        fn SetConsoleCtrlHandler(
+            handler: Option<unsafe extern "system" fn(u32) -> i32>,
+            add: i32,
+        ) -> i32;
+    }
+
+    unsafe extern "system" fn handler(event: u32) -> i32 {
+        if event == 0 || event == 1 {
+            CANCEL_REQUESTED.store(true, Ordering::SeqCst);
+            1
+        } else {
+            0
+        }
+    }
+
+    pub fn install() -> bool {
+        unsafe { SetConsoleCtrlHandler(Some(handler), 1) != 0 }
+    }
+
+    pub fn uninstall() {
+        unsafe { SetConsoleCtrlHandler(Some(handler), 0) };
+    }
+
+    pub fn requested() -> bool {
+        CANCEL_REQUESTED.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+mod console {
+    pub fn install() -> bool {
+        true
+    }
+    pub fn uninstall() {}
+    pub fn requested() -> bool {
+        false
+    }
+}
+
+fn request_linux_interrupt(config: &Config, token: &str) {
+    let _ = Command::new("wsl.exe")
+        .args(cancel_arguments(config, token))
+        .status();
+}
+
+fn wait_for_child(mut child: Child, config: &Config, token: &str) -> std::io::Result<ExitStatus> {
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if console::requested() {
+            request_linux_interrupt(config, token);
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn main() -> ExitCode {
@@ -174,10 +277,17 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match Command::new("wsl.exe")
-        .args(rtk_arguments(arguments, &config))
-        .status()
-    {
+    if !console::install() {
+        eprintln!("rtk-wsl: unable to register the Windows console cancellation handler");
+        return ExitCode::FAILURE;
+    }
+    let token = cancel_token();
+    let result = Command::new("wsl.exe")
+        .args(rtk_arguments(arguments, &config, &token))
+        .spawn()
+        .and_then(|child| wait_for_child(child, &config, &token));
+    console::uninstall();
+    match result {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
         Err(error) => {
@@ -204,6 +314,7 @@ mod tests {
                 OsString::from("C:\\Program Files\\Example"),
             ],
             &default_config(),
+            "/tmp/test.cancel",
         );
 
         assert!(arguments.contains(&OsString::from("--exec")));
@@ -214,7 +325,11 @@ mod tests {
 
     #[test]
     fn stats_remains_a_compatibility_alias() {
-        let arguments = rtk_arguments(vec![OsString::from("stats")], &default_config());
+        let arguments = rtk_arguments(
+            vec![OsString::from("stats")],
+            &default_config(),
+            "/tmp/test.cancel",
+        );
         assert_eq!(arguments.last(), Some(&OsString::from("gain")));
     }
 
@@ -233,7 +348,11 @@ mod tests {
 
     #[test]
     fn defaults_to_the_selected_wsl_users_home() {
-        let arguments = rtk_arguments(vec![OsString::from("help")], &default_config());
+        let arguments = rtk_arguments(
+            vec![OsString::from("help")],
+            &default_config(),
+            "/tmp/test.cancel",
+        );
 
         assert!(arguments.contains(&OsString::from("")));
         assert!(arguments.iter().any(|argument| {
@@ -255,7 +374,7 @@ mod tests {
         })
         .expect("portable config is valid");
 
-        let arguments = rtk_arguments(vec![OsString::from("help")], &config);
+        let arguments = rtk_arguments(vec![OsString::from("help")], &config, "/tmp/test.cancel");
         assert!(arguments.windows(2).any(|pair| pair == ["-u", "alex"]));
         assert!(
             arguments
@@ -278,5 +397,12 @@ mod tests {
             _ => None,
         });
         assert!(relative_path.is_err());
+    }
+
+    #[test]
+    fn cancellation_uses_a_separate_structured_wsl_command() {
+        let arguments = cancel_arguments(&default_config(), "/tmp/rtk-wsl-42.cancel");
+        assert!(arguments.contains(&OsString::from(CANCEL_SCRIPT)));
+        assert!(arguments.contains(&OsString::from("/tmp/rtk-wsl-42.cancel")));
     }
 }

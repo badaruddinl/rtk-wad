@@ -68,7 +68,6 @@ fn supports_stdin_for_a_simple_interactive_command() {
 }
 
 #[test]
-#[ignore = "WSL does not forward CTRL_BREAK_EVENT to --exec children; tracked as alpha blocker"]
 fn ctrl_break_releases_the_global_lock_for_waiting_children() {
     let mut first = command("/bin/sh")
         .args(["-c", "sleep 30"])

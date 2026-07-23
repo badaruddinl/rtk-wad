@@ -55,10 +55,11 @@ Run the Rust process contract on Windows with WSL available:
 cargo test
 ```
 
-It covers literal arguments (including Unicode), stdout/stderr, exit codes, and
-interactive stdin. The Ctrl+Break lock-release probe is retained as an ignored
-known-blocker test: `wsl.exe --exec` does not currently forward `CTRL_BREAK_EVENT`
-to its Linux child. Run the installer/recovery contract after a release build:
+It covers literal arguments (including Unicode), stdout/stderr, exit codes,
+interactive stdin, and Ctrl+Break cancellation releasing the shared lock. The
+launcher forwards Windows cancellation to only the Linux process group it started;
+it never terminates the whole WSL distro. Run the installer/recovery contract after
+a release build:
 
 ```powershell
 cargo build --release
