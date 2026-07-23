@@ -60,7 +60,8 @@ Rust-quality and packaging/recovery jobs. Its hosted run passed all applicable
 jobs; the WSL process contract was explicitly skipped because Ubuntu is absent on
 the runner, preserving local WSL coverage without misrepresenting CI evidence.
 
-No alpha.2 defect was found in the two normal dogfooding cycles or CI. The next
-work should be external-user feedback or a self-hosted Windows+Ubuntu runner if
-hosted WSL process coverage becomes a requirement; feature expansion remains
-deferred.
+The two normal dogfooding cycles found no user-facing failure. The post-freeze
+cancellation-session refinement and Windows CI workflow are versioned as the
+`v0.1.0-alpha.2` candidate; alpha1 remains immutable. The next work should be
+external-user feedback or a self-hosted Windows+Ubuntu runner if hosted WSL
+process coverage becomes a requirement; feature expansion remains deferred.

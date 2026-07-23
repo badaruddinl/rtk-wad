@@ -54,6 +54,8 @@ an upstream contribution. Check an item only with current evidence.
   upstream RTK artifact.
 - [x] Tag `v0.1.0-alpha.1` exists; a GitHub Release with binary assets remains
   intentionally deferred until post-freeze dogfooding and CI review.
+- [x] Select `v0.1.0-alpha.2` for the post-freeze cancellation-session refinement
+  and Windows CI workflow; alpha1 remains an immutable baseline.
 - [x] Keep the upstream issue/PR closed; no launcher defect or recurring fallback
   justifies an upstream contribution yet.
 
