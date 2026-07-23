@@ -42,9 +42,10 @@ an upstream contribution. Check an item only with current evidence.
 - [x] Complete two normal development work cycles with the active installed binary
   and review the record for recurring fallback or lock contention (post-freeze
   monitoring; it does not block this technical baseline).
-- [ ] Run the Windows CI workflow once and review its WSL runner result. The first
-  run exposed `WSL_E_DISTRO_NOT_FOUND` on the hosted runner; the workflow now
-  reports this capability gap without hiding it as a source failure.
+- [x] Run the Windows CI workflow once and review its WSL runner result. Rust
+  quality, package, and recovery jobs passed; the WSL process contract was
+  explicitly skipped because the hosted runner has no Ubuntu distro
+  (`WSL_E_DISTRO_NOT_FOUND`).
 
 ## Publication decision gate
 
@@ -53,7 +54,8 @@ an upstream contribution. Check an item only with current evidence.
   upstream RTK artifact.
 - [x] Tag `v0.1.0-alpha.1` exists; a GitHub Release with binary assets remains
   intentionally deferred until post-freeze dogfooding and CI review.
-- [ ] Keep the upstream issue/PR closed until the above decisions are explicit.
+- [x] Keep the upstream issue/PR closed; no launcher defect or recurring fallback
+  justifies an upstream contribution yet.
 
 ## Freeze decision
 
