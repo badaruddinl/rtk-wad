@@ -44,3 +44,6 @@ and proves that the waiting command proceeds after the lock is released.
 The package archive contained source, tests, scripts, documentation, and Cargo
 metadata only. It did not contain `target/`, workstation configuration, or raw
 dogfooding logs.
+
+See `docs/ALPHA_RELEASE_CHECKLIST.md` for the remaining freeze and publication
+decisions.
