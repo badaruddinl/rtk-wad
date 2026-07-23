@@ -40,6 +40,33 @@ By default, the launcher uses the selected distro's default user and that user's
 - `RTK_WSL_RTK_PATH` (optional; defaults to `$HOME/.local/bin/rtk` inside WSL)
 - `RTK_WSL_LOCK_PATH` (default: `/tmp/rtk-wsl.lock`)
 - `RTK_WSL_LOCK_WAIT_SECONDS` (default: `120`)
+- `RTK_WSL_CWD` (optional; an absolute Linux path for UNC shares or custom WSL mounts)
+
+Every configured Linux path must be absolute. Empty values and a non-positive lock
+timeout are rejected before WSL starts. The default path is derived by the fixed
+launcher script from the selected WSL user's existing `HOME`; it does not probe or
+cache user information for each invocation.
+
+## Alpha verification
+
+Run the Rust process contract on Windows with WSL available:
+
+```powershell
+cargo test
+```
+
+It covers literal arguments (including Unicode), stdout/stderr, exit codes, and
+interactive stdin. The Ctrl+Break lock-release probe is retained as an ignored
+known-blocker test: `wsl.exe --exec` does not currently forward `CTRL_BREAK_EVENT`
+to its Linux child. Run the installer/recovery contract after a release build:
+
+```powershell
+cargo build --release
+.\tests\packaging-contract.ps1
+```
+
+The packaging contract uses a temporary destination only; it does not change the
+active launcher installation.
 
 The first milestone is intentionally small: executable launch, lossless argv forwarding, clean Linux RTK environment, and exit-code propagation. Windows-tool shims, an optional `rtkw.exe` alias, and upstream contribution work remain in the queued milestones.
 

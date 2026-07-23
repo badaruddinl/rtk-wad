@@ -15,7 +15,7 @@ if [ -z "$rtk_path" ]; then
     rtk_path="$HOME/.local/bin/rtk"
 fi
 
-user=${USER:-$(id -un)}
+user=${USER:-}
 exec /usr/bin/flock -w "$lock_wait" "$lock_path" /usr/bin/env -i \
     HOME="$HOME" \
     USER="$user" \
@@ -23,8 +23,97 @@ exec /usr/bin/flock -w "$lock_wait" "$lock_path" /usr/bin/env -i \
     "$rtk_path" "$@"
 "#;
 
-fn setting(name: &str, default: &str) -> String {
-    env::var(name).unwrap_or_else(|_| default.to_owned())
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Config {
+    distro: String,
+    user: Option<String>,
+    rtk_path: Option<String>,
+    lock_path: String,
+    lock_wait: String,
+    cwd: Option<String>,
+}
+
+impl Config {
+    fn from_env() -> Result<Self, String> {
+        Self::from_lookup(|name| env::var(name).ok())
+    }
+
+    fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        let distro = required_setting(&lookup, "RTK_WSL_DISTRO", DEFAULT_DISTRO)?;
+        let user = optional_setting(&lookup, "RTK_WSL_USER")?;
+        let rtk_path = optional_absolute_path(&lookup, "RTK_WSL_RTK_PATH")?;
+        let lock_path = required_absolute_path(&lookup, "RTK_WSL_LOCK_PATH", DEFAULT_LOCK_PATH)?;
+        let lock_wait = required_setting(
+            &lookup,
+            "RTK_WSL_LOCK_WAIT_SECONDS",
+            DEFAULT_LOCK_WAIT_SECONDS,
+        )?;
+        let cwd = optional_absolute_path(&lookup, "RTK_WSL_CWD")?;
+
+        if lock_wait
+            .parse::<u64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .is_none()
+        {
+            return Err("RTK_WSL_LOCK_WAIT_SECONDS must be a positive integer".to_owned());
+        }
+
+        Ok(Self {
+            distro,
+            user,
+            rtk_path,
+            lock_path,
+            lock_wait,
+            cwd,
+        })
+    }
+}
+
+fn required_setting(
+    lookup: &impl Fn(&str) -> Option<String>,
+    name: &str,
+    default: &str,
+) -> Result<String, String> {
+    match lookup(name) {
+        Some(value) if value.trim().is_empty() => Err(format!("{name} must not be empty")),
+        Some(value) => Ok(value),
+        None => Ok(default.to_owned()),
+    }
+}
+
+fn optional_setting(
+    lookup: &impl Fn(&str) -> Option<String>,
+    name: &str,
+) -> Result<Option<String>, String> {
+    match lookup(name) {
+        Some(value) if value.trim().is_empty() => Err(format!("{name} must not be empty when set")),
+        Some(value) => Ok(Some(value)),
+        None => Ok(None),
+    }
+}
+
+fn optional_absolute_path(
+    lookup: &impl Fn(&str) -> Option<String>,
+    name: &str,
+) -> Result<Option<String>, String> {
+    let value = optional_setting(lookup, name)?;
+    if value.as_deref().is_some_and(|path| !path.starts_with('/')) {
+        return Err(format!("{name} must be an absolute Linux path"));
+    }
+    Ok(value)
+}
+
+fn required_absolute_path(
+    lookup: &impl Fn(&str) -> Option<String>,
+    name: &str,
+    default: &str,
+) -> Result<String, String> {
+    let value = required_setting(lookup, name, default)?;
+    if !value.starts_with('/') {
+        return Err(format!("{name} must be an absolute Linux path"));
+    }
+    Ok(value)
 }
 
 fn windows_path_to_wsl_path(path: &str) -> Option<String> {
@@ -40,12 +129,7 @@ fn windows_path_to_wsl_path(path: &str) -> Option<String> {
     ))
 }
 
-fn rtk_arguments(arguments: Vec<OsString>) -> Vec<OsString> {
-    let distro = setting("RTK_WSL_DISTRO", DEFAULT_DISTRO);
-    let user = env::var("RTK_WSL_USER").ok();
-    let rtk_path = env::var("RTK_WSL_RTK_PATH").unwrap_or_default();
-    let lock_path = setting("RTK_WSL_LOCK_PATH", DEFAULT_LOCK_PATH);
-    let lock_wait = setting("RTK_WSL_LOCK_WAIT_SECONDS", DEFAULT_LOCK_WAIT_SECONDS);
+fn rtk_arguments(arguments: Vec<OsString>, config: &Config) -> Vec<OsString> {
     let mut forwarded = arguments;
 
     if forwarded
@@ -55,13 +139,16 @@ fn rtk_arguments(arguments: Vec<OsString>) -> Vec<OsString> {
         forwarded[0] = OsString::from("gain");
     }
 
-    let mut command = vec![OsString::from("-d"), OsString::from(distro)];
-    if let Some(user) = user {
+    let mut command = vec![OsString::from("-d"), OsString::from(&config.distro)];
+    if let Some(user) = &config.user {
         command.extend([OsString::from("-u"), OsString::from(user)]);
     }
-    if let Ok(current_directory) = env::current_dir()
-        && let Some(wsl_directory) = windows_path_to_wsl_path(&current_directory.to_string_lossy())
-    {
+    let working_directory = config.cwd.clone().or_else(|| {
+        env::current_dir().ok().and_then(|current_directory| {
+            windows_path_to_wsl_path(&current_directory.to_string_lossy())
+        })
+    });
+    if let Some(wsl_directory) = working_directory {
         command.extend([OsString::from("--cd"), OsString::from(wsl_directory)]);
     }
     command.extend([
@@ -70,9 +157,9 @@ fn rtk_arguments(arguments: Vec<OsString>) -> Vec<OsString> {
         OsString::from("-c"),
         OsString::from(LAUNCH_SCRIPT),
         OsString::from("rtk-wsl"),
-        OsString::from(lock_wait),
-        OsString::from(lock_path),
-        OsString::from(rtk_path),
+        OsString::from(&config.lock_wait),
+        OsString::from(&config.lock_path),
+        OsString::from(config.rtk_path.as_deref().unwrap_or("")),
     ]);
     command.extend(forwarded);
     command
@@ -80,8 +167,15 @@ fn rtk_arguments(arguments: Vec<OsString>) -> Vec<OsString> {
 
 fn main() -> ExitCode {
     let arguments = env::args_os().skip(1).collect();
+    let config = match Config::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("rtk-wsl: invalid configuration: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     match Command::new("wsl.exe")
-        .args(rtk_arguments(arguments))
+        .args(rtk_arguments(arguments, &config))
         .status()
     {
         Ok(status) if status.success() => ExitCode::SUCCESS,
@@ -97,13 +191,20 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
 
+    fn default_config() -> Config {
+        Config::from_lookup(|_| None).expect("default config is valid")
+    }
+
     #[test]
     fn forwards_special_characters_as_distinct_arguments() {
-        let arguments = rtk_arguments(vec![
-            OsString::from("run"),
-            OsString::from("semi;and&dollar$HOME"),
-            OsString::from("C:\\Program Files\\Example"),
-        ]);
+        let arguments = rtk_arguments(
+            vec![
+                OsString::from("run"),
+                OsString::from("semi;and&dollar$HOME"),
+                OsString::from("C:\\Program Files\\Example"),
+            ],
+            &default_config(),
+        );
 
         assert!(arguments.contains(&OsString::from("--exec")));
         assert!(arguments.contains(&OsString::from(LAUNCH_SCRIPT)));
@@ -113,7 +214,7 @@ mod tests {
 
     #[test]
     fn stats_remains_a_compatibility_alias() {
-        let arguments = rtk_arguments(vec![OsString::from("stats")]);
+        let arguments = rtk_arguments(vec![OsString::from("stats")], &default_config());
         assert_eq!(arguments.last(), Some(&OsString::from("gain")));
     }
 
@@ -123,12 +224,16 @@ mod tests {
             windows_path_to_wsl_path(r"D:\projects\rtk-wsl"),
             Some("/mnt/d/projects/rtk-wsl".to_owned())
         );
+        assert_eq!(
+            windows_path_to_wsl_path(r"F:\path with spaces\漢字"),
+            Some("/mnt/f/path with spaces/漢字".to_owned())
+        );
         assert_eq!(windows_path_to_wsl_path(r"\\server\share"), None);
     }
 
     #[test]
     fn defaults_to_the_selected_wsl_users_home() {
-        let arguments = rtk_arguments(vec![OsString::from("help")]);
+        let arguments = rtk_arguments(vec![OsString::from("help")], &default_config());
 
         assert!(arguments.contains(&OsString::from("")));
         assert!(arguments.iter().any(|argument| {
@@ -137,5 +242,41 @@ mod tests {
                 .contains("rtk_path=\"$HOME/.local/bin/rtk\"")
         }));
         assert!(!arguments.contains(&OsString::from("-u")));
+    }
+
+    #[test]
+    fn validates_configuration_without_ambient_user_defaults() {
+        let config = Config::from_lookup(|name| match name {
+            "RTK_WSL_DISTRO" => Some("Ubuntu-24.04".to_owned()),
+            "RTK_WSL_USER" => Some("alex".to_owned()),
+            "RTK_WSL_RTK_PATH" => Some("/opt/rtk/bin/rtk".to_owned()),
+            "RTK_WSL_CWD" => Some("/work/custom-mount".to_owned()),
+            _ => None,
+        })
+        .expect("portable config is valid");
+
+        let arguments = rtk_arguments(vec![OsString::from("help")], &config);
+        assert!(arguments.windows(2).any(|pair| pair == ["-u", "alex"]));
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["--cd", "/work/custom-mount"])
+        );
+        assert!(arguments.contains(&OsString::from("/opt/rtk/bin/rtk")));
+    }
+
+    #[test]
+    fn rejects_unsafe_or_ambiguous_configuration() {
+        let invalid_wait = Config::from_lookup(|name| match name {
+            "RTK_WSL_LOCK_WAIT_SECONDS" => Some("0".to_owned()),
+            _ => None,
+        });
+        assert!(invalid_wait.is_err());
+
+        let relative_path = Config::from_lookup(|name| match name {
+            "RTK_WSL_RTK_PATH" => Some("bin/rtk".to_owned()),
+            _ => None,
+        });
+        assert!(relative_path.is_err());
     }
 }
