@@ -3,10 +3,25 @@ use std::ffi::OsString;
 use std::process::{Command, ExitCode};
 
 const DEFAULT_DISTRO: &str = "Ubuntu";
-const DEFAULT_USER: &str = "badaruddinl";
-const DEFAULT_RTK_PATH: &str = "/home/badaruddinl/.local/bin/rtk";
 const DEFAULT_LOCK_PATH: &str = "/tmp/rtk-wsl.lock";
 const DEFAULT_LOCK_WAIT_SECONDS: &str = "120";
+const LAUNCH_SCRIPT: &str = r#"
+lock_wait=$1
+lock_path=$2
+rtk_path=$3
+shift 3
+
+if [ -z "$rtk_path" ]; then
+    rtk_path="$HOME/.local/bin/rtk"
+fi
+
+user=${USER:-$(id -un)}
+exec /usr/bin/flock -w "$lock_wait" "$lock_path" /usr/bin/env -i \
+    HOME="$HOME" \
+    USER="$user" \
+    PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    "$rtk_path" "$@"
+"#;
 
 fn setting(name: &str, default: &str) -> String {
     env::var(name).unwrap_or_else(|_| default.to_owned())
@@ -27,8 +42,8 @@ fn windows_path_to_wsl_path(path: &str) -> Option<String> {
 
 fn rtk_arguments(arguments: Vec<OsString>) -> Vec<OsString> {
     let distro = setting("RTK_WSL_DISTRO", DEFAULT_DISTRO);
-    let user = setting("RTK_WSL_USER", DEFAULT_USER);
-    let rtk_path = setting("RTK_WSL_RTK_PATH", DEFAULT_RTK_PATH);
+    let user = env::var("RTK_WSL_USER").ok();
+    let rtk_path = env::var("RTK_WSL_RTK_PATH").unwrap_or_default();
     let lock_path = setting("RTK_WSL_LOCK_PATH", DEFAULT_LOCK_PATH);
     let lock_wait = setting("RTK_WSL_LOCK_WAIT_SECONDS", DEFAULT_LOCK_WAIT_SECONDS);
     let mut forwarded = arguments;
@@ -40,16 +55,10 @@ fn rtk_arguments(arguments: Vec<OsString>) -> Vec<OsString> {
         forwarded[0] = OsString::from("gain");
     }
 
-    let linux_path = format!(
-        "/home/{user}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    );
-    let environment = [
-        format!("HOME=/home/{user}"),
-        format!("USER={user}"),
-        format!("PATH={linux_path}"),
-    ];
-
     let mut command = vec![OsString::from("-d"), OsString::from(distro)];
+    if let Some(user) = user {
+        command.extend([OsString::from("-u"), OsString::from(user)]);
+    }
     if let Ok(current_directory) = env::current_dir()
         && let Some(wsl_directory) = windows_path_to_wsl_path(&current_directory.to_string_lossy())
     {
@@ -57,15 +66,14 @@ fn rtk_arguments(arguments: Vec<OsString>) -> Vec<OsString> {
     }
     command.extend([
         OsString::from("--exec"),
-        OsString::from("/usr/bin/flock"),
-        OsString::from("-w"),
+        OsString::from("/bin/sh"),
+        OsString::from("-c"),
+        OsString::from(LAUNCH_SCRIPT),
+        OsString::from("rtk-wsl"),
         OsString::from(lock_wait),
         OsString::from(lock_path),
-        OsString::from("/usr/bin/env"),
-        OsString::from("-i"),
+        OsString::from(rtk_path),
     ]);
-    command.extend(environment.into_iter().map(OsString::from));
-    command.push(OsString::from(rtk_path));
     command.extend(forwarded);
     command
 }
@@ -98,6 +106,7 @@ mod tests {
         ]);
 
         assert!(arguments.contains(&OsString::from("--exec")));
+        assert!(arguments.contains(&OsString::from(LAUNCH_SCRIPT)));
         assert!(arguments.contains(&OsString::from("semi;and&dollar$HOME")));
         assert!(arguments.contains(&OsString::from("C:\\Program Files\\Example")));
     }
@@ -111,9 +120,22 @@ mod tests {
     #[test]
     fn maps_windows_drive_paths_for_wsl_current_directory() {
         assert_eq!(
-            windows_path_to_wsl_path(r"E:\luthfi\project\rtk-wsl"),
-            Some("/mnt/e/luthfi/project/rtk-wsl".to_owned())
+            windows_path_to_wsl_path(r"D:\projects\rtk-wsl"),
+            Some("/mnt/d/projects/rtk-wsl".to_owned())
         );
         assert_eq!(windows_path_to_wsl_path(r"\\server\share"), None);
+    }
+
+    #[test]
+    fn defaults_to_the_selected_wsl_users_home() {
+        let arguments = rtk_arguments(vec![OsString::from("help")]);
+
+        assert!(arguments.contains(&OsString::from("")));
+        assert!(arguments.iter().any(|argument| {
+            argument
+                .to_string_lossy()
+                .contains("rtk_path=\"$HOME/.local/bin/rtk\"")
+        }));
+        assert!(!arguments.contains(&OsString::from("-u")));
     }
 }

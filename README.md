@@ -2,7 +2,7 @@
 
 Native Windows launcher for the Linux RTK binary in WSL. It uses `wsl.exe --exec` and forwards every argument as structured process arguments; it does not rebuild a shell command string.
 
-Current local milestone: `0.1.0-alpha.1`. It is installed only on this workstation and has not been tagged or published.
+Current milestone: `0.1.0-alpha.1`. Project home: `https://github.com/badaruddinl/rtk-wsl`.
 
 ## Build and use
 
@@ -32,11 +32,12 @@ The launcher runs RTK through `flock` and a clean Linux environment, preserving 
 
 ## Configuration
 
-The defaults match the current workstation. Override only when needed:
+By default, the launcher uses the selected distro's default user and that user's
+`$HOME/.local/bin/rtk`. Override only when needed:
 
 - `RTK_WSL_DISTRO` (default: `Ubuntu`)
-- `RTK_WSL_USER` (default: `badaruddinl`)
-- `RTK_WSL_RTK_PATH` (default: `/home/badaruddinl/.local/bin/rtk`)
+- `RTK_WSL_USER` (optional; selects a specific WSL user)
+- `RTK_WSL_RTK_PATH` (optional; defaults to `$HOME/.local/bin/rtk` inside WSL)
 - `RTK_WSL_LOCK_PATH` (default: `/tmp/rtk-wsl.lock`)
 - `RTK_WSL_LOCK_WAIT_SECONDS` (default: `120`)
 
