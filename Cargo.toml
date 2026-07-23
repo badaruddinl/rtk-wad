@@ -4,6 +4,8 @@ version = "0.1.0-alpha.1"
 edition = "2024"
 description = "Native Windows launcher for running Linux RTK through WSL with structured arguments"
 license = "Apache-2.0"
+homepage = "https://github.com/badaruddinl/rtk-wsl"
+repository = "https://github.com/badaruddinl/rtk-wsl"
 readme = "README.md"
 publish = false
 

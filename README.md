@@ -2,7 +2,7 @@
 
 Native Windows launcher for the Linux RTK binary in WSL. It uses `wsl.exe --exec` and forwards every argument as structured process arguments; it does not rebuild a shell command string.
 
-Current local milestone: `0.1.0-alpha.1`. It is installed only on this workstation and has not been tagged or published.
+Current milestone: `0.1.0-alpha.1`. Project home: `https://github.com/badaruddinl/rtk-wsl`.
 
 ## Build and use
 
@@ -32,13 +32,42 @@ The launcher runs RTK through `flock` and a clean Linux environment, preserving 
 
 ## Configuration
 
-The defaults match the current workstation. Override only when needed:
+By default, the launcher uses the selected distro's default user and that user's
+`$HOME/.local/bin/rtk`. Override only when needed:
 
 - `RTK_WSL_DISTRO` (default: `Ubuntu`)
-- `RTK_WSL_USER` (default: `badaruddinl`)
-- `RTK_WSL_RTK_PATH` (default: `/home/badaruddinl/.local/bin/rtk`)
+- `RTK_WSL_USER` (optional; selects a specific WSL user)
+- `RTK_WSL_RTK_PATH` (optional; defaults to `$HOME/.local/bin/rtk` inside WSL)
 - `RTK_WSL_LOCK_PATH` (default: `/tmp/rtk-wsl.lock`)
 - `RTK_WSL_LOCK_WAIT_SECONDS` (default: `120`)
+- `RTK_WSL_CWD` (optional; an absolute Linux path for UNC shares or custom WSL mounts)
+
+Every configured Linux path must be absolute. Empty values and a non-positive lock
+timeout are rejected before WSL starts. The default path is derived by the fixed
+launcher script from the selected WSL user's existing `HOME`; it does not probe or
+cache user information for each invocation.
+
+## Alpha verification
+
+Run the Rust process contract on Windows with WSL available:
+
+```powershell
+cargo test
+```
+
+It covers literal arguments (including Unicode), stdout/stderr, exit codes,
+interactive stdin, and Ctrl+Break cancellation releasing the shared lock. The
+launcher forwards Windows cancellation to only the Linux process group it started;
+it never terminates the whole WSL distro. Run the installer/recovery contract after
+a release build:
+
+```powershell
+cargo build --release
+.\tests\packaging-contract.ps1
+```
+
+The packaging contract uses a temporary destination only; it does not change the
+active launcher installation.
 
 The first milestone is intentionally small: executable launch, lossless argv forwarding, clean Linux RTK environment, and exit-code propagation. Windows-tool shims, an optional `rtkw.exe` alias, and upstream contribution work remain in the queued milestones.
 
