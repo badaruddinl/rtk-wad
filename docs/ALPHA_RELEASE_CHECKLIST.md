@@ -40,7 +40,8 @@ an upstream contribution. Check an item only with current evidence.
 - [x] Two concise release-binary cycles completed on `rtk-wsl` and Flowpeek.
 - [x] Failure, fallback, and latency-outlier evidence is recorded without raw logs.
 - [ ] Complete two normal development work cycles with the active installed binary
-  and review the record for recurring fallback or lock contention.
+  and review the record for recurring fallback or lock contention (post-freeze
+  monitoring; it does not block this technical baseline).
 
 ## Publication decision gate
 
@@ -53,5 +54,7 @@ an upstream contribution. Check an item only with current evidence.
 
 ## Freeze decision
 
-Do not mark the alpha frozen yet. The technical and recovery gates are green, but
-the installed-binary dogfooding and publication decisions remain intentionally open.
+Frozen as the technical `0.1.0-alpha.1` baseline on 2026-07-24 after the owner
+accepted the remaining dogfooding work as post-freeze monitoring. The publication
+decisions above remain explicit follow-ups; this freeze does not authorize an
+upstream RTK contribution.
