@@ -2,7 +2,7 @@
 
 Native Windows launcher for the Linux RTK binary in WSL. It uses `wsl.exe --exec` and forwards every argument as structured process arguments; it does not rebuild a shell command string.
 
-Current milestone: `0.1.0-alpha.1`. Project home: `https://github.com/badaruddinl/rtk-wsl`.
+Current milestone: `0.1.0-alpha.2`. Project home: `https://github.com/badaruddinl/rtk-wsl`.
 
 ## Build and use
 
