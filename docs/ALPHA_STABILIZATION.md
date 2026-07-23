@@ -59,3 +59,9 @@ The next development branch adds a Windows CI workflow with separate Rust-qualit
 and packaging/recovery jobs. The WSL process contract remains required; the first
 workflow run is evidence about runner support, not an assumption that hosted
 Windows runners provide the same WSL configuration as the workstation.
+
+The first hosted Windows CI run passed setup, Rust installation, format, and
+clippy, then exposed `WSL_E_DISTRO_NOT_FOUND` because no Ubuntu distro was present.
+The workflow now keeps Rust quality mandatory, conditionally runs the WSL process
+contract when Ubuntu exists, and reports the hosted-runner capability gap when it
+does not. This is an environment limitation, not a launcher failure.

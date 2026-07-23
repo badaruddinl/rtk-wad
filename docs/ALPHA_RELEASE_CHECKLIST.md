@@ -42,7 +42,9 @@ an upstream contribution. Check an item only with current evidence.
 - [x] Complete two normal development work cycles with the active installed binary
   and review the record for recurring fallback or lock contention (post-freeze
   monitoring; it does not block this technical baseline).
-- [ ] Run the Windows CI workflow once and review its WSL runner result.
+- [ ] Run the Windows CI workflow once and review its WSL runner result. The first
+  run exposed `WSL_E_DISTRO_NOT_FOUND` on the hosted runner; the workflow now
+  reports this capability gap without hiding it as a source failure.
 
 ## Publication decision gate
 

@@ -29,7 +29,23 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test -- --test-threads=1
+        run: cargo test --lib -- --test-threads=1
+
+      - name: Detect Ubuntu WSL distro
+        id: wsl
+        shell: pwsh
+        run: |
+          $available = @(wsl.exe --list --quiet 2>$null) -match 'Ubuntu'
+          "available=$($available.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Test WSL process contract
+        if: steps.wsl.outputs.available == 'true'
+        run: cargo test --test process_contract -- --test-threads=1
+
+      - name: Report WSL runner capability gap
+        if: steps.wsl.outputs.available != 'true'
+        shell: pwsh
+        run: Write-Warning 'Ubuntu WSL distro is unavailable on this hosted runner; local WSL process-contract evidence remains required.'
 
       - name: Release build
         run: cargo build --release
