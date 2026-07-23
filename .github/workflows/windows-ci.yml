@@ -1,0 +1,79 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [development, 'agent/**']
+  pull_request:
+    branches: [development]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-quality:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --bin rtk-wsl -- --test-threads=1
+
+      - name: Detect Ubuntu WSL distro
+        id: wsl
+        shell: pwsh
+        run: |
+          $available = @(wsl.exe --list --quiet 2>$null) -match 'Ubuntu'
+          "available=$($available.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Test WSL process contract
+        if: steps.wsl.outputs.available == 'true'
+        run: cargo test --test process_contract -- --test-threads=1
+
+      - name: Report WSL runner capability gap
+        if: steps.wsl.outputs.available != 'true'
+        shell: pwsh
+        run: Write-Warning 'Ubuntu WSL distro is unavailable on this hosted runner; local WSL process-contract evidence remains required.'
+
+      - name: Release build
+        run: cargo build --release
+
+      - name: Package
+        run: cargo package --allow-dirty
+
+      - name: Audit package archive
+        shell: pwsh
+        run: |
+          $archive = Get-ChildItem -LiteralPath target\package -Filter '*.crate' | Select-Object -First 1
+          if ($null -eq $archive) { throw 'cargo package did not produce an archive' }
+          $forbidden = tar -tf $archive.FullName | Select-String -Pattern '(^|/)target/|\.log$|(^|/)(\.env|config\.toml)$|[A-Za-z]:/'
+          if ($null -ne $forbidden) { $forbidden | ForEach-Object { Write-Error $_ }; exit 1 }
+
+  packaging-recovery:
+    needs: rust-quality
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release launcher
+        run: cargo build --release
+
+      - name: Run isolated install and recovery contract
+        shell: pwsh
+        run: .\tests\packaging-contract.ps1

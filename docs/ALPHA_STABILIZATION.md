@@ -41,9 +41,27 @@ and proves that the waiting command proceeds after the lock is released.
 | `rtk-wsl` | Git status and README read using the release binary | None | 14.3 s wall time; treat as a WSL startup outlier, not a performance claim |
 | Flowpeek | Git status and README discovery using the same release binary | None | 10.7 s wall time; treat as a WSL startup outlier, not a performance claim |
 
+The first two normal post-freeze development cycles used the newly installed
+release binary after the CI branch build. Both completed without failure or
+fallback: `rtk-wsl` took 9.2 s and Flowpeek 7.2 s. The variance is consistent with
+WSL startup behavior; it is not yet sufficient to define a performance threshold.
+
 The package archive contained source, tests, scripts, documentation, and Cargo
 metadata only. It did not contain `target/`, workstation configuration, or raw
 dogfooding logs.
 
 See `docs/ALPHA_RELEASE_CHECKLIST.md` for the remaining freeze and publication
 decisions.
+
+## Post-freeze development cycle
+
+The post-freeze development branch adds a Windows CI workflow with separate
+Rust-quality and packaging/recovery jobs. Its hosted run passed all applicable
+jobs; the WSL process contract was explicitly skipped because Ubuntu is absent on
+the runner, preserving local WSL coverage without misrepresenting CI evidence.
+
+The two normal dogfooding cycles found no user-facing failure. The post-freeze
+cancellation-session refinement and Windows CI workflow are versioned as the
+`v0.1.0-alpha.2` candidate; alpha1 remains immutable. The next work should be
+external-user feedback or a self-hosted Windows+Ubuntu runner if hosted WSL
+process coverage becomes a requirement; feature expansion remains deferred.

@@ -29,16 +29,16 @@ fi
 
 user=${USER:-}
 cleanup() { rm -f "$cancel_token"; }
+trap "cleanup; exit 130" INT TERM
 trap cleanup EXIT
-/usr/bin/setsid /usr/bin/flock -w "$lock_wait" "$lock_path" /usr/bin/env -i \
+printf '%s' "$$" > "$cancel_token"
+/usr/bin/flock -w "$lock_wait" "$lock_path" /usr/bin/env -i \
     HOME="$HOME" \
     USER="$user" \
     PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-    "$rtk_path" "$@" &
-worker=$!
-printf '%s' "$worker" > "$cancel_token"
-wait "$worker"
-exit $?
+    "$rtk_path" "$@"
+status=$?
+exit "$status"
 "#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +171,8 @@ fn rtk_arguments(arguments: Vec<OsString>, config: &Config, cancel_token: &str) 
     }
     command.extend([
         OsString::from("--exec"),
+        OsString::from("/usr/bin/setsid"),
+        OsString::from("-w"),
         OsString::from("/bin/sh"),
         OsString::from("-c"),
         OsString::from(LAUNCH_SCRIPT),

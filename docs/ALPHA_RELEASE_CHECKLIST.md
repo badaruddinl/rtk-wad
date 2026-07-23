@@ -39,18 +39,25 @@ an upstream contribution. Check an item only with current evidence.
 
 - [x] Two concise release-binary cycles completed on `rtk-wsl` and Flowpeek.
 - [x] Failure, fallback, and latency-outlier evidence is recorded without raw logs.
-- [ ] Complete two normal development work cycles with the active installed binary
+- [x] Complete two normal development work cycles with the active installed binary
   and review the record for recurring fallback or lock contention (post-freeze
   monitoring; it does not block this technical baseline).
+- [x] Run the Windows CI workflow once and review its WSL runner result. Rust
+  quality, package, and recovery jobs passed; the WSL process contract was
+  explicitly skipped because the hosted runner has no Ubuntu distro
+  (`WSL_E_DISTRO_NOT_FOUND`).
 
 ## Publication decision gate
 
-- [ ] Confirm Apache-2.0 as the final license for this companion repository.
-- [ ] Confirm that `badaruddinl/rtk-wsl` remains a standalone companion project
-  rather than an official upstream RTK artifact.
-- [ ] Decide whether to create a `v0.1.0-alpha.1` tag/release after the two normal
-  installed-binary dogfooding cycles.
-- [ ] Keep the upstream issue/PR closed until the above decisions are explicit.
+- [x] Apache-2.0 is the selected license for this standalone companion repository.
+- [x] `badaruddinl/rtk-wsl` is a standalone companion project, not an official
+  upstream RTK artifact.
+- [x] Tag `v0.1.0-alpha.1` exists; a GitHub Release with binary assets remains
+  intentionally deferred until post-freeze dogfooding and CI review.
+- [x] Select `v0.1.0-alpha.2` for the post-freeze cancellation-session refinement
+  and Windows CI workflow; alpha1 remains an immutable baseline.
+- [x] Keep the upstream issue/PR closed; no launcher defect or recurring fallback
+  justifies an upstream contribution yet.
 
 ## Freeze decision
 
