@@ -545,6 +545,8 @@ struct ProviderCacheEntry {
     tool: String,
     observed_unix_seconds: u64,
     windows: WindowsToolProbe,
+    #[serde(default)]
+    wsl_probe_complete: bool,
     wsl: Vec<WslToolProbe>,
 }
 
@@ -813,13 +815,15 @@ fn current_project_location(config: &Config) -> ProjectLocation {
         })
 }
 
-fn discover_tool(tool: &str, config: &Config) -> ProviderCacheEntry {
+fn discover_tool(tool: &str, config: &Config, include_wsl: bool) -> ProviderCacheEntry {
     let executable = if tool == "go" { "go.exe" } else { tool };
     let windows = WindowsToolProbe {
         executable: first_windows_executable(executable),
         native_rtk: configured_windows_executable(&config.native_rtk_path),
     };
-    let wsl = installed_wsl_distributions()
+    let wsl = include_wsl
+        .then(installed_wsl_distributions)
+        .unwrap_or_default()
         .into_iter()
         .map(|(distro, version)| probe_wsl_tool(&distro, version, tool))
         .collect();
@@ -827,6 +831,7 @@ fn discover_tool(tool: &str, config: &Config) -> ProviderCacheEntry {
         tool: tool.to_owned(),
         observed_unix_seconds: unix_seconds(),
         windows,
+        wsl_probe_complete: include_wsl,
         wsl,
     }
 }
@@ -835,18 +840,20 @@ fn cached_or_discovered_tool(
     tool: &str,
     config: &Config,
     refresh: bool,
+    require_wsl: bool,
 ) -> (ProviderCacheEntry, &'static str) {
     let now = unix_seconds();
     let mut cache = load_provider_cache();
     if !refresh
-        && let Some(entry) = cache
-            .entries
-            .iter()
-            .find(|entry| entry.tool == tool && cache_entry_is_fresh(entry, now))
+        && let Some(entry) = cache.entries.iter().find(|entry| {
+            entry.tool == tool
+                && cache_entry_is_fresh(entry, now)
+                && (!require_wsl || entry.wsl_probe_complete)
+        })
     {
         return (entry.clone(), "hit");
     }
-    let discovered = discover_tool(tool, config);
+    let discovered = discover_tool(tool, config, require_wsl);
     cache.entries.retain(|entry| entry.tool != tool);
     cache.entries.push(discovered.clone());
     if let Err(error) = save_provider_cache(&cache) {
@@ -896,7 +903,16 @@ fn wsl_project_path(project: &ProjectLocation, probe: &WslToolProbe) -> Option<S
 
 fn resolve_tool_provider(tool: &str, config: &Config, refresh: bool) -> ProviderResolution {
     let project = current_project_location(config);
-    let (discovery, cache) = cached_or_discovered_tool(tool, config, refresh);
+    let (discovery, cache) = cached_or_discovered_tool(tool, config, refresh, true);
+    resolve_tool_provider_from_discovery(tool, project, discovery, cache)
+}
+
+fn resolve_tool_provider_from_discovery(
+    tool: &str,
+    project: ProjectLocation,
+    discovery: ProviderCacheEntry,
+    cache: &'static str,
+) -> ProviderResolution {
     let availability = discovery.clone();
     let mut candidates = Vec::new();
     if let Some(executable) = discovery.windows.executable {
@@ -985,12 +1001,27 @@ fn wsl_route_for_version(version: Option<u8>) -> Option<Route> {
     }
 }
 
+fn windows_go_is_usable(
+    project: &ProjectLocation,
+    static_route: Route,
+    windows: &WindowsToolProbe,
+) -> bool {
+    project.kind != ProjectLocationKind::Wsl
+        && windows.executable.is_some()
+        && (static_route != Route::NativeRtk || windows.native_rtk.is_some())
+}
+
 fn go_provider_decision(
     arguments: &[OsString],
     config: &Config,
     static_route: Route,
 ) -> GoProviderDecision {
     if !is_go_command(arguments) || has_wsl_path(arguments) {
+        return GoProviderDecision::KeepStaticRoute;
+    }
+    let project = current_project_location(config);
+    let (discovery, _cache) = cached_or_discovered_tool("go", config, false, false);
+    if windows_go_is_usable(&project, static_route, &discovery.windows) {
         return GoProviderDecision::KeepStaticRoute;
     }
     go_provider_decision_from_resolution(
@@ -1005,10 +1036,11 @@ fn go_provider_decision_from_resolution(
     static_route: Route,
     resolution: ProviderResolution,
 ) -> GoProviderDecision {
-    let windows_is_usable = resolution.project.kind != ProjectLocationKind::Wsl
-        && resolution.availability.windows.executable.is_some()
-        && (static_route != Route::NativeRtk
-            || resolution.availability.windows.native_rtk.is_some());
+    let windows_is_usable = windows_go_is_usable(
+        &resolution.project,
+        static_route,
+        &resolution.availability.windows,
+    );
     if windows_is_usable {
         return GoProviderDecision::KeepStaticRoute;
     }
@@ -3394,6 +3426,7 @@ mod tests {
                 executable: None,
                 native_rtk: None,
             },
+            wsl_probe_complete: true,
             wsl: Vec::new(),
         };
         assert!(cache_entry_is_fresh(
@@ -3477,6 +3510,7 @@ mod tests {
                     executable: None,
                     native_rtk: None,
                 },
+                wsl_probe_complete: true,
                 wsl: Vec::new(),
             },
             candidates: vec![ProviderCandidate {
@@ -3526,6 +3560,7 @@ mod tests {
                     executable: None,
                     native_rtk: None,
                 },
+                wsl_probe_complete: true,
                 wsl: Vec::new(),
             },
             candidates: Vec::new(),
@@ -3559,6 +3594,7 @@ mod tests {
                     executable: None,
                     native_rtk: Some(r"C:\tools\rtk.exe".to_owned()),
                 },
+                wsl_probe_complete: true,
                 wsl: Vec::new(),
             },
             candidates: Vec::new(),
@@ -3603,6 +3639,7 @@ mod tests {
                     executable: Some(r"C:\Go\bin\go.exe".to_owned()),
                     native_rtk: None,
                 },
+                wsl_probe_complete: true,
                 wsl: Vec::new(),
             },
             candidates: Vec::new(),
@@ -3639,5 +3676,30 @@ mod tests {
         let (required_status, required_detail) = setup_recovery_outcome(false);
         assert_eq!(required_status, "recovery_required");
         assert!(required_detail.contains("no installer was replayed"));
+    }
+
+    #[test]
+    fn cached_windows_go_skips_cross_host_resolution_when_it_is_sufficient() {
+        let windows = WindowsToolProbe {
+            executable: Some(r"C:\Program Files\Go\bin\go.exe".to_owned()),
+            native_rtk: None,
+        };
+        let windows_project = ProjectLocation {
+            kind: ProjectLocationKind::Windows,
+            path: r"E:\work".to_owned(),
+            distro: None,
+        };
+        assert!(windows_go_is_usable(&windows_project, Route::Raw, &windows));
+        assert!(!windows_go_is_usable(
+            &windows_project,
+            Route::NativeRtk,
+            &windows
+        ));
+        let wsl_project = ProjectLocation {
+            kind: ProjectLocationKind::Wsl,
+            path: "/home/test/work".to_owned(),
+            distro: Some("Ubuntu".to_owned()),
+        };
+        assert!(!windows_go_is_usable(&wsl_project, Route::Raw, &windows));
     }
 }

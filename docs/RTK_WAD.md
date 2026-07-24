@@ -113,6 +113,16 @@ PD6 adds the local-only readiness gate
 the [operational freeze](SETUP_OPERATIONAL_FREEZE_PD6.md). The gate never calls
 `winget` and is intended to run before an alpha release decision.
 
+## Cache-aware adaptive routing (P7)
+
+Automatic Windows Go execution uses a lightweight local provider cache. A fresh
+Windows Go result no longer probes WSL unless Windows Go is unavailable; complete
+cross-host probing remains available to `resolve`, `doctor`, and setup. Cache
+state never by itself promotes a route. An imported repeated-run policy may
+select native RTK for verified read-only workloads when it is faster or meets
+the token-saving threshold. See
+[`ADAPTIVE_CACHE_BENCHMARK_P7_2026-07-25.md`](ADAPTIVE_CACHE_BENCHMARK_P7_2026-07-25.md).
+
 ## Shell and argv safety
 
 Use structured RTK commands such as `git`, `rg`, `grep`, `find`, `ls`, `tree`,

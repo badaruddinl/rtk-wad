@@ -77,6 +77,10 @@ recovery. No installer is reached by normal routing, discovery, or planning.
 [PD6 operational freeze](docs/SETUP_OPERATIONAL_FREEZE_PD6.md) supplies a
 repeatable local readiness gate for this contract without invoking `winget`.
 
+[P7 cache optimization and re-benchmark](docs/ADAPTIVE_CACHE_BENCHMARK_P7_2026-07-25.md)
+documents the lazy WSL provider probe and the evidence-based automatic route
+policy for the current head.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture

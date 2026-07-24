@@ -92,6 +92,15 @@ node .\benchmarks\run-npm-run-list-three-way.mjs `
 Set `RTK_WAD_BENCH_NPM` to an explicit `npm.cmd` only when it is not available
 on `PATH`.
 
+## Provider-cache profile
+
+`run-provider-cache-profile.ps1` measures the cold and warm automatic Go
+provider path against direct raw Go. It uses a temporary private WAD state
+directory and records JSON only; it does not generate a route policy or invoke
+an installer. See
+[`ADAPTIVE_CACHE_BENCHMARK_P7_2026-07-25.md`](../docs/ADAPTIVE_CACHE_BENCHMARK_P7_2026-07-25.md)
+for the current-head result and interpretation.
+
 ## Generic toolchain runner
 
 `run-toolchain-three-way.mjs` records the same latency, exit, output-hash, and
