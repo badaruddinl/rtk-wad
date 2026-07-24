@@ -144,6 +144,14 @@ fn wad_profile_selects_one_route_and_uses_a_local_gain_ledger() {
         .expect("WAD raw route starts");
     assert!(raw.status.success());
     assert!(String::from_utf8_lossy(&raw.stdout).starts_with("git version "));
+    let scratch = local_app_data.join("rtk-wad").join("scratch");
+    let scratch_files = std::fs::read_dir(&scratch)
+        .expect("WAD scratch directory exists")
+        .count();
+    assert_eq!(
+        scratch_files, 0,
+        "raw routes do not create RTK tracker scratch databases"
+    );
 
     let gain = Command::new(&launcher)
         .env("LOCALAPPDATA", &local_app_data)

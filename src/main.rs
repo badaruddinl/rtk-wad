@@ -560,6 +560,14 @@ struct WadMetrics {
 
 impl WadMetrics {
     fn begin() -> Result<Self, String> {
+        Self::begin_with_tracker(true)
+    }
+
+    fn begin_unmeasured() -> Result<Self, String> {
+        Self::begin_with_tracker(false)
+    }
+
+    fn begin_with_tracker(with_tracker: bool) -> Result<Self, String> {
         let root = env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(env::temp_dir)
@@ -573,12 +581,14 @@ impl WadMetrics {
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
         let scratch_path = scratch_directory.join(format!("{}-{nonce}.sqlite", std::process::id()));
-        let tracker_template = root.join("tracker-template.sqlite");
-        if !tracker_template.exists() {
-            initialize_tracker_template(&tracker_template)?;
+        if with_tracker {
+            let tracker_template = root.join("tracker-template.sqlite");
+            if !tracker_template.exists() {
+                initialize_tracker_template(&tracker_template)?;
+            }
+            fs::copy(&tracker_template, &scratch_path)
+                .map_err(|error| format!("unable to prepare temporary RTK metrics: {error}"))?;
         }
-        fs::copy(&tracker_template, &scratch_path)
-            .map_err(|error| format!("unable to prepare temporary RTK metrics: {error}"))?;
         let ledger_path = root.join("metrics-v1.sqlite");
         let metrics = Self {
             ledger_path,
@@ -1480,7 +1490,11 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     } else if needs_console_handler {
         console_installed = true;
     }
-    let metrics = match WadMetrics::begin() {
+    let metrics = match if route == Route::Raw {
+        WadMetrics::begin_unmeasured()
+    } else {
+        WadMetrics::begin()
+    } {
         Ok(metrics) => Some(metrics),
         Err(error) => {
             eprintln!("rtk-wad: metrics disabled for this invocation: {error}");
