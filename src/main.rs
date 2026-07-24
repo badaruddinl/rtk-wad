@@ -21,6 +21,7 @@ const EXPLAIN_ROUTE_ARGUMENT: &str = "--explain-route";
 const POLICY_ARGUMENT: &str = "policy";
 const RESOLVE_ARGUMENT: &str = "resolve";
 const DOCTOR_ARGUMENT: &str = "doctor";
+const SETUP_ARGUMENT: &str = "setup";
 const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 1;
 const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
 const CANCEL_SCRIPT: &str = r#"
@@ -597,6 +598,19 @@ struct ProviderResolution {
     install: &'static str,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct SetupPlan {
+    schema_version: u32,
+    tool: String,
+    mode: &'static str,
+    status: &'static str,
+    reason: String,
+    proposed_provider: Option<&'static str>,
+    proposed_command: Option<Vec<String>>,
+    verification_command: Vec<String>,
+    apply: &'static str,
+}
+
 fn provider_cache_path() -> PathBuf {
     wad_data_root().join("provider-cache-v1.json")
 }
@@ -1159,6 +1173,163 @@ fn provider_command(arguments: &[OsString], config: &Config, doctor: bool) -> Ex
         return ExitCode::FAILURE;
     }
     print_provider_resolution(&resolve_tool_provider(tool, config, refresh), json, doctor)
+}
+
+fn has_complete_go_provider(resolution: &ProviderResolution) -> bool {
+    if resolution.project.kind != ProjectLocationKind::Wsl
+        && resolution.availability.windows.executable.is_some()
+    {
+        return true;
+    }
+    resolution.candidates.iter().any(|candidate| {
+        candidate.usable
+            && candidate.kind == ProviderKind::WslRtk
+            && wsl_route_for_version(candidate.wsl_version).is_some()
+    })
+}
+
+fn setup_go_plan_from_resolution(
+    resolution: &ProviderResolution,
+    winget_available: bool,
+) -> SetupPlan {
+    let verification_command = vec![
+        "rtk-wad".to_owned(),
+        "doctor".to_owned(),
+        "go".to_owned(),
+        "--refresh".to_owned(),
+    ];
+    if has_complete_go_provider(resolution) {
+        return SetupPlan {
+            schema_version: 1,
+            tool: "go".to_owned(),
+            mode: "plan-only",
+            status: "ready",
+            reason: "a complete existing Go provider is already available; no setup is needed"
+                .to_owned(),
+            proposed_provider: None,
+            proposed_command: None,
+            verification_command,
+            apply: "not_needed",
+        };
+    }
+    if resolution.project.kind == ProjectLocationKind::Windows
+        && resolution.availability.windows.native_rtk.is_some()
+        && winget_available
+    {
+        return SetupPlan {
+            schema_version: 1,
+            tool: "go".to_owned(),
+            mode: "plan-only",
+            status: "planned",
+            reason: "Windows Go is absent while native RTK is already available".to_owned(),
+            proposed_provider: Some("windows-winget"),
+            proposed_command: Some(vec![
+                "winget".to_owned(),
+                "install".to_owned(),
+                "--id".to_owned(),
+                "GoLang.Go".to_owned(),
+                "--exact".to_owned(),
+                "--source".to_owned(),
+                "winget".to_owned(),
+                "--accept-package-agreements".to_owned(),
+                "--accept-source-agreements".to_owned(),
+            ]),
+            verification_command,
+            apply: "unavailable_in_pd4",
+        };
+    }
+    let reason = if resolution.project.kind == ProjectLocationKind::Wsl {
+        "no complete provider is available for this WSL project; PD4 will not install a Windows toolchain across hosts".to_owned()
+    } else if resolution.availability.windows.native_rtk.is_none() {
+        "Windows Go setup is blocked because a verified native RTK provider is also required and is not available".to_owned()
+    } else {
+        "Windows Go setup is blocked because winget is unavailable; no alternate installer is selected automatically".to_owned()
+    };
+    SetupPlan {
+        schema_version: 1,
+        tool: "go".to_owned(),
+        mode: "plan-only",
+        status: "blocked",
+        reason,
+        proposed_provider: None,
+        proposed_command: None,
+        verification_command,
+        apply: "unavailable_in_pd4",
+    }
+}
+
+fn print_setup_plan(plan: &SetupPlan, json: bool) -> ExitCode {
+    if json {
+        return match serde_json::to_string_pretty(plan) {
+            Ok(rendered) => {
+                println!("{rendered}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("rtk-wad: unable to render setup plan: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    println!("tool={}", plan.tool);
+    println!("mode={}", plan.mode);
+    println!("status={}", plan.status);
+    println!("reason={}", plan.reason);
+    if let Some(provider) = plan.proposed_provider {
+        println!("proposed_provider={provider}");
+    }
+    if let Some(command) = &plan.proposed_command {
+        println!("proposed_command={}", command.join(" "));
+    }
+    println!(
+        "verification_command={}",
+        plan.verification_command.join(" ")
+    );
+    println!("apply={}", plan.apply);
+    ExitCode::SUCCESS
+}
+
+fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
+    let Some(tool) = arguments.get(1).and_then(|argument| argument.to_str()) else {
+        eprintln!("rtk-wad: usage: setup go [--json] [--refresh]");
+        return ExitCode::FAILURE;
+    };
+    if tool != "go" || arguments.len() > 4 {
+        eprintln!(
+            "rtk-wad: PD4 currently supports setup planning only for the exact tool name `go`"
+        );
+        return ExitCode::FAILURE;
+    }
+    if arguments
+        .iter()
+        .skip(2)
+        .any(|argument| argument == "--apply")
+    {
+        eprintln!(
+            "rtk-wad: PD4 creates a reviewable plan only; applying setup is unavailable in this milestone"
+        );
+        return ExitCode::FAILURE;
+    }
+    let json = arguments
+        .iter()
+        .skip(2)
+        .any(|argument| argument == "--json");
+    let refresh = arguments
+        .iter()
+        .skip(2)
+        .any(|argument| argument == "--refresh");
+    if arguments
+        .iter()
+        .skip(2)
+        .any(|argument| argument != "--json" && argument != "--refresh")
+    {
+        eprintln!("rtk-wad: usage: setup go [--json] [--refresh]");
+        return ExitCode::FAILURE;
+    }
+    let resolution = resolve_tool_provider(tool, config, refresh);
+    let plan =
+        setup_go_plan_from_resolution(&resolution, first_windows_executable("winget").is_some());
+    print_setup_plan(&plan, json)
 }
 
 fn wad_policy_path() -> PathBuf {
@@ -2152,6 +2323,12 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         .is_some_and(|argument| argument == DOCTOR_ARGUMENT)
     {
         return provider_command(&arguments, config, true);
+    }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == SETUP_ARGUMENT)
+    {
+        return setup_command(&arguments, config);
     }
     if arguments
         .first()
@@ -3155,5 +3332,94 @@ mod tests {
             }
             _ => panic!("expected a missing-provider diagnostic"),
         }
+    }
+
+    #[test]
+    fn setup_plan_proposes_only_a_reviewable_windows_go_command() {
+        let resolution = ProviderResolution {
+            schema_version: PROVIDER_CACHE_SCHEMA_VERSION,
+            tool: "go".to_owned(),
+            cache: "miss",
+            project: ProjectLocation {
+                kind: ProjectLocationKind::Windows,
+                path: r"E:\work".to_owned(),
+                distro: None,
+            },
+            availability: ProviderCacheEntry {
+                tool: "go".to_owned(),
+                observed_unix_seconds: 1,
+                windows: WindowsToolProbe {
+                    executable: None,
+                    native_rtk: Some(r"C:\tools\rtk.exe".to_owned()),
+                },
+                wsl: Vec::new(),
+            },
+            candidates: Vec::new(),
+            recommended: None,
+            install: "disabled_in_pd1",
+        };
+        let plan = setup_go_plan_from_resolution(&resolution, true);
+        assert_eq!(plan.status, "planned");
+        assert_eq!(plan.proposed_provider, Some("windows-winget"));
+        assert_eq!(plan.apply, "unavailable_in_pd4");
+        assert_eq!(
+            plan.proposed_command,
+            Some(vec![
+                "winget".to_owned(),
+                "install".to_owned(),
+                "--id".to_owned(),
+                "GoLang.Go".to_owned(),
+                "--exact".to_owned(),
+                "--source".to_owned(),
+                "winget".to_owned(),
+                "--accept-package-agreements".to_owned(),
+                "--accept-source-agreements".to_owned(),
+            ])
+        );
+    }
+
+    #[test]
+    fn setup_plan_never_selects_an_installer_when_a_provider_is_ready_or_blocked() {
+        let ready = ProviderResolution {
+            schema_version: PROVIDER_CACHE_SCHEMA_VERSION,
+            tool: "go".to_owned(),
+            cache: "miss",
+            project: ProjectLocation {
+                kind: ProjectLocationKind::Windows,
+                path: r"E:\work".to_owned(),
+                distro: None,
+            },
+            availability: ProviderCacheEntry {
+                tool: "go".to_owned(),
+                observed_unix_seconds: 1,
+                windows: WindowsToolProbe {
+                    executable: Some(r"C:\Go\bin\go.exe".to_owned()),
+                    native_rtk: None,
+                },
+                wsl: Vec::new(),
+            },
+            candidates: Vec::new(),
+            recommended: None,
+            install: "disabled_in_pd1",
+        };
+        let ready_plan = setup_go_plan_from_resolution(&ready, false);
+        assert_eq!(ready_plan.status, "ready");
+        assert_eq!(ready_plan.proposed_command, None);
+        assert_eq!(ready_plan.apply, "not_needed");
+
+        let blocked = ProviderResolution {
+            availability: ProviderCacheEntry {
+                windows: WindowsToolProbe {
+                    executable: None,
+                    native_rtk: None,
+                },
+                ..ready.availability.clone()
+            },
+            ..ready
+        };
+        let blocked_plan = setup_go_plan_from_resolution(&blocked, true);
+        assert_eq!(blocked_plan.status, "blocked");
+        assert_eq!(blocked_plan.proposed_command, None);
+        assert_eq!(blocked_plan.apply, "unavailable_in_pd4");
     }
 }

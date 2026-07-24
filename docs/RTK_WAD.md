@@ -97,6 +97,11 @@ Windows Go is unavailable. A missing safe provider exits `127` before a child
 starts; installation remains disabled. See
 [`PROVIDER_EXECUTION_PD3.md`](PROVIDER_EXECUTION_PD3.md).
 
+PD4 adds `rtk-wad setup go [--json] [--refresh]`, which renders a local setup
+plan only. It can show a narrowly scoped Windows `winget` command when native
+RTK exists, but it does not execute the command or install anything. See
+[`ASSISTED_SETUP_PD4.md`](ASSISTED_SETUP_PD4.md).
+
 ## Shell and argv safety
 
 Use structured RTK commands such as `git`, `rg`, `grep`, `find`, `ls`, `tree`,

@@ -66,6 +66,10 @@ arguments before that provider can be reported as usable.
 verified existing WSL Go+RTK provider when Windows Go is unavailable. It exits
 cleanly with diagnostics when no safe provider exists; it never installs one.
 
+[PD4 assisted setup planning](docs/ASSISTED_SETUP_PD4.md) exposes a reviewable
+local `rtk-wad setup go` plan. It proposes at most one safe Windows Go command
+and remains unable to apply it in this milestone.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture
