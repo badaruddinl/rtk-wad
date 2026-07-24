@@ -83,6 +83,32 @@ fn supports_stdin_for_a_simple_interactive_command() {
 }
 
 #[test]
+fn maps_a_temp_windows_worktree_to_the_wsl_current_directory() {
+    let directory = std::env::temp_dir().join(format!(
+        "rtk-wsl-windows-cwd-contract-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).expect("temporary Windows worktree is created");
+    let windows_path = directory.to_string_lossy().replace('\\', "/");
+    let (drive, remainder) = windows_path
+        .split_once(':')
+        .expect("temporary worktree has a Windows drive prefix");
+    let expected = format!("/mnt/{}{}", drive.to_lowercase(), remainder);
+    let output = command("/bin/pwd")
+        .current_dir(&directory)
+        .output()
+        .expect("launcher starts from the temporary Windows worktree");
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected);
+    std::fs::remove_dir_all(directory).expect("temporary Windows worktree is removed");
+}
+
+#[test]
 fn routes_git_from_a_windows_worktree_to_native_git_with_structured_arguments() {
     let output = Command::new(launcher())
         .env("RTK_WSL_DISTRO", "missing-test-distro")
