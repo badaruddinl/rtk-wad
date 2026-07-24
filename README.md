@@ -53,6 +53,11 @@ records real-project evidence for the Windows SDK shims. Its exact `go test
 ./...` policy is token-first; Dart and Flutter retain raw Windows execution
 because they are WAD-owned shims with no stock RTK equivalent.
 
+The first [on-demand provider discovery](docs/PROVIDER_DISCOVERY_PD1.md) slice
+can inspect existing Go installations on Windows and WSL without installing or
+changing any toolchain. Automatic cross-host selection remains intentionally
+deferred until its path-mapping contract is proven.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture

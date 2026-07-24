@@ -79,6 +79,14 @@ or `npm run <script>` adaptive, nor can it cause a command to run twice. The
 local policy is read-only during normal execution and can be overridden for
 testing with `RTK_WAD_POLICY_PATH`.
 
+## On-demand provider discovery (PD1)
+
+`rtk-wad resolve go` and `rtk-wad doctor go` inspect existing Windows and WSL
+Go providers without changing command routing or installing anything. The
+five-minute local cache is per tool and can be bypassed with `--refresh`. See
+[`PROVIDER_DISCOVERY_PD1.md`](PROVIDER_DISCOVERY_PD1.md) for the exact scope,
+cache content, and deliberate cross-host limitations.
+
 ## Shell and argv safety
 
 Use structured RTK commands such as `git`, `rg`, `grep`, `find`, `ls`, `tree`,

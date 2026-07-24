@@ -19,6 +19,10 @@ const BRIDGE_INFO_ARGUMENT: &str = "--bridge-info";
 const ADAPTER_INFO_ARGUMENT: &str = "--adapter-info";
 const EXPLAIN_ROUTE_ARGUMENT: &str = "--explain-route";
 const POLICY_ARGUMENT: &str = "policy";
+const RESOLVE_ARGUMENT: &str = "resolve";
+const DOCTOR_ARGUMENT: &str = "doctor";
+const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 1;
+const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
 const CANCEL_SCRIPT: &str = r#"
 if [ -r "$1" ]; then
     worker=$(cat "$1")
@@ -504,6 +508,512 @@ fn wad_data_root() -> PathBuf {
                 .map(|root| root.join("rtk-wad"))
         })
         .unwrap_or_else(env::temp_dir)
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ProjectLocationKind {
+    Windows,
+    Wsl,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct ProjectLocation {
+    kind: ProjectLocationKind,
+    path: String,
+    distro: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct WindowsToolProbe {
+    executable: Option<String>,
+    native_rtk: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct WslToolProbe {
+    distro: String,
+    wsl_version: Option<u8>,
+    executable: Option<String>,
+    rtk: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct ProviderCacheEntry {
+    tool: String,
+    observed_unix_seconds: u64,
+    windows: WindowsToolProbe,
+    wsl: Vec<WslToolProbe>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct ProviderCacheFile {
+    schema_version: u32,
+    entries: Vec<ProviderCacheEntry>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ProviderKind {
+    WindowsRaw,
+    WindowsRtk,
+    WslRaw,
+    WslRtk,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct ProviderCandidate {
+    kind: ProviderKind,
+    distro: Option<String>,
+    executable: String,
+    rtk: Option<String>,
+    usable: bool,
+    reason: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ProviderResolution {
+    schema_version: u32,
+    tool: String,
+    cache: &'static str,
+    project: ProjectLocation,
+    availability: ProviderCacheEntry,
+    candidates: Vec<ProviderCandidate>,
+    recommended: Option<usize>,
+    install: &'static str,
+}
+
+fn provider_cache_path() -> PathBuf {
+    wad_data_root().join("provider-cache-v1.json")
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+fn load_provider_cache() -> ProviderCacheFile {
+    fs::read_to_string(provider_cache_path())
+        .ok()
+        .and_then(|contents| serde_json::from_str::<ProviderCacheFile>(&contents).ok())
+        .filter(|cache| cache.schema_version == PROVIDER_CACHE_SCHEMA_VERSION)
+        .unwrap_or(ProviderCacheFile {
+            schema_version: PROVIDER_CACHE_SCHEMA_VERSION,
+            entries: Vec::new(),
+        })
+}
+
+fn save_provider_cache(cache: &ProviderCacheFile) -> Result<(), String> {
+    let root = wad_data_root();
+    fs::create_dir_all(&root)
+        .map_err(|error| format!("unable to create provider cache directory: {error}"))?;
+    let target = provider_cache_path();
+    let temporary = root.join(format!("provider-cache-{}.pending", std::process::id()));
+    let contents = serde_json::to_vec_pretty(cache)
+        .map_err(|error| format!("unable to encode provider cache: {error}"))?;
+    fs::write(&temporary, contents)
+        .map_err(|error| format!("unable to write provider cache: {error}"))?;
+    if target.exists() {
+        let _ = fs::remove_file(&target);
+    }
+    fs::rename(&temporary, &target)
+        .map_err(|error| format!("unable to finalize provider cache: {error}"))
+}
+
+fn cache_entry_is_fresh(entry: &ProviderCacheEntry, now: u64) -> bool {
+    now.saturating_sub(entry.observed_unix_seconds) <= PROVIDER_CACHE_TTL_SECONDS
+}
+
+fn first_output_line(output: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(output)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_owned)
+}
+
+fn first_windows_executable(name: &str) -> Option<String> {
+    Command::new("where.exe")
+        .arg(name)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| first_output_line(&output.stdout))
+}
+
+fn configured_windows_executable(path: &str) -> Option<String> {
+    Path::new(path)
+        .is_file()
+        .then(|| path.to_owned())
+        .or_else(|| first_windows_executable(path))
+}
+
+fn parse_wsl_distributions(output: &str) -> Vec<(String, Option<u8>)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let fields = line
+                .trim()
+                .trim_start_matches('*')
+                .split_whitespace()
+                .collect::<Vec<_>>();
+            if fields.len() < 3 || fields[0].eq_ignore_ascii_case("name") {
+                return None;
+            }
+            let version = fields.last()?.parse::<u8>().ok();
+            let name = fields[..fields.len() - 2].join(" ");
+            (!name.is_empty()).then_some((name, version))
+        })
+        .collect()
+}
+
+fn is_eligible_wsl_distro(distro: &str) -> bool {
+    !matches!(
+        distro.to_ascii_lowercase().as_str(),
+        "docker-desktop" | "docker-desktop-data"
+    )
+}
+
+fn installed_wsl_distributions() -> Vec<(String, Option<u8>)> {
+    Command::new("wsl.exe")
+        .args(["--list", "--verbose"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            parse_wsl_distributions(&decode_wsl_output(&output.stdout))
+                .into_iter()
+                .filter(|(distro, _)| is_eligible_wsl_distro(distro))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn probe_wsl_tool(distro: &str, wsl_version: Option<u8>, tool: &str) -> WslToolProbe {
+    let script = "tool_path=$(command -v \"$1\" 2>/dev/null || true); rtk_path=$(command -v rtk 2>/dev/null || true); printf '%s\\n%s\\n' \"$tool_path\" \"$rtk_path\"";
+    let output = Command::new("wsl.exe")
+        .args([
+            "-d",
+            distro,
+            "--",
+            "sh",
+            "-c",
+            script,
+            "rtk-wad-provider-probe",
+            tool,
+        ])
+        .output();
+    let (executable, rtk) = output
+        .ok()
+        .filter(|result| result.status.success())
+        .map(|result| {
+            let rendered = decode_wsl_output(&result.stdout);
+            let mut lines = rendered.lines().map(str::trim).map(str::to_owned);
+            (
+                lines.next().filter(|line| !line.is_empty()),
+                lines.next().filter(|line| !line.is_empty()),
+            )
+        })
+        .unwrap_or((None, None));
+    WslToolProbe {
+        distro: distro.to_owned(),
+        wsl_version,
+        executable,
+        rtk,
+    }
+}
+
+fn classify_project_path(path: &str) -> ProjectLocation {
+    let normalized = path.replace('/', "\\");
+    let lowered = normalized.to_ascii_lowercase();
+    for prefix in ["\\\\wsl.localhost\\", "\\\\wsl$\\"] {
+        if lowered.starts_with(prefix) {
+            let original_remainder = &normalized[prefix.len()..];
+            let mut parts = original_remainder.splitn(2, '\\');
+            if let Some(distro) = parts.next().filter(|value| !value.is_empty()) {
+                let linux_path =
+                    format!("/{}", parts.next().unwrap_or_default().replace('\\', "/"));
+                return ProjectLocation {
+                    kind: ProjectLocationKind::Wsl,
+                    path: linux_path,
+                    distro: Some(distro.to_owned()),
+                };
+            }
+        }
+    }
+    if windows_path_to_wsl_path(path).is_some() {
+        ProjectLocation {
+            kind: ProjectLocationKind::Windows,
+            path: path.to_owned(),
+            distro: None,
+        }
+    } else {
+        ProjectLocation {
+            kind: ProjectLocationKind::Unknown,
+            path: path.to_owned(),
+            distro: None,
+        }
+    }
+}
+
+fn current_project_location() -> ProjectLocation {
+    env::current_dir()
+        .map(|path| classify_project_path(&path.to_string_lossy()))
+        .unwrap_or(ProjectLocation {
+            kind: ProjectLocationKind::Unknown,
+            path: String::new(),
+            distro: None,
+        })
+}
+
+fn discover_tool(tool: &str, config: &Config) -> ProviderCacheEntry {
+    let executable = if tool == "go" { "go.exe" } else { tool };
+    let windows = WindowsToolProbe {
+        executable: first_windows_executable(executable),
+        native_rtk: configured_windows_executable(&config.native_rtk_path),
+    };
+    let wsl = installed_wsl_distributions()
+        .into_iter()
+        .map(|(distro, version)| probe_wsl_tool(&distro, version, tool))
+        .collect();
+    ProviderCacheEntry {
+        tool: tool.to_owned(),
+        observed_unix_seconds: unix_seconds(),
+        windows,
+        wsl,
+    }
+}
+
+fn cached_or_discovered_tool(
+    tool: &str,
+    config: &Config,
+    refresh: bool,
+) -> (ProviderCacheEntry, &'static str) {
+    let now = unix_seconds();
+    let mut cache = load_provider_cache();
+    if !refresh
+        && let Some(entry) = cache
+            .entries
+            .iter()
+            .find(|entry| entry.tool == tool && cache_entry_is_fresh(entry, now))
+    {
+        return (entry.clone(), "hit");
+    }
+    let discovered = discover_tool(tool, config);
+    cache.entries.retain(|entry| entry.tool != tool);
+    cache.entries.push(discovered.clone());
+    if let Err(error) = save_provider_cache(&cache) {
+        trace(format!("provider cache was not saved: {error}"));
+    }
+    (discovered, "miss")
+}
+
+fn wsl_project_accessible(project: &ProjectLocation, probe: &WslToolProbe) -> bool {
+    match project.kind {
+        ProjectLocationKind::Windows => false,
+        ProjectLocationKind::Wsl => project.distro.as_deref() == Some(probe.distro.as_str()),
+        ProjectLocationKind::Unknown => false,
+    }
+}
+
+fn resolve_tool_provider(tool: &str, config: &Config, refresh: bool) -> ProviderResolution {
+    let project = current_project_location();
+    let (discovery, cache) = cached_or_discovered_tool(tool, config, refresh);
+    let availability = discovery.clone();
+    let mut candidates = Vec::new();
+    if let Some(executable) = discovery.windows.executable {
+        let usable = project.kind != ProjectLocationKind::Wsl;
+        candidates.push(ProviderCandidate {
+            kind: if discovery.windows.native_rtk.is_some() {
+                ProviderKind::WindowsRtk
+            } else {
+                ProviderKind::WindowsRaw
+            },
+            distro: None,
+            executable,
+            rtk: discovery.windows.native_rtk,
+            usable,
+            reason: if usable {
+                "native Windows toolchain is available".to_owned()
+            } else {
+                "Windows execution from a WSL project is intentionally not automatic in PD1"
+                    .to_owned()
+            },
+        });
+    }
+    for probe in discovery.wsl {
+        if let Some(executable) = &probe.executable {
+            let usable = wsl_project_accessible(&project, &probe);
+            candidates.push(ProviderCandidate {
+                kind: if probe.rtk.is_some() {
+                    ProviderKind::WslRtk
+                } else {
+                    ProviderKind::WslRaw
+                },
+                distro: Some(probe.distro),
+                executable: executable.clone(),
+                rtk: probe.rtk,
+                usable,
+                reason: if usable {
+                    "WSL toolchain is available for the current project locality".to_owned()
+                } else if project.kind == ProjectLocationKind::Windows {
+                    "provider is present; Windows-to-WSL project mapping is deferred to PD2"
+                        .to_owned()
+                } else {
+                    "provider is present but its project path mapping is not yet verified"
+                        .to_owned()
+                },
+            });
+        }
+    }
+    let recommended = candidates.iter().position(|candidate| candidate.usable);
+    ProviderResolution {
+        schema_version: PROVIDER_CACHE_SCHEMA_VERSION,
+        tool: tool.to_owned(),
+        cache,
+        project,
+        availability,
+        candidates,
+        recommended,
+        install: "disabled_in_pd1",
+    }
+}
+
+fn print_provider_resolution(
+    resolution: &ProviderResolution,
+    json: bool,
+    doctor: bool,
+) -> ExitCode {
+    if json {
+        return match serde_json::to_string_pretty(resolution) {
+            Ok(rendered) => {
+                println!("{rendered}");
+                if doctor && resolution.recommended.is_none() {
+                    ExitCode::FAILURE
+                } else {
+                    ExitCode::SUCCESS
+                }
+            }
+            Err(error) => {
+                eprintln!("rtk-wad: unable to render provider resolution: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    println!("tool={}", resolution.tool);
+    println!("cache={}", resolution.cache);
+    println!("project_kind={:?}", resolution.project.kind);
+    println!("project_path={}", resolution.project.path);
+    if let Some(distro) = &resolution.project.distro {
+        println!("project_distro={distro}");
+    }
+    println!(
+        "windows_{}_path={}",
+        resolution.tool,
+        resolution
+            .availability
+            .windows
+            .executable
+            .as_deref()
+            .unwrap_or("missing")
+    );
+    println!(
+        "windows_rtk_path={}",
+        resolution
+            .availability
+            .windows
+            .native_rtk
+            .as_deref()
+            .unwrap_or("missing")
+    );
+    for probe in &resolution.availability.wsl {
+        println!(
+            "inspected_distro={};wsl_version={};{}_path={};rtk_path={}",
+            probe.distro,
+            probe
+                .wsl_version
+                .map_or_else(|| "unknown".to_owned(), |version| version.to_string()),
+            resolution.tool,
+            probe.executable.as_deref().unwrap_or("missing"),
+            probe.rtk.as_deref().unwrap_or("missing")
+        );
+    }
+    if resolution.candidates.is_empty() {
+        println!("recommended=none");
+        println!("install=disabled_in_pd1");
+        return if doctor {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
+    for (index, candidate) in resolution.candidates.iter().enumerate() {
+        println!(
+            "candidate_{index}={:?};distro={};usable={};executable={};reason={}",
+            candidate.kind,
+            candidate.distro.as_deref().unwrap_or("windows"),
+            candidate.usable,
+            candidate.executable,
+            candidate.reason
+        );
+    }
+    println!(
+        "recommended={}",
+        resolution
+            .recommended
+            .map_or_else(|| "none".to_owned(), |index| index.to_string())
+    );
+    println!("install=disabled_in_pd1");
+    if doctor && resolution.recommended.is_none() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn provider_command(arguments: &[OsString], config: &Config, doctor: bool) -> ExitCode {
+    let Some(tool) = arguments.get(1).and_then(|argument| argument.to_str()) else {
+        eprintln!(
+            "rtk-wad: usage: {} go [--json] [--refresh]",
+            if doctor {
+                DOCTOR_ARGUMENT
+            } else {
+                RESOLVE_ARGUMENT
+            }
+        );
+        return ExitCode::FAILURE;
+    };
+    if tool != "go" || arguments.len() > 4 {
+        eprintln!("rtk-wad: PD1 currently supports discovery only for the exact tool name `go`");
+        return ExitCode::FAILURE;
+    }
+    let json = arguments
+        .iter()
+        .skip(2)
+        .any(|argument| argument == "--json");
+    let refresh = arguments
+        .iter()
+        .skip(2)
+        .any(|argument| argument == "--refresh");
+    if arguments
+        .iter()
+        .skip(2)
+        .any(|argument| argument != "--json" && argument != "--refresh")
+    {
+        eprintln!(
+            "rtk-wad: usage: {} go [--json] [--refresh]",
+            if doctor {
+                DOCTOR_ARGUMENT
+            } else {
+                RESOLVE_ARGUMENT
+            }
+        );
+        return ExitCode::FAILURE;
+    }
+    print_provider_resolution(&resolve_tool_provider(tool, config, refresh), json, doctor)
 }
 
 fn wad_policy_path() -> PathBuf {
@@ -1488,6 +1998,18 @@ fn parse_wad_options(
 fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     if arguments
         .first()
+        .is_some_and(|argument| argument == RESOLVE_ARGUMENT)
+    {
+        return provider_command(&arguments, config, false);
+    }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == DOCTOR_ARGUMENT)
+    {
+        return provider_command(&arguments, config, true);
+    }
+    if arguments
+        .first()
         .is_some_and(|argument| argument == POLICY_ARGUMENT)
     {
         if arguments.len() == 1 || arguments.get(1).is_some_and(|argument| argument == "show") {
@@ -2273,5 +2795,77 @@ mod tests {
             Some(1)
         );
         assert_eq!(distro_version_from_list(&decoded, "missing"), None);
+    }
+
+    #[test]
+    fn provider_discovery_parses_wsl_distro_names_and_versions() {
+        let output = "  NAME                   STATE           VERSION\r\n* Ubuntu                  Running         2\r\n  Ubuntu-RTK-WSL1         Stopped         1\r\n  Custom WSL One          Stopped         1\r\n";
+        assert_eq!(
+            parse_wsl_distributions(output),
+            vec![
+                ("Ubuntu".to_owned(), Some(2)),
+                ("Ubuntu-RTK-WSL1".to_owned(), Some(1)),
+                ("Custom WSL One".to_owned(), Some(1)),
+            ]
+        );
+        assert!(!is_eligible_wsl_distro("docker-desktop"));
+        assert!(!is_eligible_wsl_distro("docker-desktop-data"));
+        assert!(is_eligible_wsl_distro("Ubuntu-24.04"));
+    }
+
+    #[test]
+    fn provider_discovery_classifies_windows_and_wsl_project_paths() {
+        let windows = classify_project_path(r"E:\luthfi\project\rtk-wsl");
+        assert_eq!(windows.kind, ProjectLocationKind::Windows);
+        assert_eq!(windows.distro, None);
+
+        let wsl = classify_project_path(r"\\wsl.localhost\Ubuntu-24.04\home\luthfi\project");
+        assert_eq!(wsl.kind, ProjectLocationKind::Wsl);
+        assert_eq!(wsl.distro.as_deref(), Some("Ubuntu-24.04"));
+        assert_eq!(wsl.path, "/home/luthfi/project");
+    }
+
+    #[test]
+    fn provider_cache_uses_a_bounded_freshness_window() {
+        let entry = ProviderCacheEntry {
+            tool: "go".to_owned(),
+            observed_unix_seconds: 100,
+            windows: WindowsToolProbe {
+                executable: None,
+                native_rtk: None,
+            },
+            wsl: Vec::new(),
+        };
+        assert!(cache_entry_is_fresh(
+            &entry,
+            100 + PROVIDER_CACHE_TTL_SECONDS
+        ));
+        assert!(!cache_entry_is_fresh(
+            &entry,
+            101 + PROVIDER_CACHE_TTL_SECONDS
+        ));
+    }
+
+    #[test]
+    fn provider_discovery_does_not_mark_cross_host_projects_usable_in_pd1() {
+        let probe = WslToolProbe {
+            distro: "Ubuntu".to_owned(),
+            wsl_version: Some(2),
+            executable: Some("/usr/bin/go".to_owned()),
+            rtk: Some("/home/test/.local/bin/rtk".to_owned()),
+        };
+        let windows_project = ProjectLocation {
+            kind: ProjectLocationKind::Windows,
+            path: r"E:\work".to_owned(),
+            distro: None,
+        };
+        assert!(!wsl_project_accessible(&windows_project, &probe));
+
+        let same_wsl_project = ProjectLocation {
+            kind: ProjectLocationKind::Wsl,
+            path: "/home/test/work".to_owned(),
+            distro: Some("Ubuntu".to_owned()),
+        };
+        assert!(wsl_project_accessible(&same_wsl_project, &probe));
     }
 }
