@@ -22,6 +22,7 @@ const settings = {
   python: resolve(option("--python")),
   output: resolve(option("--output")),
   rounds: Number(process.argv.includes("--rounds") ? option("--rounds") : 10),
+  installPolicy: process.argv.includes("--install-policy"),
 };
 if (!Number.isInteger(settings.rounds) || settings.rounds < 1) {
   throw new Error("--rounds must be a positive integer");
@@ -159,13 +160,29 @@ const policyKey = {
   "rg-focused": "rg",
   "rg-broad": "rg",
 };
-const policyEvidence = summaries.map(({ workload, variants }) => ({
-  key: policyKey[workload],
-  raw_median_ms: variants.raw.median_ms,
-  candidate_median_ms: variants.native_rtk.median_ms,
-  token_savings_percent: variants.native_rtk.token_savings_percent,
-  sample_count: variants.raw.runs,
-}));
+const policyEvidence = Object.values(summaries.reduce((grouped, { workload, variants }) => {
+  const key = policyKey[workload];
+  const evidence = {
+    key,
+    raw_median_ms: variants.raw.median_ms,
+    candidate_median_ms: variants.native_rtk.median_ms,
+    token_savings_percent: variants.native_rtk.token_savings_percent,
+    sample_count: variants.raw.runs,
+  };
+  const previous = grouped[key];
+  if (!previous) return { ...grouped, [key]: evidence };
+  const total = previous.sample_count + evidence.sample_count;
+  return {
+    ...grouped,
+    [key]: {
+      key,
+      raw_median_ms: ((previous.raw_median_ms * previous.sample_count) + (evidence.raw_median_ms * evidence.sample_count)) / total,
+      candidate_median_ms: ((previous.candidate_median_ms * previous.sample_count) + (evidence.candidate_median_ms * evidence.sample_count)) / total,
+      token_savings_percent: ((previous.token_savings_percent * previous.sample_count) + (evidence.token_savings_percent * evidence.sample_count)) / total,
+      sample_count: total,
+    },
+  };
+}, {}));
 writeFileSync(settings.output, JSON.stringify({
   schema_version: 1,
   protocol: "three-way-core-v1",
@@ -188,3 +205,8 @@ writeFileSync(policyOutput, JSON.stringify({ schema_version: 1, evidence: policy
 
 console.log(`Wrote ${settings.output}`);
 console.log(`Wrote ${policyOutput}`);
+if (settings.installPolicy) {
+  const imported = await execute(settings.wad, ["policy", "import", policyOutput]);
+  if (imported.exit_code !== 0) throw new Error(`Policy import failed: ${imported.stderr}`);
+  console.log("Installed the generated local route policy.");
+}

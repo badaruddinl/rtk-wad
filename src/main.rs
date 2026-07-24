@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -520,6 +521,25 @@ fn import_route_policy(source: &Path) -> Result<(), String> {
         .map_err(|error| format!("invalid policy evidence: {error}"))?;
     if policy.schema_version != 1 || policy.evidence.is_empty() {
         return Err("policy evidence must use schema_version 1 and contain evidence".to_owned());
+    }
+    let mut keys = HashSet::new();
+    for evidence in &policy.evidence {
+        if evidence.key.trim().is_empty()
+            || evidence.sample_count == 0
+            || !evidence.raw_median_ms.is_finite()
+            || !evidence.candidate_median_ms.is_finite()
+            || !evidence.token_savings_percent.is_finite()
+            || evidence.raw_median_ms < 0.0
+            || evidence.candidate_median_ms < 0.0
+        {
+            return Err("policy evidence contains an invalid measurement".to_owned());
+        }
+        if !keys.insert(&evidence.key) {
+            return Err(format!(
+                "policy evidence contains duplicate key {}",
+                evidence.key
+            ));
+        }
     }
     let destination = wad_policy_path();
     if let Some(parent) = destination.parent() {

@@ -50,13 +50,18 @@ node .\benchmarks\run-core-three-way.mjs `
   --native-rtk C:\tools\rtk.exe `
   --wad C:\tools\rtk-wad.exe `
   --python C:\path\to\python.exe `
-  --output .\benchmarks\results\flowpeek.json
+  --output .\benchmarks\results\flowpeek.json `
+  --install-policy
 ```
 
 Set `RTK_WAD_BENCH_GIT` or `RTK_WAD_BENCH_RG` only when the corresponding raw
 Windows executable is not discoverable on `PATH`. Benchmark output is an
 English, machine-readable artifact; the release report must include both wins
 and losses.
+
+`--install-policy` imports the policy generated from that same real-corpus run
+into the local WAD data directory. It never uses fixture output as performance
+evidence.
 
 ## External-service fixture runner
 
