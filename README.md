@@ -57,6 +57,9 @@ The [filesystem matrix](docs/FILESYSTEM_MATRIX_2026-07-24.md) records the
 native-route and local-ledger result on both the real exFAT source worktree and
 a temporary NTFS worktree.
 
+The [dogfood-cycle record](docs/DOGFOOD_CYCLES_2026-07-24.md) shows repeated
+route decisions and cumulative token accounting on the two real local projects.
+
 An isolated WSL1 runtime is available as an opt-in development profile. It does
 not convert or modify an existing WSL2 distribution. Enable the Windows WSL1
 component from an elevated PowerShell, restart if requested, provision the
