@@ -31,13 +31,20 @@ lock_path=$2
 rtk_path=$3
 cancel_token=$4
 metrics_db_path=$5
-shift 5
+extra_path=$6
+ready_file=$7
+shift 7
 
 if [ -z "$rtk_path" ]; then
     rtk_path="$HOME/.local/bin/rtk"
 fi
 
 user=${USER:-}
+if [ -n "$extra_path" ]; then
+    path_prefix="$extra_path:"
+else
+    path_prefix=""
+fi
 cleanup() { rm -f "$cancel_token"; }
 trap "cleanup; exit 130" INT TERM
 trap cleanup EXIT
@@ -52,10 +59,13 @@ while ! /usr/bin/flock -n 9; do
     remaining=$((remaining - 1))
     /bin/sleep 0.1
 done
+if [ -n "$ready_file" ]; then
+    printf 'ready' > "$ready_file"
+fi
 /usr/bin/env -i \
     HOME="$HOME" \
     USER="$user" \
-    PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    PATH="${path_prefix}$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     RTK_DB_PATH="$metrics_db_path" \
     "$rtk_path" "$@"
 status=$?
@@ -64,17 +74,27 @@ exit "$status"
 const WSL1_LAUNCH_SCRIPT: &str = r#"
 rtk_path=$1
 metrics_db_path=$2
-shift 2
+extra_path=$3
+ready_file=$4
+shift 4
 
 if [ -z "$rtk_path" ]; then
     rtk_path="$HOME/.local/bin/rtk"
 fi
 
 user=${USER:-}
+if [ -n "$extra_path" ]; then
+    path_prefix="$extra_path:"
+else
+    path_prefix=""
+fi
+if [ -n "$ready_file" ]; then
+    printf 'ready' > "$ready_file"
+fi
 exec /usr/bin/env -i \
     HOME="$HOME" \
     USER="$user" \
-    PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    PATH="${path_prefix}$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     RTK_DB_PATH="$metrics_db_path" \
     "$rtk_path" "$@"
 "#;
@@ -163,6 +183,7 @@ struct Config {
     lock_wait: String,
     cwd: Option<String>,
     git_mode: GitMode,
+    extra_path: Option<String>,
     wad_route: Route,
     native_rtk_path: String,
 }
@@ -235,6 +256,7 @@ impl Config {
                 "native" => GitMode::Native,
                 _ => return Err("RTK_WSL_GIT_MODE must be auto, wsl, or native".to_owned()),
             };
+        let extra_path = optional_linux_path_list(&lookup, "RTK_WSL_EXTRA_PATH")?;
         let wad_route = match lookup("RTK_WAD_ROUTE") {
             Some(value) if value.trim().is_empty() => {
                 return Err("RTK_WAD_ROUTE must not be empty when set".to_owned());
@@ -267,6 +289,7 @@ impl Config {
             lock_wait,
             cwd,
             git_mode,
+            extra_path,
             wad_route,
             native_rtk_path,
         })
@@ -367,12 +390,6 @@ fn trace(message: impl AsRef<str>) {
     }
 }
 
-fn signal_test_ready() {
-    if let Some(path) = env::var_os("RTK_WSL_TEST_READY_FILE") {
-        let _ = fs::write(path, "ready");
-    }
-}
-
 fn required_setting(
     lookup: &impl Fn(&str) -> Option<String>,
     name: &str,
@@ -415,6 +432,23 @@ fn required_absolute_path(
     let value = required_setting(lookup, name, default)?;
     if !value.starts_with('/') {
         return Err(format!("{name} must be an absolute Linux path"));
+    }
+    Ok(value)
+}
+
+fn optional_linux_path_list(
+    lookup: &impl Fn(&str) -> Option<String>,
+    name: &str,
+) -> Result<Option<String>, String> {
+    let value = optional_setting(lookup, name)?;
+    if let Some(value) = &value
+        && value
+            .split(':')
+            .any(|entry| entry.is_empty() || !entry.starts_with('/'))
+    {
+        return Err(format!(
+            "{name} must be a colon-separated list of absolute Linux paths"
+        ));
     }
     Ok(value)
 }
@@ -742,6 +776,12 @@ fn wsl_launch_prefix(config: &Config) -> Vec<OsString> {
     command
 }
 
+fn test_ready_wsl_path() -> Option<String> {
+    env::var("RTK_WSL_TEST_READY_FILE")
+        .ok()
+        .and_then(|path| windows_path_to_wsl_path(&path))
+}
+
 fn rtk_arguments(arguments: Vec<OsString>, config: &Config, cancel_token: &str) -> Vec<OsString> {
     rtk_arguments_with_metrics(arguments, config, cancel_token, None)
 }
@@ -767,6 +807,8 @@ fn rtk_arguments_with_metrics(
         OsString::from(config.rtk_path.as_deref().unwrap_or("")),
         OsString::from(cancel_token),
         OsString::from(metrics_db_path.unwrap_or("")),
+        OsString::from(config.extra_path.as_deref().unwrap_or("")),
+        OsString::from(test_ready_wsl_path().unwrap_or_default()),
     ]);
     command.extend(forwarded);
     command
@@ -791,6 +833,8 @@ fn wsl1_rtk_arguments_with_metrics(
         OsString::from("rtk-wsl1"),
         OsString::from(config.rtk_path.as_deref().unwrap_or("")),
         OsString::from(metrics_db_path.unwrap_or("")),
+        OsString::from(config.extra_path.as_deref().unwrap_or("")),
+        OsString::from(test_ready_wsl_path().unwrap_or_default()),
     ]);
     command.extend(forwarded);
     command
@@ -1377,9 +1421,6 @@ fn main() -> ExitCode {
         eprintln!("rtk-wsl: unable to register the Windows console cancellation handler");
         return ExitCode::FAILURE;
     }
-    if !use_native_git {
-        signal_test_ready();
-    }
     let _wsl1_lock = if use_native_wsl1_bridge {
         trace("waiting for the Windows WSL1 mutex");
         match windows_lock::acquire(&config.lock_wait) {
@@ -1535,6 +1576,7 @@ mod tests {
             "RTK_WSL_USER" => Some("alex".to_owned()),
             "RTK_WSL_RTK_PATH" => Some("/opt/rtk/bin/rtk".to_owned()),
             "RTK_WSL_CWD" => Some("/work/custom-mount".to_owned()),
+            "RTK_WSL_EXTRA_PATH" => Some("/opt/fixture-bin:/work/tools".to_owned()),
             _ => None,
         })
         .expect("portable config is valid");
@@ -1547,6 +1589,7 @@ mod tests {
                 .any(|pair| pair == ["--cd", "/work/custom-mount"])
         );
         assert!(arguments.contains(&OsString::from("/opt/rtk/bin/rtk")));
+        assert!(arguments.contains(&OsString::from("/opt/fixture-bin:/work/tools")));
     }
 
     #[test]
@@ -1562,6 +1605,12 @@ mod tests {
             _ => None,
         });
         assert!(relative_path.is_err());
+
+        let invalid_extra_path = Config::from_lookup(|name| match name {
+            "RTK_WSL_EXTRA_PATH" => Some("relative:/opt/tools".to_owned()),
+            _ => None,
+        });
+        assert!(invalid_extra_path.is_err());
     }
 
     #[test]

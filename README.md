@@ -80,6 +80,7 @@ By default, the launcher uses the selected distro's default user and that user's
 - `RTK_WSL_LOCK_WAIT_SECONDS` (default: `120`)
 - `RTK_WSL_CWD` (optional; an absolute Linux path for UNC shares or custom WSL mounts)
 - `RTK_WSL_GIT_MODE` (`auto`, default; `native`; or `wsl`)
+- `RTK_WSL_EXTRA_PATH` (optional colon-separated absolute Linux directories prepended to the clean child `PATH`)
 - `RTK_WAD_ROUTE` (`auto`, default; `raw`; `native-rtk`; `wsl1`; or `wsl2`)
 - `RTK_WAD_NATIVE_RTK_PATH` (optional; defaults to `rtk.exe` on `PATH`)
 

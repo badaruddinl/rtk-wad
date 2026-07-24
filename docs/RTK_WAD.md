@@ -96,3 +96,8 @@ rtk-wad --explain-route rg 'pattern with spaces' .
 The adaptive path does not call `wsl.exe --list` or probe the filesystem before
 each command. WSL version diagnostics remain explicit through the legacy bridge
 commands.
+
+For deterministic fixtures or intentionally provisioned Linux tools, set
+`RTK_WSL_EXTRA_PATH` to a colon-separated list of absolute Linux directories.
+Relative entries and empty segments are rejected before WSL starts; the default
+child PATH remains unchanged.
