@@ -58,6 +58,10 @@ can inspect existing Go installations on Windows and WSL without installing or
 changing any toolchain. Automatic cross-host selection remains intentionally
 deferred until its path-mapping contract is proven.
 
+[PD2 provider resolution](docs/PROVIDER_RESOLUTION_PD2.md) proves a Windows
+project's actual mapping inside a candidate WSL distribution with structured
+arguments before that provider can be reported as usable.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture

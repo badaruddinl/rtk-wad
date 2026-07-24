@@ -87,6 +87,11 @@ five-minute local cache is per tool and can be bypassed with `--refresh`. See
 [`PROVIDER_DISCOVERY_PD1.md`](PROVIDER_DISCOVERY_PD1.md) for the exact scope,
 cache content, and deliberate cross-host limitations.
 
+PD2 validates a Windows project's actual WSL mount using `wslpath -a` through
+the structured `wsl.exe --exec` form before it marks a WSL provider usable.
+This is still diagnostic-only; see
+[`PROVIDER_RESOLUTION_PD2.md`](PROVIDER_RESOLUTION_PD2.md).
+
 ## Shell and argv safety
 
 Use structured RTK commands such as `git`, `rg`, `grep`, `find`, `ls`, `tree`,
