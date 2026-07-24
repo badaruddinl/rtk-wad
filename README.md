@@ -104,6 +104,10 @@ policy for the current head.
 documents the bounded candidate, provisional, and stable selection cycle used
 when no imported benchmark policy exists.
 
+[P11 provider baseline](docs/PROVIDER_BASELINE_P11.md) supplies the repeatable,
+local-first inventory of Windows and WSL tool/RTK providers that gates the
+generic cross-host registry work.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture
