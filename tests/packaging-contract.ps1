@@ -62,6 +62,7 @@ try {
     Assert-Condition ((Get-Content -LiteralPath $target -Raw) -eq "surviving launcher`r`n") "failed install damaged the active launcher"
 
     Write-Output "Packaging contract passed"
+    exit 0
 } finally {
     if (Test-Path -LiteralPath $temporaryRoot) {
         Remove-Item -LiteralPath $temporaryRoot -Recurse -Force
