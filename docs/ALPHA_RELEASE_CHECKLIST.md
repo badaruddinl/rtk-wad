@@ -1,4 +1,4 @@
-# 0.1.0-alpha.1 freeze checklist
+# 0.1.0 stable release checklist
 
 Use this checklist before declaring the local alpha a stable baseline or creating
 an upstream contribution. Check an item only with current evidence.
@@ -56,12 +56,16 @@ an upstream contribution. Check an item only with current evidence.
   intentionally deferred until post-freeze dogfooding and CI review.
 - [x] Select `v0.1.0-alpha.2` for the post-freeze cancellation-session refinement
   and Windows CI workflow; alpha1 remains an immutable baseline.
+- [x] Promote the verified native-Windows Git routing and cross-platform helper
+  dogfooding baseline to `v0.1.0`; both prerelease tags remain immutable.
+- [x] Publish `v0.1.0` from `master` as the latest stable GitHub Release with the
+  verified Windows executable.
 - [x] Keep the upstream issue/PR closed; no launcher defect or recurring fallback
   justifies an upstream contribution yet.
 
 ## Freeze decision
 
-Frozen as the technical `0.1.0-alpha.1` baseline on 2026-07-24 after the owner
-accepted the remaining dogfooding work as post-freeze monitoring. The publication
-decisions above remain explicit follow-ups; this freeze does not authorize an
+Frozen as the stable `0.1.0` companion release on 2026-07-24 after structured
+native-Git routing, WSL process contracts, packaging recovery, active-install
+dogfooding, and Windows CI passed. This release does not authorize or represent an
 upstream RTK contribution.

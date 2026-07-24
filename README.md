@@ -2,7 +2,7 @@
 
 Native Windows launcher for the Linux RTK binary in WSL. It uses `wsl.exe --exec` and forwards every argument as structured process arguments; it does not rebuild a shell command string. Git commands started from a Windows-drive worktree use native `git.exe` by default, avoiding WSL `/mnt/<drive>` traversal and CRLF-index mismatches; every other RTK command remains in WSL.
 
-Current milestone: `0.1.0-alpha.2`. Project home: `https://github.com/badaruddinl/rtk-wsl`.
+Current stable release: `0.1.0`. Project home: `https://github.com/badaruddinl/rtk-wsl`.
 
 ## Build and use
 

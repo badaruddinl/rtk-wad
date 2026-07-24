@@ -10,7 +10,7 @@ This document records outcomes only; it deliberately avoids raw command logs.
 | Argument and process contract | Rust integration tests for literals, Unicode, stdio, exit codes, stdin, and structured native-Git routing from Windows worktrees | Pass |
 | Ctrl+C / Ctrl+Break | Windows handler forwards SIGINT to the dedicated Linux process group; lock-release regression passes | Pass |
 | Packaging and recovery | Isolated PowerShell contract using a temporary destination | Pass |
-| Rust quality gate | fmt, clippy, 10 tests, release build, package archive audit | Pass |
+| Rust quality gate | fmt, clippy, 10 unit tests, 4 Windows/WSL process tests, release build, package archive audit | Pass |
 | Long-running dogfood | Two concise repository cycles, recording only failures/outliers/fallbacks | Evidence collected |
 
 ## Decision boundary
@@ -38,8 +38,8 @@ and proves that the waiting command proceeds after the lock is released.
 
 | Cycle | Work performed | Failure / fallback | Observation |
 | --- | --- | --- | --- |
-| `rtk-wsl` | Git status and README read using the release binary | None | 14.3 s wall time; treat as a WSL startup outlier, not a performance claim |
-| Flowpeek | Git status and README discovery using the same release binary | None | 10.7 s wall time; treat as a WSL startup outlier, not a performance claim |
+| `rtk-wsl` | Native Git status and WSL README search using the release binary | None | Git completed below one second; WSL search retained ordinary startup cost |
+| Flowpeek | Native Git status/diff and WSL README discovery using the same release binary | None | Git status completed in about 0.5 s and diff check in about 0.2 s |
 
 The first two normal post-freeze development cycles used the newly installed
 release binary after the CI branch build. Both completed without failure or
@@ -61,7 +61,7 @@ jobs; the WSL process contract was explicitly skipped because Ubuntu is absent o
 the runner, preserving local WSL coverage without misrepresenting CI evidence.
 
 The two normal dogfooding cycles found no user-facing failure. The post-freeze
-cancellation-session refinement and Windows CI workflow are versioned as the
-`v0.1.0-alpha.2` candidate; alpha1 remains immutable. The next work should be
-external-user feedback or a self-hosted Windows+Ubuntu runner if hosted WSL
-process coverage becomes a requirement; feature expansion remains deferred.
+cancellation-session refinement and Windows CI workflow remain immutable as
+`v0.1.0-alpha.2`. Native Git routing removes `/mnt/<drive>` traversal and CRLF
+index mismatches for Windows worktrees, while explicit Linux paths remain in WSL.
+This verified baseline is promoted to `v0.1.0`; feature expansion remains deferred.

@@ -1,6 +1,6 @@
 [package]
 name = "rtk-wsl"
-version = "0.1.0-alpha.2"
+version = "0.1.0"
 edition = "2024"
 description = "Native Windows launcher for running Linux RTK through WSL with structured arguments"
 license = "Apache-2.0"
