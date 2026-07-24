@@ -61,6 +61,10 @@ rtk-wad policy import .\flowpeek.route-policy.json
 rtk-wad policy show
 ```
 
+Import merges evidence by its command key and atomically replaces only a key
+that was measured again. A later Node or Cargo benchmark therefore preserves
+existing Git and search evidence in the same local policy file.
+
 For at least five samples, WAD selects native RTK when measured token saving is
 25% or more. The comparison uses end-to-end WAD latency, including dispatcher
 and local-accounting cost. When measured saving is below that threshold and raw

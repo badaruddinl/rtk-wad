@@ -470,7 +470,7 @@ struct RoutePolicyFile {
     evidence: Vec<RoutePolicyEvidence>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct RoutePolicyEvidence {
     key: String,
     raw_median_ms: f64,
@@ -511,14 +511,12 @@ fn wad_policy_path() -> PathBuf {
 fn load_route_policy() -> Option<RoutePolicyFile> {
     let path = wad_policy_path();
     let contents = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&contents).ok()
+    let policy = serde_json::from_str(&contents).ok()?;
+    validate_route_policy(&policy).ok()?;
+    Some(policy)
 }
 
-fn import_route_policy(source: &Path) -> Result<(), String> {
-    let contents = fs::read_to_string(source)
-        .map_err(|error| format!("unable to read policy evidence: {error}"))?;
-    let policy: RoutePolicyFile = serde_json::from_str(&contents)
-        .map_err(|error| format!("invalid policy evidence: {error}"))?;
+fn validate_route_policy(policy: &RoutePolicyFile) -> Result<(), String> {
     if policy.schema_version != 1 || policy.evidence.is_empty() {
         return Err("policy evidence must use schema_version 1 and contain evidence".to_owned());
     }
@@ -541,13 +539,55 @@ fn import_route_policy(source: &Path) -> Result<(), String> {
             ));
         }
     }
+    Ok(())
+}
+
+fn merge_route_policy(
+    existing: Option<RoutePolicyFile>,
+    incoming: RoutePolicyFile,
+) -> RoutePolicyFile {
+    let mut evidence = existing.map_or_else(Vec::new, |policy| policy.evidence);
+    for next in incoming.evidence {
+        if let Some(index) = evidence.iter().position(|current| current.key == next.key) {
+            evidence[index] = next;
+        } else {
+            evidence.push(next);
+        }
+    }
+    evidence.sort_by(|left, right| left.key.cmp(&right.key));
+    RoutePolicyFile {
+        schema_version: 1,
+        evidence,
+    }
+}
+
+fn import_route_policy(source: &Path) -> Result<(), String> {
+    let contents = fs::read_to_string(source)
+        .map_err(|error| format!("unable to read policy evidence: {error}"))?;
+    let incoming: RoutePolicyFile = serde_json::from_str(&contents)
+        .map_err(|error| format!("invalid policy evidence: {error}"))?;
+    validate_route_policy(&incoming)?;
     let destination = wad_policy_path();
+    let existing = if destination.exists() {
+        let contents = fs::read_to_string(&destination)
+            .map_err(|error| format!("unable to read existing route policy: {error}"))?;
+        let policy = serde_json::from_str(&contents)
+            .map_err(|error| format!("existing route policy is invalid: {error}"))?;
+        validate_route_policy(&policy)
+            .map_err(|error| format!("existing route policy is invalid: {error}"))?;
+        Some(policy)
+    } else {
+        None
+    };
+    let merged = merge_route_policy(existing, incoming);
+    let encoded = serde_json::to_string_pretty(&merged)
+        .map_err(|error| format!("unable to encode merged route policy: {error}"))?;
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("unable to create policy directory: {error}"))?;
     }
     let temporary = destination.with_extension(format!("{}.new", std::process::id()));
-    fs::write(&temporary, contents)
+    fs::write(&temporary, encoded)
         .map_err(|error| format!("unable to write policy evidence: {error}"))?;
     fs::rename(&temporary, &destination)
         .map_err(|error| format!("unable to activate policy evidence: {error}"))
@@ -2063,6 +2103,65 @@ mod tests {
             .0,
             Route::Raw
         );
+    }
+
+    #[test]
+    fn policy_import_merge_preserves_other_evidence_and_replaces_same_key() {
+        let existing = RoutePolicyFile {
+            schema_version: 1,
+            evidence: vec![
+                RoutePolicyEvidence {
+                    key: "cargo:check".to_owned(),
+                    raw_median_ms: 10.0,
+                    candidate_median_ms: 20.0,
+                    token_savings_percent: 1.0,
+                    sample_count: 5,
+                },
+                RoutePolicyEvidence {
+                    key: "rg".to_owned(),
+                    raw_median_ms: 20.0,
+                    candidate_median_ms: 30.0,
+                    token_savings_percent: 80.0,
+                    sample_count: 5,
+                },
+            ],
+        };
+        let incoming = RoutePolicyFile {
+            schema_version: 1,
+            evidence: vec![
+                RoutePolicyEvidence {
+                    key: "npm:run-list".to_owned(),
+                    raw_median_ms: 30.0,
+                    candidate_median_ms: 40.0,
+                    token_savings_percent: 0.0,
+                    sample_count: 5,
+                },
+                RoutePolicyEvidence {
+                    key: "rg".to_owned(),
+                    raw_median_ms: 5.0,
+                    candidate_median_ms: 10.0,
+                    token_savings_percent: 90.0,
+                    sample_count: 5,
+                },
+            ],
+        };
+        let merged = merge_route_policy(Some(existing), incoming);
+        assert_eq!(
+            merged
+                .evidence
+                .iter()
+                .map(|evidence| evidence.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cargo:check", "npm:run-list", "rg"]
+        );
+        let rg = merged
+            .evidence
+            .iter()
+            .find(|evidence| evidence.key == "rg")
+            .expect("new measurement replaces rg");
+        assert_eq!(rg.token_savings_percent, 90.0);
+        assert_eq!(merged.route_for("cargo:check"), Some(Route::Raw));
+        assert_eq!(merged.route_for("npm:run-list"), Some(Route::Raw));
     }
 
     #[test]
