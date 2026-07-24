@@ -1334,7 +1334,7 @@ fn auto_wad_route(
         }
     }
     match wad_command_family(arguments) {
-        "npm" | "npx" => (
+        "npm" | "npx" | "pnpm" => (
             Route::Raw,
             "validated Windows Node fallback avoids an unavailable WSL toolchain",
         ),
@@ -1410,6 +1410,7 @@ fn run_raw(arguments: &[OsString]) -> std::io::Result<ExitStatus> {
         Some("git") => OsString::from("git.exe"),
         Some("npm") => OsString::from("npm.cmd"),
         Some("npx") => OsString::from("npx.cmd"),
+        Some("pnpm") => OsString::from("pnpm.cmd"),
         _ => program.clone(),
     };
     Command::new(executable)
@@ -1997,6 +1998,10 @@ mod tests {
         );
         assert_eq!(
             auto_wad_route(&[OsString::from("npx")], Some(r"E:\work"), None).0,
+            Route::Raw
+        );
+        assert_eq!(
+            auto_wad_route(&[OsString::from("pnpm")], Some(r"E:\work"), None).0,
             Route::Raw
         );
 
