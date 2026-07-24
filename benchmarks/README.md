@@ -57,3 +57,13 @@ Set `RTK_WAD_BENCH_GIT` or `RTK_WAD_BENCH_RG` only when the corresponding raw
 Windows executable is not discoverable on `PATH`. Benchmark output is an
 English, machine-readable artifact; the release report must include both wins
 and losses.
+
+## External-service fixture runner
+
+The `fixtures` directory supplies executable doubles for AWS, curl, Docker,
+GitHub CLI, GitLab CLI, Kubernetes, OpenShift, PostgreSQL, and wget. Install the
+Windows and WSL fixture directories, then run `run-fixture-three-way.mjs` with
+both paths. WAD receives the Linux fixture directory through
+`RTK_WSL_EXTRA_PATH`; stock RTK receives the Windows fixture directory through
+its child PATH. The fixture runner records the same three-way evidence without
+contacting a network service.

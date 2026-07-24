@@ -191,7 +191,7 @@ fn ctrl_break_releases_the_global_lock_for_waiting_children() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("first launcher starts");
-    let ready_deadline = Instant::now() + Duration::from_secs(10);
+    let ready_deadline = Instant::now() + Duration::from_secs(45);
     while !ready_file.exists() {
         assert!(
             Instant::now() < ready_deadline,

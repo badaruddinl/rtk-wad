@@ -153,6 +153,19 @@ const summaries = workloads.map((workload) => {
 });
 
 mkdirSync(dirname(settings.output), { recursive: true });
+const policyKey = {
+  "git-status": "git:status",
+  "git-log-100": "git:log",
+  "rg-focused": "rg",
+  "rg-broad": "rg",
+};
+const policyEvidence = summaries.map(({ workload, variants }) => ({
+  key: policyKey[workload],
+  raw_median_ms: variants.raw.median_ms,
+  candidate_median_ms: variants.native_rtk.median_ms,
+  token_savings_percent: variants.native_rtk.token_savings_percent,
+  sample_count: variants.raw.runs,
+}));
 writeFileSync(settings.output, JSON.stringify({
   schema_version: 1,
   protocol: "three-way-core-v1",
@@ -170,5 +183,8 @@ writeFileSync(settings.output, JSON.stringify({
     stderr_bytes: stderr.length,
   })),
 }, null, 2));
+const policyOutput = settings.output.replace(/\.json$/i, ".route-policy.json");
+writeFileSync(policyOutput, JSON.stringify({ schema_version: 1, evidence: policyEvidence }, null, 2));
 
 console.log(`Wrote ${settings.output}`);
+console.log(`Wrote ${policyOutput}`);

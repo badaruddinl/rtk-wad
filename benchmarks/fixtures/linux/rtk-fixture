@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+command_name=$(basename "$0")
+count=$#
+printf 'fixture=%s;argc=%s;argv=' "$command_name" "$count"
+first=1
+for argument in "$@"; do
+    if [ "$first" -eq 0 ]; then printf '|'; fi
+    first=0
+    printf '%s' "$argument"
+done
+printf '\n'

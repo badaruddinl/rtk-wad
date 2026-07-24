@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, params};
+use serde::{Deserialize, Serialize};
 
 const DEFAULT_DISTRO: &str = "Ubuntu";
 const DEFAULT_WSL1_DISTRO: &str = "Ubuntu-RTK-WSL1";
@@ -16,6 +17,7 @@ const DEFAULT_GIT_MODE: &str = "auto";
 const BRIDGE_INFO_ARGUMENT: &str = "--bridge-info";
 const ADAPTER_INFO_ARGUMENT: &str = "--adapter-info";
 const EXPLAIN_ROUTE_ARGUMENT: &str = "--explain-route";
+const POLICY_ARGUMENT: &str = "policy";
 const CANCEL_SCRIPT: &str = r#"
 if [ -r "$1" ]; then
     worker=$(cat "$1")
@@ -459,6 +461,76 @@ struct TokenTotals {
     input_tokens: i64,
     output_tokens: i64,
     saved_tokens: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RoutePolicyFile {
+    schema_version: u32,
+    evidence: Vec<RoutePolicyEvidence>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RoutePolicyEvidence {
+    key: String,
+    raw_median_ms: f64,
+    candidate_median_ms: f64,
+    token_savings_percent: f64,
+    sample_count: u32,
+}
+
+impl RoutePolicyFile {
+    fn route_for(&self, key: &str) -> Option<Route> {
+        let evidence = self.evidence.iter().find(|evidence| evidence.key == key)?;
+        if self.schema_version != 1 || evidence.sample_count < 5 {
+            return None;
+        }
+        if evidence.token_savings_percent >= 25.0 {
+            Some(Route::NativeRtk)
+        } else if evidence.raw_median_ms <= evidence.candidate_median_ms {
+            Some(Route::Raw)
+        } else {
+            Some(Route::NativeRtk)
+        }
+    }
+}
+
+fn wad_data_root() -> PathBuf {
+    env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(env::temp_dir)
+        .join("rtk-wad")
+}
+
+fn wad_policy_path() -> PathBuf {
+    env::var_os("RTK_WAD_POLICY_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| wad_data_root().join("route-policy-v1.json"))
+}
+
+fn load_route_policy() -> Option<RoutePolicyFile> {
+    let path = wad_policy_path();
+    let contents = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
+fn import_route_policy(source: &Path) -> Result<(), String> {
+    let contents = fs::read_to_string(source)
+        .map_err(|error| format!("unable to read policy evidence: {error}"))?;
+    let policy: RoutePolicyFile = serde_json::from_str(&contents)
+        .map_err(|error| format!("invalid policy evidence: {error}"))?;
+    if policy.schema_version != 1 || policy.evidence.is_empty() {
+        return Err("policy evidence must use schema_version 1 and contain evidence".to_owned());
+    }
+    let destination = wad_policy_path();
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("unable to create policy directory: {error}"))?;
+    }
+    let temporary = destination.with_extension(format!("{}.new", std::process::id()));
+    fs::write(&temporary, contents)
+        .map_err(|error| format!("unable to write policy evidence: {error}"))?;
+    fs::rename(&temporary, &destination)
+        .map_err(|error| format!("unable to activate policy evidence: {error}"))
 }
 
 struct WadMetrics {
@@ -1126,6 +1198,7 @@ fn is_verified_read_only_git(arguments: &[OsString]) -> bool {
 fn auto_wad_route(
     arguments: &[OsString],
     current_directory: Option<&str>,
+    policy: Option<&RoutePolicyFile>,
 ) -> (Route, &'static str) {
     if has_wsl_path(arguments)
         || current_directory.is_some_and(|directory| windows_path_to_wsl_path(directory).is_none())
@@ -1134,6 +1207,36 @@ fn auto_wad_route(
             Route::Wsl1,
             "Linux path or WSL working directory requires Linux execution",
         );
+    }
+    let policy_key = match wad_command_family(arguments) {
+        "git" => git_subcommand(arguments).map(|subcommand| format!("git:{subcommand}")),
+        "rg" => Some("rg".to_owned()),
+        _ => None,
+    };
+    if let Some((_key, route)) = policy_key.as_deref().and_then(|key| {
+        policy
+            .and_then(|policy| policy.route_for(key))
+            .map(|route| (key, route))
+    }) {
+        let permitted = match route {
+            Route::Raw => {
+                wad_command_family(arguments) == "rg" || is_verified_read_only_git(arguments)
+            }
+            Route::NativeRtk => {
+                wad_command_family(arguments) == "rg" || is_verified_read_only_git(arguments)
+            }
+            Route::Wsl1 | Route::Wsl2 | Route::Auto => false,
+        };
+        if permitted {
+            return (
+                route,
+                if route == Route::Raw {
+                    "local benchmark policy selected lower-latency raw execution"
+                } else {
+                    "local benchmark policy selected token-saving native RTK"
+                },
+            );
+        }
     }
     match wad_command_family(arguments) {
         "git" if is_verified_read_only_git(arguments) => (
@@ -1271,6 +1374,42 @@ fn parse_wad_options(
 }
 
 fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == POLICY_ARGUMENT)
+    {
+        if arguments.len() == 1 || arguments.get(1).is_some_and(|argument| argument == "show") {
+            match load_route_policy() {
+                Some(policy) => match serde_json::to_string_pretty(&policy) {
+                    Ok(rendered) => println!("{rendered}"),
+                    Err(error) => {
+                        eprintln!("rtk-wad: unable to render route policy: {error}");
+                        return ExitCode::FAILURE;
+                    }
+                },
+                None => println!("No local route policy is installed."),
+            }
+            return ExitCode::SUCCESS;
+        }
+        if arguments
+            .get(1)
+            .is_some_and(|argument| argument == "import")
+            && arguments.len() == 3
+        {
+            return match import_route_policy(Path::new(&arguments[2])) {
+                Ok(()) => {
+                    println!("Imported local RTK-WAD route policy.");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("rtk-wad: {error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        eprintln!("rtk-wad: usage: rtk-wad policy [show] | policy import <evidence.json>");
+        return ExitCode::FAILURE;
+    }
     if arguments.len() == 1 && arguments[0] == ADAPTER_INFO_ARGUMENT {
         print_adapter_info(config);
         return ExitCode::SUCCESS;
@@ -1297,6 +1436,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         auto_wad_route(
             &arguments,
             current_directory.as_deref().and_then(|path| path.to_str()),
+            load_route_policy().as_ref(),
         )
     } else {
         (requested_route, "explicit route preference")
@@ -1715,14 +1855,17 @@ mod tests {
             OsString::from("commit"),
             OsString::from("-m"),
         ];
-        assert_eq!(auto_wad_route(&mutation, Some(r"E:\work")).0, Route::Raw);
+        assert_eq!(
+            auto_wad_route(&mutation, Some(r"E:\work"), None).0,
+            Route::Raw
+        );
 
         let clone = vec![
             OsString::from("git"),
             OsString::from("clone"),
             OsString::from("https://example.invalid/repo"),
         ];
-        assert_eq!(auto_wad_route(&clone, Some(r"E:\work")).0, Route::Raw);
+        assert_eq!(auto_wad_route(&clone, Some(r"E:\work"), None).0, Route::Raw);
 
         let read_only = vec![
             OsString::from("git"),
@@ -1730,7 +1873,7 @@ mod tests {
             OsString::from("-1"),
         ];
         assert_eq!(
-            auto_wad_route(&read_only, Some(r"E:\work")).0,
+            auto_wad_route(&read_only, Some(r"E:\work"), None).0,
             Route::NativeRtk
         );
 
@@ -1739,7 +1882,64 @@ mod tests {
             OsString::from("/usr/bin/printf"),
             OsString::from("$HOME; &"),
         ];
-        assert_eq!(auto_wad_route(&literal, Some(r"E:\work")).0, Route::Wsl1);
+        assert_eq!(
+            auto_wad_route(&literal, Some(r"E:\work"), None).0,
+            Route::Wsl1
+        );
+    }
+
+    #[test]
+    fn policy_uses_measured_savings_without_permitting_git_mutations() {
+        let policy = RoutePolicyFile {
+            schema_version: 1,
+            evidence: vec![
+                RoutePolicyEvidence {
+                    key: "git:status".to_owned(),
+                    raw_median_ms: 10.0,
+                    candidate_median_ms: 20.0,
+                    token_savings_percent: 0.0,
+                    sample_count: 5,
+                },
+                RoutePolicyEvidence {
+                    key: "rg".to_owned(),
+                    raw_median_ms: 10.0,
+                    candidate_median_ms: 30.0,
+                    token_savings_percent: 80.0,
+                    sample_count: 5,
+                },
+            ],
+        };
+        assert_eq!(
+            auto_wad_route(
+                &[OsString::from("git"), OsString::from("status")],
+                Some(r"E:\work"),
+                Some(&policy)
+            )
+            .0,
+            Route::Raw
+        );
+        assert_eq!(
+            auto_wad_route(
+                &[OsString::from("rg"), OsString::from("needle")],
+                Some(r"E:\work"),
+                Some(&policy)
+            )
+            .0,
+            Route::NativeRtk
+        );
+        assert_eq!(
+            auto_wad_route(
+                &[
+                    OsString::from("git"),
+                    OsString::from("clone"),
+                    OsString::from("url")
+                ],
+                Some(r"E:\work"),
+                Some(&policy)
+            )
+            .0,
+            Route::Raw
+        );
     }
 
     #[test]
