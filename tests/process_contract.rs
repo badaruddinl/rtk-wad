@@ -105,7 +105,17 @@ fn maps_a_temp_windows_worktree_to_the_wsl_current_directory() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected);
-    std::fs::remove_dir_all(directory).expect("temporary Windows worktree is removed");
+    let cleanup_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match std::fs::remove_dir_all(&directory) {
+            Ok(()) => break,
+            Err(error) if Instant::now() < cleanup_deadline => {
+                thread::sleep(Duration::from_millis(100));
+                let _ = error;
+            }
+            Err(error) => panic!("temporary Windows worktree remains locked: {error}"),
+        }
+    }
 }
 
 #[test]
@@ -320,4 +330,60 @@ fn ctrl_break_releases_the_global_lock_for_waiting_children() {
         thread::sleep(Duration::from_millis(100));
     }
     let _ = std::fs::remove_file(ready_file);
+}
+
+#[test]
+fn ctrl_break_cancels_from_a_temp_windows_worktree() {
+    let directory = std::env::temp_dir().join(format!(
+        "rtk-wsl-windows-cancel-contract-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).expect("temporary Windows worktree is created");
+    let ready_file = directory.join("ready");
+    let mut child = command("/bin/sh")
+        .current_dir(&directory)
+        .args(["-c", "sleep 30"])
+        .env("RTK_WSL_TEST_READY_FILE", &ready_file)
+        .creation_flags(CREATE_NEW_PROCESS_GROUP)
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launcher starts from the temporary Windows worktree");
+    let ready_deadline = Instant::now() + Duration::from_secs(45);
+    while !ready_file.exists() {
+        assert!(
+            Instant::now() < ready_deadline,
+            "launcher did not register its Ctrl+Break handler"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
+    assert_ne!(sent, 0, "failed to send CTRL_BREAK_EVENT to launcher");
+    let cancelled = Instant::now();
+    let status = child.wait().expect("interrupted launcher exits");
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("stderr is piped")
+        .read_to_string(&mut stderr)
+        .expect("stderr reads");
+    assert!(
+        cancelled.elapsed() < Duration::from_secs(5),
+        "interrupted launcher exceeded the cancellation deadline: stderr={stderr}"
+    );
+    assert!(
+        !status.success(),
+        "interrupted launcher unexpectedly succeeded"
+    );
+    let cleanup_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match std::fs::remove_dir_all(&directory) {
+            Ok(()) => break,
+            Err(error) if Instant::now() < cleanup_deadline => {
+                thread::sleep(Duration::from_millis(100));
+                let _ = error;
+            }
+            Err(error) => panic!("temporary Windows worktree remains locked: {error}"),
+        }
+    }
 }
