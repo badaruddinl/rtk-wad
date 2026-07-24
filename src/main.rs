@@ -1225,6 +1225,13 @@ fn is_verified_read_only_git(arguments: &[OsString]) -> bool {
     )
 }
 
+fn is_verified_cargo_operation(arguments: &[OsString]) -> bool {
+    matches!(
+        arguments.get(1).and_then(|argument| argument.to_str()),
+        Some("check" | "test" | "clippy")
+    )
+}
+
 fn auto_wad_route(
     arguments: &[OsString],
     current_directory: Option<&str>,
@@ -1241,6 +1248,10 @@ fn auto_wad_route(
     let policy_key = match wad_command_family(arguments) {
         "git" => git_subcommand(arguments).map(|subcommand| format!("git:{subcommand}")),
         "rg" => Some("rg".to_owned()),
+        "cargo" => arguments
+            .get(1)
+            .and_then(|subcommand| subcommand.to_str())
+            .map(|subcommand| format!("cargo:{subcommand}")),
         _ => None,
     };
     if let Some((_key, route)) = policy_key.as_deref().and_then(|key| {
@@ -1250,10 +1261,14 @@ fn auto_wad_route(
     }) {
         let permitted = match route {
             Route::Raw => {
-                wad_command_family(arguments) == "rg" || is_verified_read_only_git(arguments)
+                wad_command_family(arguments) == "rg"
+                    || is_verified_read_only_git(arguments)
+                    || is_verified_cargo_operation(arguments)
             }
             Route::NativeRtk => {
-                wad_command_family(arguments) == "rg" || is_verified_read_only_git(arguments)
+                wad_command_family(arguments) == "rg"
+                    || is_verified_read_only_git(arguments)
+                    || is_verified_cargo_operation(arguments)
             }
             Route::Wsl1 | Route::Wsl2 | Route::Auto => false,
         };
@@ -1951,6 +1966,13 @@ mod tests {
                     token_savings_percent: 80.0,
                     sample_count: 5,
                 },
+                RoutePolicyEvidence {
+                    key: "cargo:check".to_owned(),
+                    raw_median_ms: 10.0,
+                    candidate_median_ms: 30.0,
+                    token_savings_percent: 0.0,
+                    sample_count: 5,
+                },
             ],
         };
         assert_eq!(
@@ -1970,6 +1992,15 @@ mod tests {
             )
             .0,
             Route::NativeRtk
+        );
+        assert_eq!(
+            auto_wad_route(
+                &[OsString::from("cargo"), OsString::from("check")],
+                Some(r"E:\work"),
+                Some(&policy)
+            )
+            .0,
+            Route::Raw
         );
         assert_eq!(
             auto_wad_route(

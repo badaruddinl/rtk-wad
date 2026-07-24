@@ -63,6 +63,10 @@ and losses.
 into the local WAD data directory. It never uses fixture output as performance
 evidence.
 
+`run-cargo-three-way.mjs` measures `cargo check` on a real Windows worktree. It
+requires `--target-dir` on NTFS so build cache churn is isolated from a source
+worktree that may reside on exFAT or another non-NTFS volume.
+
 ## External-service fixture runner
 
 The `fixtures` directory supplies executable doubles for AWS, curl, Docker,

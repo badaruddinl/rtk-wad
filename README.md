@@ -40,6 +40,8 @@ win from token savings alone.
 
 The Windows Cargo route is separately validated on a non-NTFS worktree in
 [the toolchain validation record](docs/TOOLCHAIN_VALIDATION_2026-07-24.md).
+Its three-way decision evidence is recorded in
+[the Cargo check benchmark](docs/BENCHMARK_CARGO_CHECK_2026-07-24.md).
 
 An isolated WSL1 runtime is available as an opt-in development profile. It does
 not convert or modify an existing WSL2 distribution. Enable the Windows WSL1
