@@ -99,5 +99,9 @@ GitHub CLI, GitLab CLI, Kubernetes, OpenShift, PostgreSQL, and wget. Install the
 Windows and WSL fixture directories, then run `run-fixture-three-way.mjs` with
 both paths. WAD receives the Linux fixture directory through
 `RTK_WSL_EXTRA_PATH`; stock RTK receives the Windows fixture directory through
-its child PATH. The fixture runner records the same three-way evidence without
+its child PATH. The fixture runner rotates variants and rejects coverage when a
+variant exits unsuccessfully, raw execution does not receive the exact caller
+argv, or stock RTK and WAD differ in normalized adapter output. RTK may add its
+documented semantic options (such as JSON output), so raw and RTK output are not
+required to be byte-identical. It records the same three-way evidence without
 contacting a network service.

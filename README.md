@@ -48,6 +48,11 @@ The first Node package-manager comparison is recorded in
 selects raw Windows NPM because the tested read-only operation has no token
 saving and lower end-to-end latency.
 
+The external CLI adapters have a separate deterministic, network-free
+[three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
+It proves raw argv and native/WSL RTK equivalence without treating fixture
+timings as live-service routing evidence.
+
 An isolated WSL1 runtime is available as an opt-in development profile. It does
 not convert or modify an existing WSL2 distribution. Enable the Windows WSL1
 component from an elevated PowerShell, restart if requested, provision the
