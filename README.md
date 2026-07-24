@@ -62,6 +62,10 @@ deferred until its path-mapping contract is proven.
 project's actual mapping inside a candidate WSL distribution with structured
 arguments before that provider can be reported as usable.
 
+[PD3 provider-aware execution](docs/PROVIDER_EXECUTION_PD3.md) can use a
+verified existing WSL Go+RTK provider when Windows Go is unavailable. It exits
+cleanly with diagnostics when no safe provider exists; it never installs one.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture

@@ -562,10 +562,22 @@ enum ProviderKind {
     WslRtk,
 }
 
+impl ProviderKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::WindowsRaw => "windows-raw",
+            Self::WindowsRtk => "windows-rtk",
+            Self::WslRaw => "wsl-raw",
+            Self::WslRtk => "wsl-rtk",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 struct ProviderCandidate {
     kind: ProviderKind,
     distro: Option<String>,
+    wsl_version: Option<u8>,
     executable: String,
     rtk: Option<String>,
     project_path: Option<String>,
@@ -760,7 +772,14 @@ fn classify_project_path(path: &str) -> ProjectLocation {
     }
 }
 
-fn current_project_location() -> ProjectLocation {
+fn current_project_location(config: &Config) -> ProjectLocation {
+    if let Some(cwd) = &config.cwd {
+        return ProjectLocation {
+            kind: ProjectLocationKind::Wsl,
+            path: cwd.clone(),
+            distro: Some(config.distro.clone()),
+        };
+    }
     env::current_dir()
         .map(|path| classify_project_path(&path.to_string_lossy()))
         .unwrap_or(ProjectLocation {
@@ -852,7 +871,7 @@ fn wsl_project_path(project: &ProjectLocation, probe: &WslToolProbe) -> Option<S
 }
 
 fn resolve_tool_provider(tool: &str, config: &Config, refresh: bool) -> ProviderResolution {
-    let project = current_project_location();
+    let project = current_project_location(config);
     let (discovery, cache) = cached_or_discovered_tool(tool, config, refresh);
     let availability = discovery.clone();
     let mut candidates = Vec::new();
@@ -865,6 +884,7 @@ fn resolve_tool_provider(tool: &str, config: &Config, refresh: bool) -> Provider
                 ProviderKind::WindowsRaw
             },
             distro: None,
+            wsl_version: None,
             executable,
             rtk: discovery.windows.native_rtk,
             project_path: None,
@@ -888,6 +908,7 @@ fn resolve_tool_provider(tool: &str, config: &Config, refresh: bool) -> Provider
                     ProviderKind::WslRaw
                 },
                 distro: Some(probe.distro),
+                wsl_version: probe.wsl_version,
                 executable: executable.clone(),
                 rtk: probe.rtk,
                 project_path,
@@ -913,6 +934,93 @@ fn resolve_tool_provider(tool: &str, config: &Config, refresh: bool) -> Provider
         candidates,
         recommended,
         install: "disabled_in_pd1",
+    }
+}
+
+enum GoProviderDecision {
+    KeepStaticRoute,
+    UseWsl {
+        route: Route,
+        config: Box<Config>,
+        reason: String,
+    },
+    Missing {
+        reason: String,
+    },
+}
+
+fn is_go_command(arguments: &[OsString]) -> bool {
+    arguments.first().is_some_and(|argument| argument == "go")
+}
+
+fn wsl_route_for_version(version: Option<u8>) -> Option<Route> {
+    match version {
+        Some(1) => Some(Route::Wsl1),
+        Some(2) => Some(Route::Wsl2),
+        _ => None,
+    }
+}
+
+fn go_provider_decision(
+    arguments: &[OsString],
+    config: &Config,
+    static_route: Route,
+) -> GoProviderDecision {
+    if !is_go_command(arguments) || has_wsl_path(arguments) {
+        return GoProviderDecision::KeepStaticRoute;
+    }
+    go_provider_decision_from_resolution(
+        config,
+        static_route,
+        resolve_tool_provider("go", config, false),
+    )
+}
+
+fn go_provider_decision_from_resolution(
+    config: &Config,
+    static_route: Route,
+    resolution: ProviderResolution,
+) -> GoProviderDecision {
+    let windows_is_usable = resolution.project.kind != ProjectLocationKind::Wsl
+        && resolution.availability.windows.executable.is_some()
+        && (static_route != Route::NativeRtk
+            || resolution.availability.windows.native_rtk.is_some());
+    if windows_is_usable {
+        return GoProviderDecision::KeepStaticRoute;
+    }
+    let Some(candidate) = resolution.candidates.iter().find(|candidate| {
+        candidate.usable
+            && candidate.kind == ProviderKind::WslRtk
+            && wsl_route_for_version(candidate.wsl_version).is_some()
+    }) else {
+        return GoProviderDecision::Missing {
+            reason: "Go is unavailable in the safe Windows and WSL providers; run `rtk-wad doctor go` for details. Installation is disabled in PD3.".to_owned(),
+        };
+    };
+    let route = wsl_route_for_version(candidate.wsl_version)
+        .expect("eligible WSL provider has a supported WSL version");
+    let mut selected = config.clone();
+    selected.backend = if route == Route::Wsl1 {
+        WslBackend::Wsl1
+    } else {
+        WslBackend::Wsl2
+    };
+    selected.distro = candidate
+        .distro
+        .clone()
+        .expect("WSL provider candidate has a distro");
+    selected.cwd = candidate.project_path.clone();
+    if selected.rtk_path.is_none() {
+        selected.rtk_path = candidate.rtk.clone();
+    }
+    GoProviderDecision::UseWsl {
+        route,
+        config: Box::new(selected),
+        reason: format!(
+            "on-demand Go discovery selected {} in WSL {} with a verified project path",
+            candidate.kind.as_str(),
+            candidate.distro.as_deref().unwrap_or_default()
+        ),
     }
 }
 
@@ -2103,7 +2211,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         }
     };
     let current_directory = env::current_dir().ok();
-    let (route, reason) = if requested_route == Route::Auto {
+    let (initial_route, initial_reason) = if requested_route == Route::Auto {
         auto_wad_route(
             &arguments,
             current_directory.as_deref().and_then(|path| path.to_str()),
@@ -2112,17 +2220,48 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     } else {
         (requested_route, "explicit route preference")
     };
+    let mut route = initial_route;
+    let mut reason = initial_reason.to_owned();
+    let mut selected_config = configured_wsl_backend(config, route);
+    let mut provider_missing = None;
+    if requested_route == Route::Auto {
+        match go_provider_decision(&arguments, config, route) {
+            GoProviderDecision::KeepStaticRoute => {}
+            GoProviderDecision::UseWsl {
+                route: provider_route,
+                config: provider_config,
+                reason: provider_reason,
+            } => {
+                route = provider_route;
+                selected_config = *provider_config;
+                reason = provider_reason;
+            }
+            GoProviderDecision::Missing {
+                reason: missing_reason,
+            } => {
+                provider_missing = Some(missing_reason.clone());
+                reason = missing_reason;
+            }
+        }
+    }
     if explain {
         println!("route={}", route.as_str());
         println!("reason={reason}");
         println!("command_family={}", wad_command_family(&arguments));
-        return ExitCode::SUCCESS;
+        return if provider_missing.is_some() {
+            ExitCode::from(127)
+        } else {
+            ExitCode::SUCCESS
+        };
     }
     if arguments.is_empty() {
         eprintln!("rtk-wad: no command supplied; use rtk-wad --adapter-info for configuration");
         return ExitCode::FAILURE;
     }
-    let selected_config = configured_wsl_backend(config, route);
+    if let Some(reason) = provider_missing {
+        eprintln!("rtk-wad: {reason}");
+        return ExitCode::from(127);
+    }
     let needs_console_handler = matches!(route, Route::Wsl1 | Route::Wsl2);
     let mut console_installed = false;
     if needs_console_handler && !console::install() {
@@ -2933,5 +3072,88 @@ mod tests {
                 OsString::from(r"E:\work with spaces\$literal"),
             ]
         );
+    }
+
+    #[test]
+    fn provider_aware_go_routing_uses_only_a_complete_verified_wsl_candidate() {
+        let config = default_config();
+        let resolution = ProviderResolution {
+            schema_version: PROVIDER_CACHE_SCHEMA_VERSION,
+            tool: "go".to_owned(),
+            cache: "miss",
+            project: ProjectLocation {
+                kind: ProjectLocationKind::Windows,
+                path: r"E:\work".to_owned(),
+                distro: None,
+            },
+            availability: ProviderCacheEntry {
+                tool: "go".to_owned(),
+                observed_unix_seconds: 1,
+                windows: WindowsToolProbe {
+                    executable: None,
+                    native_rtk: None,
+                },
+                wsl: Vec::new(),
+            },
+            candidates: vec![ProviderCandidate {
+                kind: ProviderKind::WslRtk,
+                distro: Some("Ubuntu-22.04".to_owned()),
+                wsl_version: Some(2),
+                executable: "/usr/local/go/bin/go".to_owned(),
+                rtk: Some("/usr/local/bin/rtk".to_owned()),
+                project_path: Some("/mnt/e/work".to_owned()),
+                usable: true,
+                reason: "fixture".to_owned(),
+            }],
+            recommended: Some(0),
+            install: "disabled_in_pd1",
+        };
+        match go_provider_decision_from_resolution(&config, Route::Raw, resolution) {
+            GoProviderDecision::UseWsl {
+                route,
+                config,
+                reason,
+            } => {
+                assert_eq!(route, Route::Wsl2);
+                assert_eq!(config.distro, "Ubuntu-22.04");
+                assert_eq!(config.cwd.as_deref(), Some("/mnt/e/work"));
+                assert_eq!(config.rtk_path.as_deref(), Some("/usr/local/bin/rtk"));
+                assert!(reason.contains("verified project path"));
+            }
+            _ => panic!("expected verified WSL provider selection"),
+        }
+    }
+
+    #[test]
+    fn provider_aware_go_routing_reports_missing_without_an_install_action() {
+        let resolution = ProviderResolution {
+            schema_version: PROVIDER_CACHE_SCHEMA_VERSION,
+            tool: "go".to_owned(),
+            cache: "miss",
+            project: ProjectLocation {
+                kind: ProjectLocationKind::Windows,
+                path: r"E:\work".to_owned(),
+                distro: None,
+            },
+            availability: ProviderCacheEntry {
+                tool: "go".to_owned(),
+                observed_unix_seconds: 1,
+                windows: WindowsToolProbe {
+                    executable: None,
+                    native_rtk: None,
+                },
+                wsl: Vec::new(),
+            },
+            candidates: Vec::new(),
+            recommended: None,
+            install: "disabled_in_pd1",
+        };
+        match go_provider_decision_from_resolution(&default_config(), Route::Raw, resolution) {
+            GoProviderDecision::Missing { reason } => {
+                assert!(reason.contains("Installation is disabled in PD3"));
+                assert!(reason.contains("doctor go"));
+            }
+            _ => panic!("expected a missing-provider diagnostic"),
+        }
     }
 }

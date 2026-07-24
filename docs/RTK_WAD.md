@@ -92,6 +92,11 @@ the structured `wsl.exe --exec` form before it marks a WSL provider usable.
 This is still diagnostic-only; see
 [`PROVIDER_RESOLUTION_PD2.md`](PROVIDER_RESOLUTION_PD2.md).
 
+PD3 uses a complete verified Go provider for automatic execution only when
+Windows Go is unavailable. A missing safe provider exits `127` before a child
+starts; installation remains disabled. See
+[`PROVIDER_EXECUTION_PD3.md`](PROVIDER_EXECUTION_PD3.md).
+
 ## Shell and argv safety
 
 Use structured RTK commands such as `git`, `rg`, `grep`, `find`, `ls`, `tree`,
