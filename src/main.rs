@@ -1334,7 +1334,7 @@ fn auto_wad_route(
         }
     }
     match wad_command_family(arguments) {
-        "npm" | "npx" | "pnpm" | "go" => (
+        "npm" | "npx" | "pnpm" | "go" | "dotnet" => (
             Route::Raw,
             "validated Windows toolchain fallback avoids an unavailable WSL toolchain",
         ),
@@ -2006,6 +2006,10 @@ mod tests {
         );
         assert_eq!(
             auto_wad_route(&[OsString::from("go")], Some(r"E:\work"), None).0,
+            Route::Raw
+        );
+        assert_eq!(
+            auto_wad_route(&[OsString::from("dotnet")], Some(r"E:\work"), None).0,
             Route::Raw
         );
 

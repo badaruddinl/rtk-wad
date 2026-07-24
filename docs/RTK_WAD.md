@@ -41,7 +41,7 @@ WAD falls back to WSL1 only when Windows reports `NotFound` while starting the
 native process. No child has started in that case. An explicit `native-rtk`
 route always fails directly if its configured executable is unavailable.
 
-`npm`, `npx`, `pnpm`, and `go` are validated Windows raw routes while WSL1 has
+`npm`, `npx`, `pnpm`, `go`, and `dotnet` are validated Windows raw routes while WSL1 has
 no matching toolchain. They are still eligible for future evidence-backed native RTK
 promotion; raw is selected now because it executes once and avoids an otherwise
 guaranteed WSL tool-not-found failure.
