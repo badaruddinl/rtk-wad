@@ -38,6 +38,9 @@ The first real-corpus comparison is available in
 reports both token wins and the dispatcher latency cost; do not infer a speed
 win from token savings alone.
 
+The Windows Cargo route is separately validated on a non-NTFS worktree in
+[the toolchain validation record](docs/TOOLCHAIN_VALIDATION_2026-07-24.md).
+
 An isolated WSL1 runtime is available as an opt-in development profile. It does
 not convert or modify an existing WSL2 distribution. Enable the Windows WSL1
 component from an elevated PowerShell, restart if requested, provision the

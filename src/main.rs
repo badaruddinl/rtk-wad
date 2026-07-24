@@ -1277,7 +1277,7 @@ fn auto_wad_route(
             Route::Raw,
             "Git command is not in the verified read-only allowlist; execute once with native Git",
         ),
-        "rg" | "grep" | "find" | "ls" | "tree" | "read" | "files" | "diff" => (
+        "rg" | "grep" | "find" | "ls" | "tree" | "read" | "files" | "diff" | "cargo" => (
             Route::NativeRtk,
             "structured native RTK adapter avoids the Windows shell parser",
         ),
@@ -1908,6 +1908,16 @@ mod tests {
         ];
         assert_eq!(
             auto_wad_route(&read_only, Some(r"E:\work"), None).0,
+            Route::NativeRtk
+        );
+
+        let cargo = vec![
+            OsString::from("cargo"),
+            OsString::from("check"),
+            OsString::from("--version"),
+        ];
+        assert_eq!(
+            auto_wad_route(&cargo, Some(r"E:\work"), None).0,
             Route::NativeRtk
         );
 
