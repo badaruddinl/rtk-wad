@@ -56,6 +56,12 @@ location is `%LOCALAPPDATA%\rtk-wsl\Ubuntu-RTK-WSL1` on NTFS. WSL1 expands its
 root filesystem into ordinary host files and must not be installed on exFAT.
 Existing WSL2 distros are never converted or terminated.
 
+The runtime location and project location are separate concerns. Projects may
+remain on NTFS, exFAT, ReFS, or another Windows filesystem that WSL exposes
+through DrvFS. The profile is validated against the Flowpeek checkout on the
+exFAT `E:` volume. Only the WSL1 Linux root filesystem requires the host
+semantics provided by NTFS on this system.
+
 The source checkout may remain on exFAT, but Rust build artifacts should use an
 NTFS `CARGO_TARGET_DIR`. Cargo incremental hard-link behavior is not reliable on
 the validated exFAT volume and can leave a stale executable timestamp.
@@ -147,6 +153,13 @@ the bridge kills the child proxy, terminates only the dedicated
 the WSL1 transport before the queued command starts. The distro must remain
 dedicated to RTK because cancellation intentionally ends every process inside
 that isolated runtime.
+
+The Windows mutex makes Linux `flock` redundant for WSL1, and dedicated-distro
+termination makes a Linux process group redundant for cancellation. The
+optimized WSL1 launch therefore uses a small shell only to resolve the selected
+user's home and establish a clean environment, then directly executes RTK. This
+preserves portable user and path overrides without the previous `setsid` and
+`flock` startup cost.
 
 WSL2 retains the original Linux process-group signal contract and is never
 terminated by this profile-specific lifecycle.

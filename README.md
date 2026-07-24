@@ -83,7 +83,10 @@ retain a backend-specific cancellation and lock-release contract. WSL2 uses the
 dedicated Linux process group and never terminates the distro. The WSL1 profile
 uses a Windows named mutex and a separate Windows process group; cancellation
 terminates only the dedicated `Ubuntu-RTK-WSL1` runtime because Store WSL1 cannot
-reliably create a concurrent signal-helper session.
+reliably create a concurrent signal-helper session. Because the Windows mutex
+already serializes WSL1 and cancellation resets the dedicated distro, the WSL1
+launch path skips the redundant Linux `setsid` and `flock` layers. WSL2 retains
+the Linux process-group and lock contract.
 
 Run `rtk-wsl --bridge-info` or `rtk-wsl1 --bridge-info` to print the selected
 backend, distribution, detected WSL version, and Git mode. Diagnostics fail when

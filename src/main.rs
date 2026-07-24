@@ -53,6 +53,21 @@ done
 status=$?
 exit "$status"
 "#;
+const WSL1_LAUNCH_SCRIPT: &str = r#"
+rtk_path=$1
+shift
+
+if [ -z "$rtk_path" ]; then
+    rtk_path="$HOME/.local/bin/rtk"
+fi
+
+user=${USER:-}
+exec /usr/bin/env -i \
+    HOME="$HOME" \
+    USER="$user" \
+    PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    "$rtk_path" "$@"
+"#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GitMode {
@@ -355,16 +370,18 @@ fn should_use_native_git(
     }
 }
 
-fn rtk_arguments(arguments: Vec<OsString>, config: &Config, cancel_token: &str) -> Vec<OsString> {
+fn forwarded_rtk_arguments(arguments: Vec<OsString>) -> Vec<OsString> {
     let mut forwarded = arguments;
-
     if forwarded
         .first()
         .is_some_and(|argument| argument == "stats")
     {
         forwarded[0] = OsString::from("gain");
     }
+    forwarded
+}
 
+fn wsl_launch_prefix(config: &Config) -> Vec<OsString> {
     let mut command = vec![OsString::from("-d"), OsString::from(&config.distro)];
     if let Some(user) = &config.user {
         command.extend([OsString::from("-u"), OsString::from(user)]);
@@ -377,6 +394,12 @@ fn rtk_arguments(arguments: Vec<OsString>, config: &Config, cancel_token: &str) 
     if let Some(wsl_directory) = working_directory {
         command.extend([OsString::from("--cd"), OsString::from(wsl_directory)]);
     }
+    command
+}
+
+fn rtk_arguments(arguments: Vec<OsString>, config: &Config, cancel_token: &str) -> Vec<OsString> {
+    let forwarded = forwarded_rtk_arguments(arguments);
+    let mut command = wsl_launch_prefix(config);
     command.extend([
         OsString::from("--exec"),
         OsString::from("/usr/bin/setsid"),
@@ -389,6 +412,21 @@ fn rtk_arguments(arguments: Vec<OsString>, config: &Config, cancel_token: &str) 
         OsString::from(&config.lock_path),
         OsString::from(config.rtk_path.as_deref().unwrap_or("")),
         OsString::from(cancel_token),
+    ]);
+    command.extend(forwarded);
+    command
+}
+
+fn wsl1_rtk_arguments(arguments: Vec<OsString>, config: &Config) -> Vec<OsString> {
+    let forwarded = forwarded_rtk_arguments(arguments);
+    let mut command = wsl_launch_prefix(config);
+    command.extend([
+        OsString::from("--exec"),
+        OsString::from("/bin/sh"),
+        OsString::from("-c"),
+        OsString::from(WSL1_LAUNCH_SCRIPT),
+        OsString::from("rtk-wsl1"),
+        OsString::from(config.rtk_path.as_deref().unwrap_or("")),
     ]);
     command.extend(forwarded);
     command
@@ -659,7 +697,7 @@ fn main() -> ExitCode {
             .spawn()
             .and_then(|mut child| child.wait())
     } else if use_native_wsl1_bridge {
-        wsl1_process(rtk_arguments(arguments, &config, &token))
+        wsl1_process(wsl1_rtk_arguments(arguments, &config))
             .spawn()
             .and_then(|child| {
                 trace(format!("started WSL1 wsl.exe process {}", child.id()));
@@ -710,6 +748,36 @@ mod tests {
         assert!(arguments.contains(&OsString::from(LAUNCH_SCRIPT)));
         assert!(arguments.contains(&OsString::from("semi;and&dollar$HOME")));
         assert!(arguments.contains(&OsString::from("C:\\Program Files\\Example")));
+    }
+
+    #[test]
+    fn wsl1_launch_uses_the_windows_mutex_without_redundant_linux_locking() {
+        let config = Config::from_lookup_with_executable(|_| None, Some("rtk-wsl1.exe")).unwrap();
+        let command = wsl1_rtk_arguments(
+            vec![
+                OsString::from("proxy"),
+                OsString::from("/usr/bin/printf"),
+                OsString::from("%s"),
+                OsString::from("space & $HOME"),
+            ],
+            &config,
+        );
+        let strings = command
+            .iter()
+            .map(|value| value.to_string_lossy())
+            .collect::<Vec<_>>();
+
+        assert!(
+            strings
+                .iter()
+                .any(|value| value.contains("exec /usr/bin/env"))
+        );
+        assert!(!strings.iter().any(|value| value.contains("/usr/bin/flock")));
+        assert!(!strings.iter().any(|value| value == "/usr/bin/setsid"));
+        assert_eq!(
+            strings.last().map(|value| value.as_ref()),
+            Some("space & $HOME")
+        );
     }
 
     #[test]

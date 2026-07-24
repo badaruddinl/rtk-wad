@@ -51,8 +51,8 @@ The release build is installed as an independent command:
 
 ```text
 Path: C:\Users\badaruddinl\.local\bin\rtk-wsl1.exe
-Bytes: 284672
-SHA-256: 8EF93500A2F24914EC3E3D2C78E0BBFFB560CF9EB37A7FAD8351F31AF6200FA4
+Bytes: 287744
+SHA-256: 347C06F9B7834ED8E4C4362E836E9A4986CA41EBC61781051F34660A63519C08
 ```
 
 The normal `rtk-wsl.exe` installation was not replaced.
@@ -83,7 +83,7 @@ git version 2.50.1.windows.1
 
 | Gate | Result |
 |---|---|
-| Rust unit tests | 13 passed |
+| Rust unit tests | 14 passed |
 | Windows/WSL2 process tests | 6 passed |
 | Windows/WSL1 process tests | 6 passed |
 | Clippy with warnings denied | Passed |
@@ -134,6 +134,44 @@ After terminating only the dedicated WSL1 distro, the first WSL1 query completed
 in 714.932 ms and the immediately repeated query completed in 332.841 ms. The
 existing WSL2 `vmmemWSL` working set did not increase during either query; WSL1
 does not allocate a separate utility VM.
+
+## Native Windows RTK and Optimized WSL1 Result
+
+RTK 0.43.0 source and a controlled ten-case argument probe identified two
+distinct contracts:
+
+- structured `rtk proxy` and specialized commands preserve argument boundaries;
+- `rtk run` reconstructs a command string and invokes `cmd /C` on Windows;
+- single-string `rtk proxy` reparses its value with a POSIX-style splitter.
+
+Structured proxy preserved 10 of 10 cases. Single-string proxy preserved 5 of
+10, while both `run` forms preserved 3 of 10. Failures included spaces, empty
+arguments, Windows paths, environment expansion, and command metacharacters.
+
+Layer profiling showed that WSL1 already had a Windows named mutex and
+dedicated-distro cancellation, making Linux `setsid` and `flock` redundant. The
+optimized WSL1 path removes only those redundant layers.
+
+On the same Flowpeek query, one warm-up and five measured runs produced:
+
+| Path | Median |
+|---|---:|
+| Raw Windows ripgrep | 100.307 ms |
+| Native Windows RTK | 181.467 ms |
+| Direct WSL1 RTK | 291.241 ms |
+| Previous WSL1 bridge | 371.894 ms |
+| Optimized WSL1 bridge | 306.070 ms |
+| WSL2 bridge | 918.083 ms |
+
+The optimized bridge was 17.7% faster than the previous WSL1 bridge in the
+layer-isolation run and remained within 14.829 ms of direct WSL1 RTK.
+
+The final four-workload benchmark used `o200k_base` rather than the prior
+four-bytes-per-token estimate. The optimized WSL1 path reduced the
+`graphVersion` search from 16,466 to 5,086 tokens, saving 11,380 tokens (69.1%),
+with median latency improving from 416.933 to 315.482 ms. The broad source query
+fell from 248,209 to 5,689 tokens, saving 242,520 tokens (97.7%), with median
+latency improving from 478.106 to 401.736 ms.
 
 ## Promotion Decision
 
