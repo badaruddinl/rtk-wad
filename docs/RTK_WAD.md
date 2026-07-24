@@ -46,6 +46,10 @@ no matching toolchain. They are still eligible for future evidence-backed native
 promotion; raw is selected now because it executes once and avoids an otherwise
 guaranteed WSL tool-not-found failure.
 
+`dart` and `flutter` are WAD-owned Windows tool shims, not upstream RTK command
+families. They likewise execute their `.bat` launchers once with structured argv;
+this keeps Flutter Windows workflows out of the WSL shell path.
+
 `RTK_WAD_ROUTE` sets the default route (`auto`, `raw`, `native-rtk`, `wsl1`, or
 `wsl2`). A leading `--route` option has higher precedence for a single
 invocation. `RTK_WAD_NATIVE_RTK_PATH` selects the stock native RTK executable;

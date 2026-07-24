@@ -1334,7 +1334,7 @@ fn auto_wad_route(
         }
     }
     match wad_command_family(arguments) {
-        "npm" | "npx" | "pnpm" | "go" | "dotnet" => (
+        "npm" | "npx" | "pnpm" | "go" | "dotnet" | "dart" | "flutter" => (
             Route::Raw,
             "validated Windows toolchain fallback avoids an unavailable WSL toolchain",
         ),
@@ -1411,6 +1411,8 @@ fn run_raw(arguments: &[OsString]) -> std::io::Result<ExitStatus> {
         Some("npm") => OsString::from("npm.cmd"),
         Some("npx") => OsString::from("npx.cmd"),
         Some("pnpm") => OsString::from("pnpm.cmd"),
+        Some("dart") => OsString::from("dart.bat"),
+        Some("flutter") => OsString::from("flutter.bat"),
         _ => program.clone(),
     };
     Command::new(executable)
@@ -2010,6 +2012,14 @@ mod tests {
         );
         assert_eq!(
             auto_wad_route(&[OsString::from("dotnet")], Some(r"E:\work"), None).0,
+            Route::Raw
+        );
+        assert_eq!(
+            auto_wad_route(&[OsString::from("dart")], Some(r"E:\work"), None).0,
+            Route::Raw
+        );
+        assert_eq!(
+            auto_wad_route(&[OsString::from("flutter")], Some(r"E:\work"), None).0,
             Route::Raw
         );
 
