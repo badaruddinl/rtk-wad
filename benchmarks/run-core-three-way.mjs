@@ -165,7 +165,7 @@ const policyEvidence = Object.values(summaries.reduce((grouped, { workload, vari
   const evidence = {
     key,
     raw_median_ms: variants.raw.median_ms,
-    candidate_median_ms: variants.native_rtk.median_ms,
+    candidate_median_ms: variants.rtk_wad_auto.median_ms,
     token_savings_percent: variants.native_rtk.token_savings_percent,
     sample_count: variants.raw.runs,
   };

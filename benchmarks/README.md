@@ -65,7 +65,9 @@ evidence.
 
 `run-cargo-three-way.mjs` measures `cargo check` on a real Windows worktree. It
 requires `--target-dir` on NTFS so build cache churn is isolated from a source
-worktree that may reside on exFAT or another non-NTFS volume.
+worktree that may reside on exFAT or another non-NTFS volume. Set
+`RTK_WAD_BENCH_CARGO` to an explicit `cargo.exe` when the selected toolchain is
+not already on `PATH`.
 
 ## External-service fixture runner
 

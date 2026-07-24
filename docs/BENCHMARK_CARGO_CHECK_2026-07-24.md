@@ -10,8 +10,9 @@ samples against the same worktree and cache.
 | Stock Windows RTK | 318.154 | 30 | 0 |
 | RTK-WAD before policy | 441.590 | 30 | 0 |
 
-The generated evidence therefore selects raw execution for `cargo:check`: it
-is faster and emits fewer tokens for this warmed corpus. This is a local policy
+The generated evidence compares raw execution with the end-to-end WAD route and
+therefore selects raw execution for `cargo:check`: it is faster and emits fewer
+tokens for this warmed corpus. This is a local policy
 decision, not a universal claim about Cargo diagnostics. A different project or
 error-heavy build may produce different evidence and can replace the local
 policy after its own benchmark run.
