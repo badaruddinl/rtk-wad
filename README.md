@@ -1,6 +1,6 @@
 # rtk-wsl
 
-Native Windows launcher for the Linux RTK binary in WSL. It uses `wsl.exe --exec` and forwards every argument as structured process arguments; it does not rebuild a shell command string.
+Native Windows launcher for the Linux RTK binary in WSL. It uses `wsl.exe --exec` and forwards every argument as structured process arguments; it does not rebuild a shell command string. Git commands started from a Windows-drive worktree use native `git.exe` by default, avoiding WSL `/mnt/<drive>` traversal and CRLF-index mismatches; every other RTK command remains in WSL.
 
 Current milestone: `0.1.0-alpha.2`. Project home: `https://github.com/badaruddinl/rtk-wsl`.
 
@@ -41,11 +41,20 @@ By default, the launcher uses the selected distro's default user and that user's
 - `RTK_WSL_LOCK_PATH` (default: `/tmp/rtk-wsl.lock`)
 - `RTK_WSL_LOCK_WAIT_SECONDS` (default: `120`)
 - `RTK_WSL_CWD` (optional; an absolute Linux path for UNC shares or custom WSL mounts)
+- `RTK_WSL_GIT_MODE` (`auto`, default; `native`; or `wsl`)
 
 Every configured Linux path must be absolute. Empty values and a non-positive lock
 timeout are rejected before WSL starts. The default path is derived by the fixed
 launcher script from the selected WSL user's existing `HOME`; it does not probe or
 cache user information for each invocation.
+
+`RTK_WSL_GIT_MODE=auto` selects `git.exe` only when the caller is in a normal
+Windows-drive worktree and no WSL `-C`, `--git-dir`, or `--work-tree` path is
+supplied. This preserves exact Git argv and the user's Windows Git configuration.
+Use `wsl` for a Linux worktree or when WSL Git is intentionally required; use
+`native` to force native Git from another supported Windows context.
+Native Git keeps the ordinary Windows console cancellation behavior; WSL commands
+retain the dedicated Linux-process-group interruption and lock-release contract.
 
 ## Alpha verification
 

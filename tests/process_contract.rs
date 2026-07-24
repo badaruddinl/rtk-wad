@@ -68,6 +68,23 @@ fn supports_stdin_for_a_simple_interactive_command() {
 }
 
 #[test]
+fn routes_git_from_a_windows_worktree_to_native_git_with_structured_arguments() {
+    let output = Command::new(launcher())
+        .env("RTK_WSL_DISTRO", "missing-test-distro")
+        .args(["git", "--version"])
+        .output()
+        .expect("native Git route starts");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).starts_with("git version "));
+}
+
+#[test]
 fn ctrl_break_releases_the_global_lock_for_waiting_children() {
     let mut first = command("/bin/sh")
         .args(["-c", "sleep 30"])

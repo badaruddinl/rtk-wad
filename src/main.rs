@@ -7,6 +7,7 @@ use std::time::Duration;
 const DEFAULT_DISTRO: &str = "Ubuntu";
 const DEFAULT_LOCK_PATH: &str = "/tmp/rtk-wsl.lock";
 const DEFAULT_LOCK_WAIT_SECONDS: &str = "120";
+const DEFAULT_GIT_MODE: &str = "auto";
 const CANCEL_SCRIPT: &str = r#"
 if [ -r "$1" ]; then
     worker=$(cat "$1")
@@ -42,6 +43,13 @@ exit "$status"
 "#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum GitMode {
+    Auto,
+    Wsl,
+    Native,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Config {
     distro: String,
     user: Option<String>,
@@ -49,6 +57,7 @@ struct Config {
     lock_path: String,
     lock_wait: String,
     cwd: Option<String>,
+    git_mode: GitMode,
 }
 
 impl Config {
@@ -67,6 +76,13 @@ impl Config {
             DEFAULT_LOCK_WAIT_SECONDS,
         )?;
         let cwd = optional_absolute_path(&lookup, "RTK_WSL_CWD")?;
+        let git_mode =
+            match required_setting(&lookup, "RTK_WSL_GIT_MODE", DEFAULT_GIT_MODE)?.as_str() {
+                "auto" => GitMode::Auto,
+                "wsl" => GitMode::Wsl,
+                "native" => GitMode::Native,
+                _ => return Err("RTK_WSL_GIT_MODE must be auto, wsl, or native".to_owned()),
+            };
 
         if lock_wait
             .parse::<u64>()
@@ -84,6 +100,7 @@ impl Config {
             lock_path,
             lock_wait,
             cwd,
+            git_mode,
         })
     }
 }
@@ -135,7 +152,8 @@ fn required_absolute_path(
 }
 
 fn windows_path_to_wsl_path(path: &str) -> Option<String> {
-    let normalized = path.replace('\\', "/");
+    let replaced = path.replace('\\', "/");
+    let normalized = replaced.strip_prefix("//?/").unwrap_or(&replaced);
     let bytes = normalized.as_bytes();
     if bytes.len() < 3 || bytes[1] != b':' || bytes[2] != b'/' || !bytes[0].is_ascii_alphabetic() {
         return None;
@@ -145,6 +163,39 @@ fn windows_path_to_wsl_path(path: &str) -> Option<String> {
         (bytes[0] as char).to_ascii_lowercase(),
         &normalized[3..]
     ))
+}
+
+fn is_wsl_path(value: &OsString) -> bool {
+    value.to_string_lossy().starts_with('/')
+}
+
+fn git_uses_wsl_directory(arguments: &[OsString]) -> bool {
+    arguments.windows(2).any(|pair| {
+        (pair[0] == "-C" || pair[0] == "--git-dir" || pair[0] == "--work-tree")
+            && is_wsl_path(&pair[1])
+    })
+}
+
+fn should_use_native_git(
+    arguments: &[OsString],
+    config: &Config,
+    current_directory: Option<&str>,
+) -> bool {
+    if arguments.first().is_none_or(|argument| argument != "git")
+        || git_uses_wsl_directory(arguments)
+    {
+        return false;
+    }
+    match config.git_mode {
+        GitMode::Native => true,
+        GitMode::Wsl => false,
+        GitMode::Auto => {
+            config.cwd.is_none()
+                && current_directory
+                    .and_then(windows_path_to_wsl_path)
+                    .is_some()
+        }
+    }
 }
 
 fn rtk_arguments(arguments: Vec<OsString>, config: &Config, cancel_token: &str) -> Vec<OsString> {
@@ -258,20 +309,26 @@ fn request_linux_interrupt(config: &Config, token: &str) {
         .status();
 }
 
-fn wait_for_child(mut child: Child, config: &Config, token: &str) -> std::io::Result<ExitStatus> {
+fn wait_for_wsl_child(
+    mut child: Child,
+    config: &Config,
+    token: &str,
+) -> std::io::Result<ExitStatus> {
+    let mut interrupted = false;
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(status);
         }
-        if console::requested() {
+        if console::requested() && !interrupted {
             request_linux_interrupt(config, token);
+            interrupted = true;
         }
         thread::sleep(Duration::from_millis(50));
     }
 }
 
 fn main() -> ExitCode {
-    let arguments = env::args_os().skip(1).collect();
+    let arguments: Vec<OsString> = env::args_os().skip(1).collect();
     let config = match Config::from_env() {
         Ok(config) => config,
         Err(error) => {
@@ -279,16 +336,31 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if !console::install() {
+    let current_directory = env::current_dir().ok();
+    let use_native_git = should_use_native_git(
+        &arguments,
+        &config,
+        current_directory.as_deref().and_then(|path| path.to_str()),
+    );
+    if !use_native_git && !console::install() {
         eprintln!("rtk-wsl: unable to register the Windows console cancellation handler");
         return ExitCode::FAILURE;
     }
     let token = cancel_token();
-    let result = Command::new("wsl.exe")
-        .args(rtk_arguments(arguments, &config, &token))
-        .spawn()
-        .and_then(|child| wait_for_child(child, &config, &token));
-    console::uninstall();
+    let result = if use_native_git {
+        Command::new("git.exe")
+            .args(arguments.iter().skip(1))
+            .spawn()
+            .and_then(|mut child| child.wait())
+    } else {
+        Command::new("wsl.exe")
+            .args(rtk_arguments(arguments, &config, &token))
+            .spawn()
+            .and_then(|child| wait_for_wsl_child(child, &config, &token))
+    };
+    if !use_native_git {
+        console::uninstall();
+    }
     match result {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
@@ -344,6 +416,10 @@ mod tests {
         assert_eq!(
             windows_path_to_wsl_path(r"F:\path with spaces\漢字"),
             Some("/mnt/f/path with spaces/漢字".to_owned())
+        );
+        assert_eq!(
+            windows_path_to_wsl_path(r"\\?\E:\projects\rtk-wsl"),
+            Some("/mnt/e/projects/rtk-wsl".to_owned())
         );
         assert_eq!(windows_path_to_wsl_path(r"\\server\share"), None);
     }
@@ -406,5 +482,47 @@ mod tests {
         let arguments = cancel_arguments(&default_config(), "/tmp/rtk-wsl-42.cancel");
         assert!(arguments.contains(&OsString::from(CANCEL_SCRIPT)));
         assert!(arguments.contains(&OsString::from("/tmp/rtk-wsl-42.cancel")));
+    }
+
+    #[test]
+    fn routes_windows_worktree_git_to_native_git_by_default() {
+        assert!(should_use_native_git(
+            &[OsString::from("git"), OsString::from("status")],
+            &default_config(),
+            Some(r"E:\luthfi\project\flowpeek"),
+        ));
+    }
+
+    #[test]
+    fn keeps_explicit_wsl_git_paths_and_wsl_mode_in_wsl() {
+        assert!(!should_use_native_git(
+            &[
+                OsString::from("git"),
+                OsString::from("-C"),
+                OsString::from("/mnt/e/project"),
+                OsString::from("status")
+            ],
+            &default_config(),
+            Some(r"E:\luthfi\project\flowpeek"),
+        ));
+        let config = Config::from_lookup(|name| match name {
+            "RTK_WSL_GIT_MODE" => Some("wsl".to_owned()),
+            _ => None,
+        })
+        .expect("WSL Git mode is valid");
+        assert!(!should_use_native_git(
+            &[OsString::from("git"), OsString::from("status")],
+            &config,
+            Some(r"E:\luthfi\project\flowpeek"),
+        ));
+    }
+
+    #[test]
+    fn validates_git_mode() {
+        let invalid = Config::from_lookup(|name| match name {
+            "RTK_WSL_GIT_MODE" => Some("other".to_owned()),
+            _ => None,
+        });
+        assert!(invalid.is_err());
     }
 }
