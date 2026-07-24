@@ -1334,9 +1334,9 @@ fn auto_wad_route(
         }
     }
     match wad_command_family(arguments) {
-        "npm" | "npx" | "pnpm" => (
+        "npm" | "npx" | "pnpm" | "go" => (
             Route::Raw,
-            "validated Windows Node fallback avoids an unavailable WSL toolchain",
+            "validated Windows toolchain fallback avoids an unavailable WSL toolchain",
         ),
         "git" if is_verified_read_only_git(arguments) => (
             Route::NativeRtk,
@@ -2002,6 +2002,10 @@ mod tests {
         );
         assert_eq!(
             auto_wad_route(&[OsString::from("pnpm")], Some(r"E:\work"), None).0,
+            Route::Raw
+        );
+        assert_eq!(
+            auto_wad_route(&[OsString::from("go")], Some(r"E:\work"), None).0,
             Route::Raw
         );
 
