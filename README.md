@@ -48,6 +48,11 @@ The first Node package-manager comparison is recorded in
 selects raw Windows NPM because the tested read-only operation has no token
 saving and lower end-to-end latency.
 
+[The Go, Dart, and Flutter adapter benchmark](docs/BENCHMARK_GO_DART_FLUTTER_2026-07-24.md)
+records real-project evidence for the Windows SDK shims. Its exact `go test
+./...` policy is token-first; Dart and Flutter retain raw Windows execution
+because they are WAD-owned shims with no stock RTK equivalent.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture

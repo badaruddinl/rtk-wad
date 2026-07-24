@@ -18,3 +18,9 @@ token-heavy searches.
 
 This is dogfood evidence, not a universal performance claim. The isolated
 ledger and policy are intentionally local and ignored by Git.
+
+An additional isolated toolchain cycle used the generated five-sample
+`go:test-all` policy on `go-practice`. `rtk-wad go test ./...` selected native
+RTK, exited successfully, and reported the compact `Go test: No tests found`
+result. The near-miss `go test` form remained raw, proving that the promotion
+does not broaden beyond the benchmarked argv contract.

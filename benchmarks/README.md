@@ -92,6 +92,52 @@ node .\benchmarks\run-npm-run-list-three-way.mjs `
 Set `RTK_WAD_BENCH_NPM` to an explicit `npm.cmd` only when it is not available
 on `PATH`.
 
+## Generic toolchain runner
+
+`run-toolchain-three-way.mjs` records the same latency, exit, output-hash, and
+`o200k_base` evidence for a pinned toolchain workload. It asserts that raw
+Windows and WAD output are identical. Use its normal three-way form only for a
+top-level stock RTK command, such as `go`. Use `--without-native` for WAD-owned
+Windows shims such as `dart` and `flutter`: stock RTK v0.43.0 has no equivalent
+top-level command, so treating a rejection as a benchmark result would be
+misleading.
+
+```powershell
+node .\benchmarks\run-toolchain-three-way.mjs `
+  --tool go `
+  --repo E:\luthfi\project\go-practice `
+  --native-rtk C:\tools\rtk.exe `
+  --wad C:\tools\rtk-wad.exe `
+  --python C:\path\to\python.exe `
+  --output .\benchmarks\results\go-test.json `
+  -- test ./...
+```
+
+Pass `--policy-key` only for an exactly verified command form with a stock RTK
+comparison; the runner then emits a one-key route-policy artifact. Static raw
+fallbacks remain compatibility defaults until repeated real-project evidence
+justifies such a narrow policy rule. A policy run adds an explicit WAD
+`native-rtk` candidate sample, so its latency includes dispatcher and local
+accounting overhead rather than reusing the stock RTK latency. Each command has
+a 60-second default process-tree deadline; pass
+`--timeout-ms` to record a stricter or looser operational limit. A timeout is a
+failed measurement and never becomes release evidence.
+
+`--skip-warmup` is permitted only after one successful raw and one successful
+WAD warm-up have been run separately and recorded in the release note. It
+exists for slow workloads whose complete three-way execution would exceed the
+host command deadline; it never lowers the five measured-round requirement.
+The runner isolates only WAD's ledger via `RTK_WAD_STATE_DIR`; it intentionally
+does not replace `LOCALAPPDATA`, so raw Windows toolchains retain their normal
+per-user caches.
+
+The default comparison is byte-exact. The only current exceptions are
+`--normalizer dart-format-duration` and `--normalizer flutter-analysis-duration`:
+they replace the respective elapsed-time field before semantic comparison while
+retaining the unmodified output hashes. Do not add a normalizer merely to make
+a benchmark pass; it must remove only a documented, non-semantic volatile
+field.
+
 ## External-service fixture runner
 
 The `fixtures` directory supplies executable doubles for AWS, curl, Docker,

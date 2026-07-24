@@ -496,10 +496,14 @@ impl RoutePolicyFile {
 }
 
 fn wad_data_root() -> PathBuf {
-    env::var_os("LOCALAPPDATA")
+    env::var_os("RTK_WAD_STATE_DIR")
         .map(PathBuf::from)
+        .or_else(|| {
+            env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .map(|root| root.join("rtk-wad"))
+        })
         .unwrap_or_else(env::temp_dir)
-        .join("rtk-wad")
 }
 
 fn wad_policy_path() -> PathBuf {
@@ -608,10 +612,7 @@ impl WadMetrics {
     }
 
     fn begin_with_tracker(with_tracker: bool) -> Result<Self, String> {
-        let root = env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(env::temp_dir)
-            .join("rtk-wad");
+        let root = wad_data_root();
         let scratch_directory = root.join("scratch");
         fs::create_dir_all(&scratch_directory)
             .map_err(|error| format!("unable to create local metrics directory: {error}"))?;
@@ -702,10 +703,7 @@ impl WadMetrics {
     }
 
     fn print_gain() -> Result<(), String> {
-        let root = env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(env::temp_dir)
-            .join("rtk-wad");
+        let root = wad_data_root();
         let ledger_path = root.join("metrics-v1.sqlite");
         if !ledger_path.exists() {
             println!("RTK-WAD Token Savings\n\nNo measured commands yet.");
@@ -1279,6 +1277,14 @@ fn is_verified_npm_run_list_operation(arguments: &[OsString]) -> bool {
     )
 }
 
+fn is_verified_go_test_all_operation(arguments: &[OsString]) -> bool {
+    matches!(
+        arguments,
+        [program, subcommand, selector]
+            if program == "go" && subcommand == "test" && selector == "./..."
+    )
+}
+
 fn auto_wad_route(
     arguments: &[OsString],
     current_directory: Option<&str>,
@@ -1300,6 +1306,7 @@ fn auto_wad_route(
             .and_then(|subcommand| subcommand.to_str())
             .map(|subcommand| format!("cargo:{subcommand}")),
         "npm" if is_verified_npm_run_list_operation(arguments) => Some("npm:run-list".to_owned()),
+        "go" if is_verified_go_test_all_operation(arguments) => Some("go:test-all".to_owned()),
         _ => None,
     };
     if let Some((_key, route)) = policy_key.as_deref().and_then(|key| {
@@ -1313,12 +1320,14 @@ fn auto_wad_route(
                     || is_verified_read_only_git(arguments)
                     || is_verified_cargo_operation(arguments)
                     || is_verified_npm_run_list_operation(arguments)
+                    || is_verified_go_test_all_operation(arguments)
             }
             Route::NativeRtk => {
                 wad_command_family(arguments) == "rg"
                     || is_verified_read_only_git(arguments)
                     || is_verified_cargo_operation(arguments)
                     || is_verified_npm_run_list_operation(arguments)
+                    || is_verified_go_test_all_operation(arguments)
             }
             Route::Wsl1 | Route::Wsl2 | Route::Auto => false,
         };
@@ -2067,6 +2076,13 @@ mod tests {
                     token_savings_percent: 80.0,
                     sample_count: 5,
                 },
+                RoutePolicyEvidence {
+                    key: "go:test-all".to_owned(),
+                    raw_median_ms: 10.0,
+                    candidate_median_ms: 30.0,
+                    token_savings_percent: 80.0,
+                    sample_count: 5,
+                },
             ],
         };
         assert_eq!(
@@ -2104,6 +2120,28 @@ mod tests {
             )
             .0,
             Route::NativeRtk
+        );
+        assert_eq!(
+            auto_wad_route(
+                &[
+                    OsString::from("go"),
+                    OsString::from("test"),
+                    OsString::from("./...")
+                ],
+                Some(r"E:\work"),
+                Some(&policy)
+            )
+            .0,
+            Route::NativeRtk
+        );
+        assert_eq!(
+            auto_wad_route(
+                &[OsString::from("go"), OsString::from("test")],
+                Some(r"E:\work"),
+                Some(&policy)
+            )
+            .0,
+            Route::Raw
         );
         assert_eq!(
             auto_wad_route(

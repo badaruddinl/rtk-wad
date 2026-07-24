@@ -73,8 +73,8 @@ For at least five samples, WAD selects native RTK when measured token saving is
 25% or more. The comparison uses end-to-end WAD latency, including dispatcher
 and local-accounting cost. When measured saving is below that threshold and raw
 execution is no slower, WAD selects raw execution. This applies only to the
-verified read-only Git allowlist, `rg`, verified Cargo operations, and the exact
-read-only `npm run` listing form. A policy file can never make a Git mutation
+verified read-only Git allowlist, `rg`, verified Cargo operations, the exact
+read-only `npm run` listing form, and the exact `go test ./...` form. A policy file can never make a Git mutation
 or `npm run <script>` adaptive, nor can it cause a command to run twice. The
 local policy is read-only during normal execution and can be overridden for
 testing with `RTK_WAD_POLICY_PATH`.
@@ -106,7 +106,10 @@ ledger contains timestamp, route, command family, aggregate token counts,
 elapsed time, exit code, and whether upstream RTK recorded a measurement. It
 does not retain command arguments or command output.
 
-The ledger is stored under `%LOCALAPPDATA%\rtk-wad\metrics-v1.sqlite`. A
+The ledger is stored under `%LOCALAPPDATA%\rtk-wad\metrics-v1.sqlite`. Set
+`RTK_WAD_STATE_DIR` only for an isolated test or benchmark ledger; it overrides
+that complete WAD state root without changing the child command's Windows
+profile or caches. A
 command-free RTK schema template is stored beside it so each scratch database
 can be prepared without a first-use migration. Scratch databases live under
 `%LOCALAPPDATA%\rtk-wad\scratch` and stale entries older than 24 hours are
