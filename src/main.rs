@@ -1284,6 +1284,10 @@ fn auto_wad_route(
         }
     }
     match wad_command_family(arguments) {
+        "npm" => (
+            Route::Raw,
+            "validated Windows npm fallback avoids an unavailable WSL toolchain",
+        ),
         "git" if is_verified_read_only_git(arguments) => (
             Route::NativeRtk,
             "structured native RTK Git adapter is safe for read-only Git",
@@ -1352,10 +1356,10 @@ fn run_raw(arguments: &[OsString]) -> std::io::Result<ExitStatus> {
             "a raw route needs a command",
         ));
     };
-    let executable = if program == "git" {
-        OsString::from("git.exe")
-    } else {
-        program.clone()
+    let executable = match program.to_str() {
+        Some("git") => OsString::from("git.exe"),
+        Some("npm") => OsString::from("npm.cmd"),
+        _ => program.clone(),
     };
     Command::new(executable)
         .args(arguments.iter().skip(1))
@@ -1934,6 +1938,11 @@ mod tests {
         assert_eq!(
             auto_wad_route(&cargo, Some(r"E:\work"), None).0,
             Route::NativeRtk
+        );
+
+        assert_eq!(
+            auto_wad_route(&[OsString::from("npm")], Some(r"E:\work"), None).0,
+            Route::Raw
         );
 
         let literal = vec![

@@ -3,11 +3,12 @@
   "upstream_rtk_version": "0.43.0",
   "source": "rtk.exe --help",
   "native_structured": ["ls", "tree", "read", "git", "find", "diff", "grep", "rg", "cargo"],
+  "raw_native": ["npm"],
   "raw_mutation_subcommands": {
     "git": ["add", "am", "apply", "bisect", "branch", "checkout", "cherry-pick", "clean", "commit", "fetch", "merge", "mv", "pull", "push", "rebase", "reset", "restore", "revert", "rm", "stash", "switch", "tag", "worktree"]
   },
   "wsl1_conservative": [
-    "smart", "gh", "glab", "aws", "psql", "pnpm", "err", "test", "json", "deps", "env", "log", "dotnet", "docker", "kubectl", "oc", "summary", "init", "wget", "wc", "cc-economics", "config", "jest", "vitest", "prisma", "tsc", "next", "lint", "prettier", "format", "playwright", "npm", "npx", "curl", "discover", "session", "telemetry", "learn", "run", "proxy", "pipe", "trust", "untrust", "verify", "ruff", "pytest", "mypy", "rake", "rubocop", "rspec", "pip", "go", "gt", "golangci-lint", "gradlew", "mvn", "hook-audit", "rewrite", "hook"
+    "smart", "gh", "glab", "aws", "psql", "pnpm", "err", "test", "json", "deps", "env", "log", "dotnet", "docker", "kubectl", "oc", "summary", "init", "wget", "wc", "cc-economics", "config", "jest", "vitest", "prisma", "tsc", "next", "lint", "prettier", "format", "playwright", "npx", "curl", "discover", "session", "telemetry", "learn", "run", "proxy", "pipe", "trust", "untrust", "verify", "ruff", "pytest", "mypy", "rake", "rubocop", "rspec", "pip", "go", "gt", "golangci-lint", "gradlew", "mvn", "hook-audit", "rewrite", "hook"
   ],
   "wad_internal": ["gain", "stats", "--adapter-info", "--explain-route"],
   "coverage_rule": "Every command family needs a raw, stock-RTK, and WAD evidence row before release coverage is claimed."

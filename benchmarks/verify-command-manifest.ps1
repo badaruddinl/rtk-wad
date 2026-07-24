@@ -18,6 +18,7 @@ $rtkCommands = $rtkHelp |
     Where-Object { $_ -ne "help" }
 $manifestCommands = [System.Collections.Generic.List[string]]::new()
 foreach ($command in $rtkManifest.native_structured) { $manifestCommands.Add([string]$command) }
+foreach ($command in $rtkManifest.raw_native) { $manifestCommands.Add([string]$command) }
 foreach ($command in $rtkManifest.wsl1_conservative) { $manifestCommands.Add([string]$command) }
 foreach ($command in $rtkManifest.wad_internal) {
     if ($command -notmatch '^-' -and $command -ne "stats") { $manifestCommands.Add([string]$command) }
