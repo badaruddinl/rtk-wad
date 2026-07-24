@@ -64,10 +64,12 @@ rtk-wad policy show
 For at least five samples, WAD selects native RTK when measured token saving is
 25% or more. The comparison uses end-to-end WAD latency, including dispatcher
 and local-accounting cost. When measured saving is below that threshold and raw
-execution is no slower, WAD selects raw execution. This applies only to the verified
-read-only Git allowlist and `rg`; a policy file can never make a Git mutation
-adaptive or cause a command to run twice. The local policy is read-only during
-normal execution and can be overridden for testing with `RTK_WAD_POLICY_PATH`.
+execution is no slower, WAD selects raw execution. This applies only to the
+verified read-only Git allowlist, `rg`, verified Cargo operations, and the exact
+read-only `npm run` listing form. A policy file can never make a Git mutation
+or `npm run <script>` adaptive, nor can it cause a command to run twice. The
+local policy is read-only during normal execution and can be overridden for
+testing with `RTK_WAD_POLICY_PATH`.
 
 ## Shell and argv safety
 

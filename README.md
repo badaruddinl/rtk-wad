@@ -43,6 +43,11 @@ The Windows Cargo route is separately validated on a non-NTFS worktree in
 Its three-way decision evidence is recorded in
 [the Cargo check benchmark](docs/BENCHMARK_CARGO_CHECK_2026-07-24.md).
 
+The first Node package-manager comparison is recorded in
+[the NPM run-list benchmark](docs/BENCHMARK_NPM_RUN_LIST_2026-07-24.md). It
+selects raw Windows NPM because the tested read-only operation has no token
+saving and lower end-to-end latency.
+
 An isolated WSL1 runtime is available as an opt-in development profile. It does
 not convert or modify an existing WSL2 distribution. Enable the Windows WSL1
 component from an elevated PowerShell, restart if requested, provision the
