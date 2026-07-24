@@ -102,6 +102,12 @@ plan only. It can show a narrowly scoped Windows `winget` command when native
 RTK exists, but it does not execute the command or install anything. See
 [`ASSISTED_SETUP_PD4.md`](ASSISTED_SETUP_PD4.md).
 
+PD5 adds an opt-in apply boundary: `rtk-wad setup go --apply` re-renders a
+fresh plan, while only `rtk-wad setup go --apply --confirm` can execute its
+single structured `winget` command. `--status` reports the local journal and
+`--recover` re-discovers providers without replaying an installer. See
+[`OPT_IN_SETUP_PD5.md`](OPT_IN_SETUP_PD5.md).
+
 ## Shell and argv safety
 
 Use structured RTK commands such as `git`, `rg`, `grep`, `find`, `ls`, `tree`,

@@ -611,6 +611,16 @@ struct SetupPlan {
     apply: &'static str,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct SetupTransaction {
+    schema_version: u32,
+    tool: String,
+    status: String,
+    observed_unix_seconds: u64,
+    command: Option<Vec<String>>,
+    detail: String,
+}
+
 fn provider_cache_path() -> PathBuf {
     wad_data_root().join("provider-cache-v1.json")
 }
@@ -1289,47 +1299,244 @@ fn print_setup_plan(plan: &SetupPlan, json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
-    let Some(tool) = arguments.get(1).and_then(|argument| argument.to_str()) else {
-        eprintln!("rtk-wad: usage: setup go [--json] [--refresh]");
+fn setup_transaction_path() -> PathBuf {
+    wad_data_root().join("setup-transaction-v1.json")
+}
+
+fn load_setup_transaction() -> Option<SetupTransaction> {
+    fs::read_to_string(setup_transaction_path())
+        .ok()
+        .and_then(|contents| serde_json::from_str(&contents).ok())
+}
+
+fn write_setup_transaction(transaction: &SetupTransaction) -> Result<(), String> {
+    let destination = setup_transaction_path();
+    let encoded = serde_json::to_string_pretty(transaction)
+        .map_err(|error| format!("unable to encode setup transaction: {error}"))?;
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("unable to create setup transaction directory: {error}"))?;
+    }
+    let temporary = destination.with_extension(format!("{}.new", std::process::id()));
+    fs::write(&temporary, encoded)
+        .map_err(|error| format!("unable to write setup transaction: {error}"))?;
+    fs::rename(&temporary, &destination)
+        .map_err(|error| format!("unable to activate setup transaction: {error}"))
+}
+
+fn print_setup_transaction(transaction: Option<&SetupTransaction>, json: bool) -> ExitCode {
+    if json {
+        return match serde_json::to_string_pretty(&transaction) {
+            Ok(rendered) => {
+                println!("{rendered}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("rtk-wad: unable to render setup transaction: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    match transaction {
+        Some(transaction) => {
+            println!("tool={}", transaction.tool);
+            println!("status={}", transaction.status);
+            println!(
+                "observed_unix_seconds={}",
+                transaction.observed_unix_seconds
+            );
+            println!("detail={}", transaction.detail);
+            if let Some(command) = &transaction.command {
+                println!("command={}", command.join(" "));
+            }
+        }
+        None => println!("No local setup transaction is recorded."),
+    }
+    ExitCode::SUCCESS
+}
+
+fn record_setup_transaction(
+    status: &str,
+    command: Option<Vec<String>>,
+    detail: impl Into<String>,
+) -> Result<SetupTransaction, String> {
+    let transaction = SetupTransaction {
+        schema_version: 1,
+        tool: "go".to_owned(),
+        status: status.to_owned(),
+        observed_unix_seconds: unix_seconds(),
+        command,
+        detail: detail.into(),
+    };
+    write_setup_transaction(&transaction)?;
+    Ok(transaction)
+}
+
+fn setup_recovery_outcome(has_complete_provider: bool) -> (&'static str, &'static str) {
+    if has_complete_provider {
+        (
+            "recovered_verified",
+            "fresh provider discovery found a complete Go provider; no installer was replayed",
+        )
+    } else {
+        (
+            "recovery_required",
+            "fresh provider discovery is still incomplete; no installer was replayed and manual review is required",
+        )
+    }
+}
+
+fn recover_setup_transaction(config: &Config, json: bool) -> ExitCode {
+    let Some(previous) = load_setup_transaction() else {
+        return print_setup_transaction(None, json);
+    };
+    let resolution = resolve_tool_provider("go", config, true);
+    let (status, detail) = setup_recovery_outcome(has_complete_go_provider(&resolution));
+    let recovered = match record_setup_transaction(status, previous.command, detail) {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            eprintln!("rtk-wad: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    print_setup_transaction(Some(&recovered), json)
+}
+
+fn apply_setup_plan(plan: &SetupPlan, config: &Config, json: bool) -> ExitCode {
+    if plan.status == "ready" {
+        return print_setup_plan(plan, json);
+    }
+    let Some(command) = plan.proposed_command.clone() else {
+        eprintln!("rtk-wad: setup is blocked; no installer is selected automatically");
         return ExitCode::FAILURE;
     };
-    if tool != "go" || arguments.len() > 4 {
+    if let Err(error) = record_setup_transaction(
+        "running",
+        Some(command.clone()),
+        "installer started after explicit --apply --confirm",
+    ) {
+        eprintln!("rtk-wad: {error}");
+        return ExitCode::FAILURE;
+    }
+    let mut installer = Command::new(&command[0]);
+    installer.args(&command[1..]);
+    let status = match installer.status() {
+        Ok(status) => status,
+        Err(error) => {
+            let detail = format!("installer could not start: {error}");
+            let _ = record_setup_transaction("failed", Some(command), &detail);
+            eprintln!("rtk-wad: {detail}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if !status.success() {
+        let detail = format!("installer exited with {status}");
+        let _ = record_setup_transaction("failed", Some(command), &detail);
         eprintln!(
-            "rtk-wad: PD4 currently supports setup planning only for the exact tool name `go`"
+            "rtk-wad: {detail}; run `rtk-wad setup go --recover` to re-discover without replaying it"
         );
         return ExitCode::FAILURE;
     }
-    if arguments
+    let resolution = resolve_tool_provider("go", config, true);
+    if has_complete_go_provider(&resolution) {
+        let transaction = match record_setup_transaction(
+            "verified",
+            Some(command),
+            "installer completed and fresh provider discovery found a complete Go provider",
+        ) {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                eprintln!("rtk-wad: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        return print_setup_transaction(Some(&transaction), json);
+    }
+    let detail = "installer completed but fresh provider discovery is incomplete; reopen the shell if PATH changed, then run `rtk-wad setup go --recover`";
+    let _ = record_setup_transaction("verification_required", Some(command), detail);
+    eprintln!("rtk-wad: {detail}");
+    ExitCode::FAILURE
+}
+
+fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
+    let Some(tool) = arguments.get(1).and_then(|argument| argument.to_str()) else {
+        eprintln!(
+            "rtk-wad: usage: setup go [--json] [--refresh] [--status|--recover|--apply --confirm]"
+        );
+        return ExitCode::FAILURE;
+    };
+    if tool != "go" {
+        eprintln!("rtk-wad: setup currently supports only the exact tool name `go`");
+        return ExitCode::FAILURE;
+    }
+    let flags: Vec<&str> = match arguments
         .iter()
         .skip(2)
-        .any(|argument| argument == "--apply")
+        .map(|argument| argument.to_str())
+        .collect()
     {
+        Some(flags) => flags,
+        None => {
+            eprintln!("rtk-wad: setup options must be valid Unicode");
+            return ExitCode::FAILURE;
+        }
+    };
+    let valid = [
+        "--json",
+        "--refresh",
+        "--status",
+        "--recover",
+        "--apply",
+        "--confirm",
+    ];
+    if flags.iter().any(|flag| !valid.contains(flag)) {
         eprintln!(
-            "rtk-wad: PD4 creates a reviewable plan only; applying setup is unavailable in this milestone"
+            "rtk-wad: usage: setup go [--json] [--refresh] [--status|--recover|--apply --confirm]"
         );
         return ExitCode::FAILURE;
     }
-    let json = arguments
-        .iter()
-        .skip(2)
-        .any(|argument| argument == "--json");
-    let refresh = arguments
-        .iter()
-        .skip(2)
-        .any(|argument| argument == "--refresh");
-    if arguments
-        .iter()
-        .skip(2)
-        .any(|argument| argument != "--json" && argument != "--refresh")
+    let json = flags.contains(&"--json");
+    let refresh = flags.contains(&"--refresh");
+    let status = flags.contains(&"--status");
+    let recover = flags.contains(&"--recover");
+    let apply = flags.contains(&"--apply");
+    let confirm = flags.contains(&"--confirm");
+    if [status, recover, apply]
+        .into_iter()
+        .filter(|selected| *selected)
+        .count()
+        > 1
+        || (confirm && !apply)
+        || (status && refresh)
     {
-        eprintln!("rtk-wad: usage: setup go [--json] [--refresh]");
+        eprintln!(
+            "rtk-wad: usage: setup go [--json] [--refresh] [--status|--recover|--apply --confirm]"
+        );
         return ExitCode::FAILURE;
     }
-    let resolution = resolve_tool_provider(tool, config, refresh);
-    let plan =
+    if status {
+        return print_setup_transaction(load_setup_transaction().as_ref(), json);
+    }
+    if recover {
+        return recover_setup_transaction(config, json);
+    }
+    let resolution = resolve_tool_provider(tool, config, refresh || apply);
+    let mut plan =
         setup_go_plan_from_resolution(&resolution, first_windows_executable("winget").is_some());
-    print_setup_plan(&plan, json)
+    if plan.status == "planned" {
+        plan.apply = "requires_apply_and_confirm";
+    }
+    if !apply {
+        return print_setup_plan(&plan, json);
+    }
+    if !confirm {
+        eprintln!(
+            "rtk-wad: review the plan above; re-run with `rtk-wad setup go --apply --confirm` to start the installer"
+        );
+        let _ = print_setup_plan(&plan, json);
+        return ExitCode::from(2);
+    }
+    apply_setup_plan(&plan, config, json)
 }
 
 fn wad_policy_path() -> PathBuf {
@@ -3421,5 +3628,16 @@ mod tests {
         assert_eq!(blocked_plan.status, "blocked");
         assert_eq!(blocked_plan.proposed_command, None);
         assert_eq!(blocked_plan.apply, "unavailable_in_pd4");
+    }
+
+    #[test]
+    fn setup_recovery_never_replays_an_installer() {
+        let (verified_status, verified_detail) = setup_recovery_outcome(true);
+        assert_eq!(verified_status, "recovered_verified");
+        assert!(verified_detail.contains("no installer was replayed"));
+
+        let (required_status, required_detail) = setup_recovery_outcome(false);
+        assert_eq!(required_status, "recovery_required");
+        assert!(required_detail.contains("no installer was replayed"));
     }
 }

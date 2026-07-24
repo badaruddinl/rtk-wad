@@ -70,6 +70,10 @@ cleanly with diagnostics when no safe provider exists; it never installs one.
 local `rtk-wad setup go` plan. It proposes at most one safe Windows Go command
 and remains unable to apply it in this milestone.
 
+[PD5 opt-in setup](docs/OPT_IN_SETUP_PD5.md) adds the separately confirmed
+`setup go --apply --confirm` transaction, a local journal, and non-replaying
+recovery. No installer is reached by normal routing, discovery, or planning.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture
