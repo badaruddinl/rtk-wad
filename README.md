@@ -6,6 +6,22 @@ mutations, stock Windows RTK for verified structured adapters, or isolated
 WSL1 RTK when Linux semantics are required. It forwards arguments as structured
 process arguments and never rebuilds a shell command string.
 
+In `auto` mode, route choice is an auditable local decision policy rather than
+a fixed preference for RTK or WSL. For verified read-only command forms, WAD
+uses repeated benchmark evidence to weigh end-to-end latency against token
+reduction: it keeps raw execution when RTK has no meaningful saving and raw is
+as fast or faster; it promotes native RTK when the measured candidate is faster
+or when verified token saving reaches the 25% threshold. This token-first
+threshold intentionally permits a small latency cost for materially smaller
+agent context. Mutations never become adaptive and no command is replayed to
+train the policy.
+
+```powershell
+rtk-wad --explain-route rg -n pattern src
+rtk-wad policy show
+rtk-wad gain
+```
+
 Current baseline: `0.1.0-alpha.1` (local stabilization). Project home:
 `https://github.com/badaruddinl/rtk-wsl`.
 
