@@ -108,6 +108,11 @@ single structured `winget` command. `--status` reports the local journal and
 `--recover` re-discovers providers without replaying an installer. See
 [`OPT_IN_SETUP_PD5.md`](OPT_IN_SETUP_PD5.md).
 
+PD6 adds the local-only readiness gate
+[`setup-readiness-contract.ps1`](../tests/setup-readiness-contract.ps1) and
+the [operational freeze](SETUP_OPERATIONAL_FREEZE_PD6.md). The gate never calls
+`winget` and is intended to run before an alpha release decision.
+
 ## Shell and argv safety
 
 Use structured RTK commands such as `git`, `rg`, `grep`, `find`, `ls`, `tree`,

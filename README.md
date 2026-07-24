@@ -74,6 +74,9 @@ and remains unable to apply it in this milestone.
 `setup go --apply --confirm` transaction, a local journal, and non-replaying
 recovery. No installer is reached by normal routing, discovery, or planning.
 
+[PD6 operational freeze](docs/SETUP_OPERATIONAL_FREEZE_PD6.md) supplies a
+repeatable local readiness gate for this contract without invoking `winget`.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture
