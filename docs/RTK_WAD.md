@@ -79,6 +79,46 @@ or `npm run <script>` adaptive, nor can it cause a command to run twice. The
 local policy is read-only during normal execution and can be overridden for
 testing with `RTK_WAD_POLICY_PATH`.
 
+## Local adaptive calibration (P10)
+
+When an eligible command has no imported benchmark-policy entry, WAD may build
+small local evidence across the user's normal invocations. This is a
+deterministic state machine, not a trained model and not an in-process command
+replay:
+
+1. The first successful natural invocation uses native RTK.
+2. The second successful natural invocation uses raw execution.
+3. The third successful natural invocation uses native RTK again.
+4. The fourth invocation follows a provisional choice based on the two native
+   observations, one raw observation, and RTK's aggregate token counters.
+5. If needed, one further natural raw observation is collected before the
+   route becomes stable. The stable decision keeps at most five recent samples
+   for each route.
+
+The local selector chooses native RTK at 25% or greater measured token saving;
+below that threshold it chooses the lower median end-to-end latency. The timing
+includes dispatcher and local metrics overhead. An imported policy entry always
+has precedence over local calibration. Failed commands and a native process
+that falls back to WSL are not calibration evidence.
+
+Calibration is restricted to `rg`, the verified read-only Git allowlist, the
+exact read-only `npm run` listing form, and the exact `go test ./...` form. It
+excludes mutations, unknown commands, WSL paths, explicit routes, and Cargo
+because its ordinary commands can write build artifacts. The state stores only
+a deterministic 64-bit signature, a safe command category, route timings, and
+aggregate native RTK token counts. It never stores the command arguments or
+its output.
+
+```powershell
+rtk-wad --explain-route rg -n 'needle' src
+rtk-wad calibration show
+```
+
+`--explain-route` is read-only: it reports the next route but does not advance
+the calibration cycle. See
+[`LOCAL_ADAPTIVE_CALIBRATION_P10.md`](LOCAL_ADAPTIVE_CALIBRATION_P10.md) for
+the full safety and validation contract.
+
 ## On-demand provider discovery (PD1)
 
 `rtk-wad resolve go` and `rtk-wad doctor go` inspect existing Windows and WSL

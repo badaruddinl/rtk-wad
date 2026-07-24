@@ -13,12 +13,15 @@ reduction: it keeps raw execution when RTK has no meaningful saving and raw is
 as fast or faster; it promotes native RTK when the measured candidate is faster
 or when verified token saving reaches the 25% threshold. This token-first
 threshold intentionally permits a small latency cost for materially smaller
-agent context. Mutations never become adaptive and no command is replayed to
-train the policy.
+agent context. Imported benchmark policy takes priority. Otherwise, WAD can
+collect bounded local evidence across natural invocations of a safe read-only
+command; mutations never become adaptive and no command is replayed to train
+the policy.
 
 ```powershell
 rtk-wad --explain-route rg -n pattern src
 rtk-wad policy show
+rtk-wad calibration show
 rtk-wad gain
 ```
 
@@ -96,6 +99,10 @@ repeatable local readiness gate for this contract without invoking `winget`.
 [P7 cache optimization and re-benchmark](docs/ADAPTIVE_CACHE_BENCHMARK_P7_2026-07-25.md)
 documents the lazy WSL provider probe and the evidence-based automatic route
 policy for the current head.
+
+[P10 local adaptive calibration](docs/LOCAL_ADAPTIVE_CALIBRATION_P10.md)
+documents the bounded candidate, provisional, and stable selection cycle used
+when no imported benchmark policy exists.
 
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).

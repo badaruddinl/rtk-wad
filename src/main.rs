@@ -19,11 +19,14 @@ const BRIDGE_INFO_ARGUMENT: &str = "--bridge-info";
 const ADAPTER_INFO_ARGUMENT: &str = "--adapter-info";
 const EXPLAIN_ROUTE_ARGUMENT: &str = "--explain-route";
 const POLICY_ARGUMENT: &str = "policy";
+const CALIBRATION_ARGUMENT: &str = "calibration";
 const RESOLVE_ARGUMENT: &str = "resolve";
 const DOCTOR_ARGUMENT: &str = "doctor";
 const SETUP_ARGUMENT: &str = "setup";
 const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 1;
 const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
+const CALIBRATION_SCHEMA_VERSION: u32 = 1;
+const CALIBRATION_MAX_SAMPLES: usize = 5;
 const CANCEL_SCRIPT: &str = r#"
 if [ -r "$1" ]; then
     worker=$(cat "$1")
@@ -497,6 +500,89 @@ impl RoutePolicyFile {
         } else {
             Some(Route::NativeRtk)
         }
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct CalibrationFile {
+    schema_version: u32,
+    entries: Vec<CalibrationEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CalibrationEntry {
+    signature: String,
+    key: String,
+    raw_samples_ms: Vec<f64>,
+    native_samples_ms: Vec<f64>,
+    native_input_tokens: i64,
+    native_saved_tokens: i64,
+}
+
+#[derive(Debug, Clone)]
+struct CalibrationPlan {
+    signature: String,
+    key: String,
+    route: Route,
+    reason: &'static str,
+}
+
+impl CalibrationEntry {
+    fn token_savings_percent(&self) -> f64 {
+        if self.native_input_tokens > 0 {
+            (self.native_saved_tokens as f64 / self.native_input_tokens as f64) * 100.0
+        } else {
+            0.0
+        }
+    }
+
+    fn selected_route(&self) -> Route {
+        select_adaptive_route(
+            median(&self.raw_samples_ms),
+            median(&self.native_samples_ms),
+            self.token_savings_percent(),
+        )
+    }
+
+    fn phase(&self) -> &'static str {
+        if self.raw_samples_ms.is_empty() || self.native_samples_ms.len() < 2 {
+            "candidate"
+        } else if self.raw_samples_ms.len() < 2 {
+            "provisional"
+        } else {
+            "stable"
+        }
+    }
+}
+
+fn median(samples: &[f64]) -> Option<f64> {
+    if samples.is_empty() {
+        return None;
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let middle = sorted.len() / 2;
+    if sorted.len().is_multiple_of(2) {
+        Some((sorted[middle - 1] + sorted[middle]) / 2.0)
+    } else {
+        Some(sorted[middle])
+    }
+}
+
+fn select_adaptive_route(
+    raw_median_ms: Option<f64>,
+    native_median_ms: Option<f64>,
+    token_savings_percent: f64,
+) -> Route {
+    if token_savings_percent >= 25.0 {
+        Route::NativeRtk
+    } else if raw_median_ms
+        .zip(native_median_ms)
+        .is_some_and(|(raw, native)| raw <= native)
+    {
+        Route::Raw
+    } else {
+        Route::NativeRtk
     }
 }
 
@@ -1662,6 +1748,252 @@ fn import_route_policy(source: &Path) -> Result<(), String> {
         .map_err(|error| format!("unable to activate policy evidence: {error}"))
 }
 
+fn calibration_path() -> PathBuf {
+    wad_data_root().join("calibration-v1.json")
+}
+
+fn validate_calibration(file: &CalibrationFile) -> Result<(), String> {
+    if file.schema_version != CALIBRATION_SCHEMA_VERSION {
+        return Err("calibration state uses an unsupported schema version".to_owned());
+    }
+    let mut signatures = HashSet::new();
+    for entry in &file.entries {
+        if entry.signature.len() != 16
+            || entry.key.trim().is_empty()
+            || entry.native_input_tokens < 0
+            || entry.native_saved_tokens < 0
+            || !entry
+                .raw_samples_ms
+                .iter()
+                .chain(&entry.native_samples_ms)
+                .all(|sample| sample.is_finite() && *sample >= 0.0)
+            || !signatures.insert(&entry.signature)
+        {
+            return Err("calibration state contains invalid local evidence".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn load_calibration() -> Result<CalibrationFile, String> {
+    let path = calibration_path();
+    if !path.exists() {
+        return Ok(CalibrationFile {
+            schema_version: CALIBRATION_SCHEMA_VERSION,
+            entries: Vec::new(),
+        });
+    }
+    let contents = fs::read_to_string(&path)
+        .map_err(|error| format!("unable to read local calibration state: {error}"))?;
+    let file: CalibrationFile = serde_json::from_str(&contents)
+        .map_err(|error| format!("local calibration state is invalid: {error}"))?;
+    validate_calibration(&file)?;
+    Ok(file)
+}
+
+fn save_calibration(file: &CalibrationFile) -> Result<(), String> {
+    validate_calibration(file)?;
+    let destination = calibration_path();
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("unable to create calibration directory: {error}"))?;
+    }
+    let encoded = serde_json::to_string_pretty(file)
+        .map_err(|error| format!("unable to encode local calibration state: {error}"))?;
+    let temporary = destination.with_extension(format!("{}.new", std::process::id()));
+    fs::write(&temporary, encoded)
+        .map_err(|error| format!("unable to write local calibration state: {error}"))?;
+    fs::rename(&temporary, &destination)
+        .map_err(|error| format!("unable to activate local calibration state: {error}"))
+}
+
+fn calibration_key(arguments: &[OsString]) -> Option<&'static str> {
+    match wad_command_family(arguments) {
+        "git" if is_verified_read_only_git(arguments) => Some("git:read-only"),
+        "rg" => Some("rg"),
+        "npm" if is_verified_npm_run_list_operation(arguments) => Some("npm:run-list"),
+        "go" if is_verified_go_test_all_operation(arguments) => Some("go:test-all"),
+        _ => None,
+    }
+}
+
+fn calibration_signature(arguments: &[OsString], current_directory: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    let mut append = |value: &str| {
+        for byte in value.as_bytes().iter().copied().chain(std::iter::once(0)) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    };
+    append(current_directory);
+    for argument in arguments {
+        append(&argument.to_string_lossy());
+    }
+    format!("{hash:016x}")
+}
+
+fn calibration_plan(
+    arguments: &[OsString],
+    current_directory: Option<&str>,
+    policy: Option<&RoutePolicyFile>,
+) -> Result<Option<CalibrationPlan>, String> {
+    let Some(current_directory) = current_directory else {
+        return Ok(None);
+    };
+    if has_wsl_path(arguments)
+        || windows_path_to_wsl_path(current_directory).is_none()
+        || calibration_key(arguments).is_none()
+    {
+        return Ok(None);
+    }
+    let key = calibration_key(arguments).expect("calibration key was checked");
+    if route_policy_key(arguments)
+        .as_deref()
+        .and_then(|policy_key| policy.and_then(|policy| policy.route_for(policy_key)))
+        .is_some()
+    {
+        return Ok(None);
+    }
+    let signature = calibration_signature(arguments, current_directory);
+    let state = load_calibration()?;
+    let entry = state
+        .entries
+        .iter()
+        .find(|entry| entry.signature == signature);
+    let (route, reason) = calibration_route_for(entry);
+    Ok(Some(CalibrationPlan {
+        signature,
+        key: key.to_owned(),
+        route,
+        reason,
+    }))
+}
+
+fn calibration_route_for(entry: Option<&CalibrationEntry>) -> (Route, &'static str) {
+    let (route, reason) = match entry {
+        None => (
+            Route::NativeRtk,
+            "local calibration candidate: first safe observation uses native RTK",
+        ),
+        Some(entry) if entry.raw_samples_ms.is_empty() => (
+            Route::Raw,
+            "local calibration candidate: second safe observation uses raw execution",
+        ),
+        Some(entry) if entry.native_samples_ms.len() < 2 => (
+            Route::NativeRtk,
+            "local calibration candidate: third safe observation confirms native RTK",
+        ),
+        Some(entry) if entry.raw_samples_ms.len() < 2 => {
+            let selected = entry.selected_route();
+            if entry.raw_samples_ms.len() == 1 && entry.native_samples_ms.len() == 2 {
+                (
+                    selected,
+                    "local calibration provisional choice; validating with one further natural invocation",
+                )
+            } else {
+                (
+                    Route::Raw,
+                    "local calibration validation samples raw execution before marking a stable route",
+                )
+            }
+        }
+        Some(entry) => {
+            let selected = entry.selected_route();
+            (
+                selected,
+                if selected == Route::Raw {
+                    "local calibration selected stable lower-latency raw execution"
+                } else {
+                    "local calibration selected stable token-saving native RTK"
+                },
+            )
+        }
+    };
+    (route, reason)
+}
+
+fn cap_samples(samples: &mut Vec<f64>) {
+    if samples.len() > CALIBRATION_MAX_SAMPLES {
+        let excess = samples.len() - CALIBRATION_MAX_SAMPLES;
+        samples.drain(0..excess);
+    }
+}
+
+fn record_calibration(
+    plan: &CalibrationPlan,
+    executed_route: Route,
+    elapsed: Duration,
+    exit_code: i32,
+    totals: TokenTotals,
+) -> Result<(), String> {
+    if exit_code != 0 || !matches!(executed_route, Route::Raw | Route::NativeRtk) {
+        return Ok(());
+    }
+    let mut state = load_calibration()?;
+    let entry = match state
+        .entries
+        .iter_mut()
+        .find(|entry| entry.signature == plan.signature)
+    {
+        Some(entry) => entry,
+        None => {
+            state.entries.push(CalibrationEntry {
+                signature: plan.signature.clone(),
+                key: plan.key.clone(),
+                raw_samples_ms: Vec::new(),
+                native_samples_ms: Vec::new(),
+                native_input_tokens: 0,
+                native_saved_tokens: 0,
+            });
+            state.entries.last_mut().expect("entry was just appended")
+        }
+    };
+    let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+    match executed_route {
+        Route::Raw => {
+            entry.raw_samples_ms.push(elapsed_ms);
+            cap_samples(&mut entry.raw_samples_ms);
+        }
+        Route::NativeRtk => {
+            entry.native_samples_ms.push(elapsed_ms);
+            cap_samples(&mut entry.native_samples_ms);
+            entry.native_input_tokens = entry
+                .native_input_tokens
+                .saturating_add(totals.input_tokens);
+            entry.native_saved_tokens = entry
+                .native_saved_tokens
+                .saturating_add(totals.saved_tokens);
+        }
+        Route::Wsl1 | Route::Wsl2 | Route::Auto => unreachable!("route was filtered above"),
+    }
+    save_calibration(&state)
+}
+
+fn print_calibration() -> Result<(), String> {
+    let state = load_calibration()?;
+    if state.entries.is_empty() {
+        println!("No local adaptive calibration evidence is recorded.");
+        return Ok(());
+    }
+    println!("RTK-WAD Local Adaptive Calibration");
+    println!();
+    for entry in &state.entries {
+        let route = entry.selected_route();
+        println!("key={}", entry.key);
+        println!("signature={}", entry.signature);
+        println!("phase={}", entry.phase());
+        println!("route={}", route.as_str());
+        println!("raw_samples={}", entry.raw_samples_ms.len());
+        println!("native_samples={}", entry.native_samples_ms.len());
+        println!(
+            "native_token_savings_percent={:.1}",
+            entry.token_savings_percent()
+        );
+        println!();
+    }
+    Ok(())
+}
+
 struct WadMetrics {
     ledger_path: PathBuf,
     scratch_path: PathBuf,
@@ -1741,7 +2073,7 @@ impl WadMetrics {
         command_family: &str,
         elapsed: Duration,
         exit_code: i32,
-    ) -> Result<(), String> {
+    ) -> Result<TokenTotals, String> {
         let totals = read_upstream_totals(&self.scratch_path)?;
         let measured = i64::from(totals.commands > 0);
         let connection = Connection::open(&self.ledger_path)
@@ -1764,7 +2096,7 @@ impl WadMetrics {
             )
             .map_err(|error| format!("unable to record local metrics: {error}"))?;
         remove_scratch_database(&self.scratch_path);
-        Ok(())
+        Ok(totals)
     }
 
     fn print_gain() -> Result<(), String> {
@@ -2350,6 +2682,20 @@ fn is_verified_go_test_all_operation(arguments: &[OsString]) -> bool {
     )
 }
 
+fn route_policy_key(arguments: &[OsString]) -> Option<String> {
+    match wad_command_family(arguments) {
+        "git" => git_subcommand(arguments).map(|subcommand| format!("git:{subcommand}")),
+        "rg" => Some("rg".to_owned()),
+        "cargo" => arguments
+            .get(1)
+            .and_then(|subcommand| subcommand.to_str())
+            .map(|subcommand| format!("cargo:{subcommand}")),
+        "npm" if is_verified_npm_run_list_operation(arguments) => Some("npm:run-list".to_owned()),
+        "go" if is_verified_go_test_all_operation(arguments) => Some("go:test-all".to_owned()),
+        _ => None,
+    }
+}
+
 fn auto_wad_route(
     arguments: &[OsString],
     current_directory: Option<&str>,
@@ -2363,17 +2709,7 @@ fn auto_wad_route(
             "Linux path or WSL working directory requires Linux execution",
         );
     }
-    let policy_key = match wad_command_family(arguments) {
-        "git" => git_subcommand(arguments).map(|subcommand| format!("git:{subcommand}")),
-        "rg" => Some("rg".to_owned()),
-        "cargo" => arguments
-            .get(1)
-            .and_then(|subcommand| subcommand.to_str())
-            .map(|subcommand| format!("cargo:{subcommand}")),
-        "npm" if is_verified_npm_run_list_operation(arguments) => Some("npm:run-list".to_owned()),
-        "go" if is_verified_go_test_all_operation(arguments) => Some("go:test-all".to_owned()),
-        _ => None,
-    };
+    let policy_key = route_policy_key(arguments);
     if let Some((_key, route)) = policy_key.as_deref().and_then(|key| {
         policy
             .and_then(|policy| policy.route_for(key))
@@ -2605,6 +2941,22 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         eprintln!("rtk-wad: usage: rtk-wad policy [show] | policy import <evidence.json>");
         return ExitCode::FAILURE;
     }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == CALIBRATION_ARGUMENT)
+    {
+        if arguments.len() == 1 || arguments.get(1).is_some_and(|argument| argument == "show") {
+            return match print_calibration() {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("rtk-wad: {error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        eprintln!("rtk-wad: usage: rtk-wad calibration [show]");
+        return ExitCode::FAILURE;
+    }
     if arguments.len() == 1 && arguments[0] == ADAPTER_INFO_ARGUMENT {
         print_adapter_info(config);
         return ExitCode::SUCCESS;
@@ -2627,17 +2979,38 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         }
     };
     let current_directory = env::current_dir().ok();
+    let started = Instant::now();
+    let policy = load_route_policy();
     let (initial_route, initial_reason) = if requested_route == Route::Auto {
         auto_wad_route(
             &arguments,
             current_directory.as_deref().and_then(|path| path.to_str()),
-            load_route_policy().as_ref(),
+            policy.as_ref(),
         )
     } else {
         (requested_route, "explicit route preference")
     };
     let mut route = initial_route;
     let mut reason = initial_reason.to_owned();
+    let calibration = if requested_route == Route::Auto {
+        match calibration_plan(
+            &arguments,
+            current_directory.as_deref().and_then(|path| path.to_str()),
+            policy.as_ref(),
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                eprintln!("rtk-wad: local calibration is unavailable: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(plan) = &calibration {
+        route = plan.route;
+        reason = plan.reason.to_owned();
+    }
     let mut selected_config = configured_wsl_backend(config, route);
     let mut provider_missing = None;
     if requested_route == Route::Auto {
@@ -2697,7 +3070,6 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
             None
         }
     };
-    let started = Instant::now();
     let mut executed_route = route;
     let result = match route {
         Route::Raw => run_raw(&arguments),
@@ -2742,15 +3114,27 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         .ok()
         .and_then(|status| status.code())
         .unwrap_or(1);
-    if let Some(metrics) = metrics
-        && let Err(error) = metrics.finish(
+    let elapsed = started.elapsed();
+    let totals = if let Some(metrics) = metrics {
+        match metrics.finish(
             executed_route,
             wad_command_family(&arguments),
-            started.elapsed(),
+            elapsed,
             exit_code,
-        )
+        ) {
+            Ok(totals) => totals,
+            Err(error) => {
+                eprintln!("rtk-wad: metrics were not recorded: {error}");
+                TokenTotals::default()
+            }
+        }
+    } else {
+        TokenTotals::default()
+    };
+    if let Some(plan) = &calibration
+        && let Err(error) = record_calibration(plan, executed_route, elapsed, exit_code, totals)
     {
-        eprintln!("rtk-wad: metrics were not recorded: {error}");
+        eprintln!("rtk-wad: local calibration was not recorded: {error}");
     }
     match result {
         Ok(status) if status.success() => ExitCode::SUCCESS,
@@ -3701,5 +4085,84 @@ mod tests {
             distro: Some("Ubuntu".to_owned()),
         };
         assert!(!windows_go_is_usable(&wsl_project, Route::Raw, &windows));
+    }
+
+    #[test]
+    fn local_calibration_bootstraps_then_requires_validation_before_stable() {
+        assert_eq!(calibration_route_for(None).0, Route::NativeRtk);
+
+        let mut entry = CalibrationEntry {
+            signature: "0123456789abcdef".to_owned(),
+            key: "rg".to_owned(),
+            raw_samples_ms: Vec::new(),
+            native_samples_ms: vec![30.0],
+            native_input_tokens: 100,
+            native_saved_tokens: 0,
+        };
+        assert_eq!(calibration_route_for(Some(&entry)).0, Route::Raw);
+
+        entry.raw_samples_ms.push(10.0);
+        entry.native_samples_ms.push(30.0);
+        assert_eq!(entry.phase(), "provisional");
+        assert_eq!(calibration_route_for(Some(&entry)).0, Route::Raw);
+
+        entry.raw_samples_ms.push(10.0);
+        assert_eq!(entry.phase(), "stable");
+        assert_eq!(calibration_route_for(Some(&entry)).0, Route::Raw);
+    }
+
+    #[test]
+    fn local_calibration_prioritizes_measured_token_savings() {
+        let entry = CalibrationEntry {
+            signature: "0123456789abcdef".to_owned(),
+            key: "rg".to_owned(),
+            raw_samples_ms: vec![10.0, 11.0],
+            native_samples_ms: vec![30.0, 31.0],
+            native_input_tokens: 100,
+            native_saved_tokens: 25,
+        };
+        assert_eq!(entry.phase(), "stable");
+        assert_eq!(entry.selected_route(), Route::NativeRtk);
+        assert_eq!(median(&[1.0, 3.0]), Some(2.0));
+    }
+
+    #[test]
+    fn local_calibration_is_limited_to_safe_command_contracts() {
+        assert_eq!(
+            calibration_key(&[OsString::from("git"), OsString::from("status")]),
+            Some("git:read-only")
+        );
+        assert_eq!(
+            calibration_key(&[OsString::from("rg"), OsString::from("needle")]),
+            Some("rg")
+        );
+        assert_eq!(
+            calibration_key(&[
+                OsString::from("go"),
+                OsString::from("test"),
+                OsString::from("./...")
+            ]),
+            Some("go:test-all")
+        );
+        assert_eq!(
+            calibration_key(&[OsString::from("cargo"), OsString::from("test")]),
+            None
+        );
+        assert_eq!(
+            calibration_key(&[OsString::from("git"), OsString::from("commit")]),
+            None
+        );
+    }
+
+    #[test]
+    fn local_calibration_signature_does_not_expose_command_text() {
+        let arguments = vec![OsString::from("rg"), OsString::from("sensitive value")];
+        let signature = calibration_signature(&arguments, r"E:\work");
+        assert_eq!(signature.len(), 16);
+        assert!(!signature.contains("sensitive"));
+        assert_ne!(
+            signature,
+            calibration_signature(&[OsString::from("rg"), OsString::from("other")], r"E:\work")
+        );
     }
 }

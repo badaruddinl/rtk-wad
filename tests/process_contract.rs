@@ -4,11 +4,13 @@ use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 const CTRL_BREAK_EVENT: u32 = 1;
+static WAD_LAUNCHER_NONCE: AtomicU64 = AtomicU64::new(0);
 
 unsafe extern "system" {
     fn GenerateConsoleCtrlEvent(ctrl_type: u32, process_group_id: u32) -> i32;
@@ -30,8 +32,11 @@ fn command(program: &str) -> Command {
 }
 
 fn wad_launcher() -> (PathBuf, PathBuf) {
-    let directory =
-        std::env::temp_dir().join(format!("rtk-wad-process-contract-{}", std::process::id()));
+    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "rtk-wad-process-contract-{}-{nonce}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&directory).expect("temporary WAD directory is created");
     let wad = directory.join("rtk-wad.exe");
     std::fs::copy(launcher(), &wad).expect("test launcher is copied under the WAD command name");
@@ -198,6 +203,57 @@ fn wad_profile_selects_one_route_and_uses_a_local_gain_ledger() {
     let gain_stdout = String::from_utf8_lossy(&gain.stdout);
     assert!(gain_stdout.contains("RTK-WAD Token Savings"));
     assert!(gain_stdout.contains("Invocations: 1"));
+
+    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+}
+
+#[test]
+fn wad_calibrates_safe_commands_across_natural_invocations() {
+    let (launcher, directory) = wad_launcher();
+    let state = directory.join("state");
+    let fake_rtk = directory.join("fake-rtk.cmd");
+    std::fs::write(
+        &fake_rtk,
+        "@echo off\r\necho fake-native-rtk %*\r\nexit /b 0\r\n",
+    )
+    .expect("fake native RTK is written");
+
+    let run = || {
+        Command::new(&launcher)
+            .env("RTK_WAD_STATE_DIR", &state)
+            .env("RTK_WAD_NATIVE_RTK_PATH", &fake_rtk)
+            .args(["git", "status", "--short"])
+            .output()
+            .expect("calibration command starts")
+    };
+
+    let first = run();
+    assert!(first.status.success());
+    assert!(String::from_utf8_lossy(&first.stdout).contains("fake-native-rtk"));
+    let second = run();
+    assert!(second.status.success());
+    assert!(!String::from_utf8_lossy(&second.stdout).contains("fake-native-rtk"));
+    let third = run();
+    assert!(third.status.success());
+    assert!(String::from_utf8_lossy(&third.stdout).contains("fake-native-rtk"));
+    let fourth = run();
+    assert!(fourth.status.success());
+    let fifth = run();
+    assert!(fifth.status.success());
+
+    let state_path = state.join("calibration-v1.json");
+    let recorded = std::fs::read_to_string(state_path).expect("calibration state is written");
+    assert!(recorded.contains("\"raw_samples_ms\": ["));
+    assert!(recorded.contains("\"native_samples_ms\": ["));
+    assert!(!recorded.contains("git status"));
+
+    let inspection = Command::new(&launcher)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .arg("calibration")
+        .output()
+        .expect("calibration inspection starts");
+    assert!(inspection.status.success());
+    assert!(String::from_utf8_lossy(&inspection.stdout).contains("phase=stable"));
 
     std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
 }
