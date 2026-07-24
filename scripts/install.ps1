@@ -2,8 +2,8 @@
 param(
     [string]$Destination = (Join-Path $env:USERPROFILE ".local\bin"),
     [string]$Source = (Join-Path $PSScriptRoot "..\target\release\rtk-wsl.exe"),
-    [ValidateSet("rtk-wsl", "rtk-wsl1")]
-    [string]$CommandName = "rtk-wsl",
+    [ValidateSet("rtk-wad", "rtk-wsl", "rtk-wsl1")]
+    [string]$CommandName = "rtk-wad",
     [switch]$Force
 )
 

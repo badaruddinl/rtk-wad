@@ -10,3 +10,4 @@ readme = "README.md"
 publish = false
 
 [dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }

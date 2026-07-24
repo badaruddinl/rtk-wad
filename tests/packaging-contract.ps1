@@ -9,7 +9,8 @@ $install = Join-Path $RepositoryRoot "scripts\install.ps1"
 $uninstall = Join-Path $RepositoryRoot "scripts\uninstall.ps1"
 $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) "rtk-wsl-packaging-$PID"
 $destination = Join-Path $temporaryRoot "bin"
-$target = Join-Path $destination "rtk-wsl.exe"
+$target = Join-Path $destination "rtk-wad.exe"
+$legacyTarget = Join-Path $destination "rtk-wsl.exe"
 $wsl1Target = Join-Path $destination "rtk-wsl1.exe"
 $backup = "$target.previous.exe"
 $cmdFallback = Join-Path $destination "rtk-wsl.cmd"
@@ -23,7 +24,9 @@ try {
     Set-Content -LiteralPath $cmdFallback -Value "legacy fallback"
 
     & $install -Destination $destination
-    Assert-Condition (Test-Path -LiteralPath $target) "fresh install did not create the launcher"
+    Assert-Condition (Test-Path -LiteralPath $target) "fresh install did not create the WAD launcher"
+    & $install -Destination $destination -CommandName rtk-wsl
+    Assert-Condition (Test-Path -LiteralPath $legacyTarget) "legacy compatibility alias install did not create the launcher"
     & $install -Destination $destination -CommandName rtk-wsl1
     Assert-Condition (Test-Path -LiteralPath $wsl1Target) "WSL1 alias install did not create the launcher"
 
@@ -42,7 +45,11 @@ try {
     & $install -Destination $destination -Force
     & $uninstall -Destination $destination
     Assert-Condition (-not (Test-Path -LiteralPath $target)) "uninstall did not remove the launcher"
-    Assert-Condition (Test-Path -LiteralPath $cmdFallback) "uninstall removed the cmd fallback"
+    Assert-Condition (Test-Path -LiteralPath $legacyTarget) "WAD uninstall removed the legacy compatibility alias"
+
+    & $uninstall -Destination $destination -CommandName rtk-wsl
+    Assert-Condition (-not (Test-Path -LiteralPath $legacyTarget)) "legacy alias uninstall did not remove the launcher"
+    Assert-Condition (Test-Path -LiteralPath $cmdFallback) "legacy uninstall removed the cmd fallback"
 
     & $uninstall -Destination $destination -CommandName rtk-wsl1
     Assert-Condition (-not (Test-Path -LiteralPath $wsl1Target)) "WSL1 alias uninstall did not remove the launcher"

@@ -1,15 +1,21 @@
-# rtk-wsl
+# RTK-WAD
 
-Native Windows launcher for the Linux RTK binary in WSL. It uses `wsl.exe --exec` and forwards every argument as structured process arguments; it does not rebuild a shell command string. Git commands started from a Windows-drive worktree use native `git.exe` by default, avoiding WSL `/mnt/<drive>` traversal and CRLF-index mismatches; every other RTK command remains in WSL.
+RTK Windows Adaptive Dispatcher. `rtk-wad` is a native Windows launcher that
+chooses one safe execution route for each RTK command: raw native execution for
+mutations, stock Windows RTK for verified structured adapters, or isolated
+WSL1 RTK when Linux semantics are required. It forwards arguments as structured
+process arguments and never rebuilds a shell command string.
 
-Current stable release: `0.1.0`. Project home: `https://github.com/badaruddinl/rtk-wsl`.
+Current baseline: `0.1.0-alpha.1` (local stabilization). Project home:
+`https://github.com/badaruddinl/rtk-wsl`.
 
 ## Build and use
 
 ```powershell
 cargo build --release
 .\target\release\rtk-wsl.exe rg "pattern" .
-.\target\release\rtk-wsl.exe stats
+.\target\release\rtk-wad.exe rg "pattern" .
+.\target\release\rtk-wad.exe gain
 ```
 
 Install the release binary for the current Windows user:
@@ -18,7 +24,19 @@ Install the release binary for the current Windows user:
 .\scripts\install.ps1
 ```
 
-It installs `rtk-wsl.exe` beside the existing `rtk-wsl.cmd`. Windows resolves the `.exe` first; removing that one file restores the previous wrapper. The installer refuses to replace an existing `.exe` unless `-Force` is supplied.
+It installs `rtk-wad.exe`. The compatibility commands `rtk-wsl.exe` and
+`rtk-wsl1.exe` remain opt-in aliases and may be installed with
+`-CommandName rtk-wsl` or `-CommandName rtk-wsl1`. The installer refuses to
+replace an existing executable unless `-Force` is supplied.
+
+See [the adaptive routing contract](docs/RTK_WAD.md) for route selection,
+structured-argument safety, local `gain` accounting, and non-NTFS source-volume
+support.
+
+The first real-corpus comparison is available in
+[the Flowpeek three-way benchmark](docs/BENCHMARK_FLOWPEEK_2026-07-24.md). It
+reports both token wins and the dispatcher latency cost; do not infer a speed
+win from token savings alone.
 
 An isolated WSL1 runtime is available as an opt-in development profile. It does
 not convert or modify an existing WSL2 distribution. Enable the Windows WSL1
@@ -39,13 +57,13 @@ executable name selects the `wsl1` backend and the isolated
 normal invocation. See `docs/WSL1_BRIDGE.md` for the lifecycle and validation
 contract.
 
-For an upgrade, rebuild first and use `-Force`; the previous executable is retained as `rtk-wsl.exe.previous.exe`. To remove the Rust launcher and fall back to the retained `.cmd` wrapper, run:
+For an upgrade, rebuild first and use `-Force`; the previous executable is retained as `rtk-wad.exe.previous.exe`. To remove the adaptive launcher, run:
 
 ```powershell
 .\scripts\uninstall.ps1
 ```
 
-To restore the last backed-up executable instead, run `./scripts/uninstall.ps1 -RestorePrevious`.
+To restore the last backed-up executable instead, run `./scripts/uninstall.ps1 -RestorePrevious`. The retained `.cmd` fallback applies only when the optional `rtk-wsl` compatibility alias is installed and later removed.
 
 The launcher runs RTK through `flock` and a clean Linux environment, preserving the existing tracking lock behavior. `stats` remains a compatibility alias for RTK `gain`.
 
@@ -62,6 +80,8 @@ By default, the launcher uses the selected distro's default user and that user's
 - `RTK_WSL_LOCK_WAIT_SECONDS` (default: `120`)
 - `RTK_WSL_CWD` (optional; an absolute Linux path for UNC shares or custom WSL mounts)
 - `RTK_WSL_GIT_MODE` (`auto`, default; `native`; or `wsl`)
+- `RTK_WAD_ROUTE` (`auto`, default; `raw`; `native-rtk`; `wsl1`; or `wsl2`)
+- `RTK_WAD_NATIVE_RTK_PATH` (optional; defaults to `rtk.exe` on `PATH`)
 
 The `rtk-wsl1.exe` alias defaults to `RTK_WSL_BACKEND=wsl1` and
 `RTK_WSL_DISTRO=Ubuntu-RTK-WSL1`. Explicit environment values override the

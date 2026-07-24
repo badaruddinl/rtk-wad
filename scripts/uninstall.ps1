@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$Destination = (Join-Path $env:USERPROFILE ".local\bin"),
-    [ValidateSet("rtk-wsl", "rtk-wsl1")]
-    [string]$CommandName = "rtk-wsl",
+    [ValidateSet("rtk-wad", "rtk-wsl", "rtk-wsl1")]
+    [string]$CommandName = "rtk-wad",
     [switch]$RestorePrevious
 )
 

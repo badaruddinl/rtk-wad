@@ -2,6 +2,7 @@
 
 use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,6 +27,15 @@ fn command(program: &str) -> Command {
             .env("RTK_WSL_DISTRO", distro);
     }
     command
+}
+
+fn wad_launcher() -> (PathBuf, PathBuf) {
+    let directory =
+        std::env::temp_dir().join(format!("rtk-wad-process-contract-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("temporary WAD directory is created");
+    let wad = directory.join("rtk-wad.exe");
+    std::fs::copy(launcher(), &wad).expect("test launcher is copied under the WAD command name");
+    (wad, directory)
 }
 
 #[test]
@@ -109,6 +119,46 @@ fn bridge_info_reports_the_selected_default_distribution() {
 }
 
 #[test]
+fn wad_profile_selects_one_route_and_uses_a_local_gain_ledger() {
+    let (launcher, directory) = wad_launcher();
+    let local_app_data = directory.join("local-app-data");
+
+    let info = Command::new(&launcher)
+        .arg("--adapter-info")
+        .output()
+        .expect("WAD diagnostics start");
+    assert!(info.status.success());
+    assert!(String::from_utf8_lossy(&info.stdout).contains("adapter=rtk-wad"));
+
+    let explained = Command::new(&launcher)
+        .args(["--explain-route", "git", "commit", "-m", "contract"])
+        .output()
+        .expect("WAD route diagnostics start");
+    assert!(explained.status.success());
+    assert!(String::from_utf8_lossy(&explained.stdout).contains("route=raw"));
+
+    let raw = Command::new(&launcher)
+        .env("LOCALAPPDATA", &local_app_data)
+        .args(["--route", "raw", "git", "--version"])
+        .output()
+        .expect("WAD raw route starts");
+    assert!(raw.status.success());
+    assert!(String::from_utf8_lossy(&raw.stdout).starts_with("git version "));
+
+    let gain = Command::new(&launcher)
+        .env("LOCALAPPDATA", &local_app_data)
+        .arg("gain")
+        .output()
+        .expect("WAD gain starts");
+    assert!(gain.status.success());
+    let gain_stdout = String::from_utf8_lossy(&gain.stdout);
+    assert!(gain_stdout.contains("RTK-WAD Token Savings"));
+    assert!(gain_stdout.contains("Invocations: 1"));
+
+    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+}
+
+#[test]
 fn provisioned_wsl1_bridge_preserves_the_process_contract_when_requested() {
     let Ok(distro) = std::env::var("RTK_WSL1_TEST_DISTRO") else {
         return;
@@ -132,12 +182,23 @@ fn provisioned_wsl1_bridge_preserves_the_process_contract_when_requested() {
 
 #[test]
 fn ctrl_break_releases_the_global_lock_for_waiting_children() {
+    let ready_file = std::env::temp_dir().join(format!("rtk-wsl-ready-{}", std::process::id()));
+    let _ = std::fs::remove_file(&ready_file);
     let mut first = command("/bin/sh")
         .args(["-c", "sleep 30"])
+        .env("RTK_WSL_TEST_READY_FILE", &ready_file)
         .creation_flags(CREATE_NEW_PROCESS_GROUP)
         .stderr(Stdio::piped())
         .spawn()
         .expect("first launcher starts");
+    let ready_deadline = Instant::now() + Duration::from_secs(10);
+    while !ready_file.exists() {
+        assert!(
+            Instant::now() < ready_deadline,
+            "launcher did not register its Ctrl+Break handler"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
     thread::sleep(Duration::from_secs(3));
     if let Some(status) = first.try_wait().expect("first status is available") {
         let mut stderr = String::new();
@@ -224,4 +285,5 @@ fn ctrl_break_releases_the_global_lock_for_waiting_children() {
         });
         thread::sleep(Duration::from_millis(100));
     }
+    let _ = std::fs::remove_file(ready_file);
 }
