@@ -2,14 +2,16 @@
 param(
     [string]$Destination = (Join-Path $env:USERPROFILE ".local\bin"),
     [string]$Source = (Join-Path $PSScriptRoot "..\target\release\rtk-wsl.exe"),
+    [ValidateSet("rtk-wsl", "rtk-wsl1")]
+    [string]$CommandName = "rtk-wsl",
     [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
 $source = (Resolve-Path -LiteralPath $source).Path
 $targetDirectory = [System.IO.Path]::GetFullPath($Destination)
-$target = Join-Path $targetDirectory "rtk-wsl.exe"
-$temporary = Join-Path $targetDirectory ".rtk-wsl.exe.$PID.new"
+$target = Join-Path $targetDirectory "$CommandName.exe"
+$temporary = Join-Path $targetDirectory ".$CommandName.exe.$PID.new"
 
 New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
 try {
