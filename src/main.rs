@@ -1334,9 +1334,9 @@ fn auto_wad_route(
         }
     }
     match wad_command_family(arguments) {
-        "npm" => (
+        "npm" | "npx" => (
             Route::Raw,
-            "validated Windows npm fallback avoids an unavailable WSL toolchain",
+            "validated Windows Node fallback avoids an unavailable WSL toolchain",
         ),
         "git" if is_verified_read_only_git(arguments) => (
             Route::NativeRtk,
@@ -1409,6 +1409,7 @@ fn run_raw(arguments: &[OsString]) -> std::io::Result<ExitStatus> {
     let executable = match program.to_str() {
         Some("git") => OsString::from("git.exe"),
         Some("npm") => OsString::from("npm.cmd"),
+        Some("npx") => OsString::from("npx.cmd"),
         _ => program.clone(),
     };
     Command::new(executable)
@@ -1992,6 +1993,10 @@ mod tests {
 
         assert_eq!(
             auto_wad_route(&[OsString::from("npm")], Some(r"E:\work"), None).0,
+            Route::Raw
+        );
+        assert_eq!(
+            auto_wad_route(&[OsString::from("npx")], Some(r"E:\work"), None).0,
             Route::Raw
         );
 

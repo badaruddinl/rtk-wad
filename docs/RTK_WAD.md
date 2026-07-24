@@ -41,10 +41,10 @@ WAD falls back to WSL1 only when Windows reports `NotFound` while starting the
 native process. No child has started in that case. An explicit `native-rtk`
 route always fails directly if its configured executable is unavailable.
 
-`npm` is a validated Windows raw route while WSL1 has no Node toolchain. It is
-still eligible for a future evidence-backed native RTK promotion; the raw route
-is selected now because it executes once and avoids an otherwise guaranteed WSL
-tool-not-found failure.
+`npm` and `npx` are validated Windows raw routes while WSL1 has no Node
+toolchain. They are still eligible for future evidence-backed native RTK
+promotion; raw is selected now because it executes once and avoids an otherwise
+guaranteed WSL tool-not-found failure.
 
 `RTK_WAD_ROUTE` sets the default route (`auto`, `raw`, `native-rtk`, `wsl1`, or
 `wsl2`). A leading `--route` option has higher precedence for a single
