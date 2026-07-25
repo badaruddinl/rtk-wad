@@ -62,9 +62,10 @@ try {
     Assert-Condition (Test-Path -LiteralPath (Join-Path $tokenizerDestination "rtk-wad.exe")) "explicit tokenizer install did not create the WAD launcher"
 
     $tokenizerFailureDestination = Join-Path $temporaryRoot "tokenizer-failure"
+    $tokenizerFailureRoot = Join-Path $temporaryRoot "tokenizer-failure-root"
     $missingPython = Join-Path $temporaryRoot "missing-python.exe"
     $tokenizerFailureRaised = $false
-    try { & $install -Destination $tokenizerFailureDestination -InstallTokenizer -TokenizerPython $missingPython } catch { $tokenizerFailureRaised = $true }
+    try { & $install -Destination $tokenizerFailureDestination -InstallTokenizer -TokenizerRoot $tokenizerFailureRoot -TokenizerPython $missingPython } catch { $tokenizerFailureRaised = $true }
     Assert-Condition $tokenizerFailureRaised "missing optional tokenizer runtime did not fail its explicit install"
     Assert-Condition (-not (Test-Path -LiteralPath (Join-Path $tokenizerFailureDestination "rtk-wad.exe"))) "tokenizer failure activated a WAD launcher"
 

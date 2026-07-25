@@ -149,6 +149,9 @@ threshold despite being slower on this host. See the versioned
 [comparison and methodology](docs/BENCHMARK_COMPARISON_P20.md), the
 [full Windows/WSL matrix](docs/BENCHMARK_CORE_MATRIX_P18_2026-07-25.md), and
 [machine-readable evidence](benchmarks/evidence/p18-comparison-summary.json).
+A separate [public ripgrep corpus measurement](docs/P21_PUBLIC_RIPGREP_BENCHMARK.md)
+records a zero-saving result; it is retained precisely because benchmark claims
+must remain corpus-specific and falsifiable.
 
 ### Read `gain` honestly
 
@@ -177,6 +180,7 @@ system, conversation, output, and model pricing all affect an eventual bill.
 | --- | --- |
 | Routing, configuration, and local accounting | [RTK-WAD contract](docs/RTK_WAD.md) |
 | Public benchmark comparison | [P20 comparison](docs/BENCHMARK_COMPARISON_P20.md) |
+| Public external-corpus benchmark | [P21 ripgrep evidence](docs/P21_PUBLIC_RIPGREP_BENCHMARK.md) |
 | Full native Windows, WSL1, and WSL2 matrix | [P18 core matrix](docs/BENCHMARK_CORE_MATRIX_P18_2026-07-25.md) |
 | Provider discovery, mapping, and execution | [Provider documentation index](docs/README.md#cross-host-providers-and-setup) |
 | Fresh-machine tokenizer dependency | [Runtime dependencies](docs/DEPENDENCIES.md) |
