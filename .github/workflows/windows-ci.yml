@@ -2,9 +2,9 @@ name: Windows CI
 
 on:
   push:
-    branches: [development, 'agent/**']
+    branches: [master, development, 'agent/**']
   pull_request:
-    branches: [development]
+    branches: [master, development]
   workflow_dispatch:
 
 permissions:
