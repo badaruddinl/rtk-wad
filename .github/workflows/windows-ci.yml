@@ -68,11 +68,22 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Install Python for WAD tokenizer contracts
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build release launcher
         run: cargo build --release
+
+      - name: Run tokenizer dependency contracts
+        shell: pwsh
+        run: |
+          .\tests\tokenizer-bootstrap-contract.ps1
+          .\tests\tokenizer-install-contract.ps1
 
       - name: Run isolated install and recovery contract
         shell: pwsh

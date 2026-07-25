@@ -55,6 +55,16 @@ tokenizer cannot be provisioned; compatibility aliases do not provision it.
 See [runtime dependencies](docs/DEPENDENCIES.md) for the ownership and upgrade
 contract.
 
+On a fresh PC without Python, first review:
+
+```powershell
+.\scripts\install-tokenizer.ps1 -PlanPythonBootstrap
+```
+
+The canonical install can then authorize only the documented Python 3.12
+`winget` package with `-InstallPython -ConfirmPythonInstall`; it never chooses
+another installer automatically.
+
 See [the adaptive routing contract](docs/RTK_WAD.md) for route selection,
 structured-argument safety, local `gain` accounting, and non-NTFS source-volume
 support.

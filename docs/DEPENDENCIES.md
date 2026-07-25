@@ -16,3 +16,12 @@ the tokenizer and packaging contracts.
 `tiktoken` is distributed under the MIT license; WAD itself remains licensed
 under Apache-2.0. See the upstream package metadata for the current license and
 Python-runtime requirements.
+
+## Fresh-machine bootstrap
+
+The tokenizer installer prefers an existing Python 3.12 runtime and accepts an
+existing Python 3.9+ runtime. If none is available, it exposes a plan for the
+single exact `winget` package `Python.Python.3.12`. It runs that package-manager
+command only when the caller passes both `-InstallPython` and
+`-ConfirmPythonInstall`; otherwise the WAD launcher is not activated. It never
+selects a secondary package manager or modifies a global Python environment.

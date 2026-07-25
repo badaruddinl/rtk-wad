@@ -6,6 +6,8 @@ param(
     [string]$CommandName = "rtk-wad",
     [string]$TokenizerRoot = (Join-Path $env:LOCALAPPDATA "rtk-wad\tokenizer\tiktoken-0.12.0"),
     [string]$TokenizerPython,
+    [switch]$InstallPython,
+    [switch]$ConfirmPythonInstall,
     [switch]$SkipTokenizer,
     [switch]$Force
 )
@@ -19,7 +21,7 @@ $tokenizerInstaller = Join-Path $PSScriptRoot "install-tokenizer.ps1"
 
 New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
 if ($CommandName -eq "rtk-wad" -and -not $SkipTokenizer) {
-    & $tokenizerInstaller -Root $TokenizerRoot -Python $TokenizerPython
+    & $tokenizerInstaller -Root $TokenizerRoot -Python $TokenizerPython -InstallPython:$InstallPython -ConfirmPythonInstall:$ConfirmPythonInstall
     if ($LASTEXITCODE -ne 0) { throw "WAD tokenizer dependency installation failed." }
 }
 try {

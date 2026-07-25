@@ -2,7 +2,12 @@
 param(
     [string]$Root = (Join-Path $env:LOCALAPPDATA "rtk-wad\tokenizer\tiktoken-0.12.0"),
     [string]$Python,
-    [string]$Requirements = (Join-Path $PSScriptRoot "..\requirements\wad-tokenizer.txt")
+    [string]$Requirements = (Join-Path $PSScriptRoot "..\requirements\wad-tokenizer.txt"),
+    [switch]$PlanPythonBootstrap,
+    [switch]$InstallPython,
+    [switch]$ConfirmPythonInstall,
+    [switch]$ForcePythonBootstrap,
+    [string]$Winget = "winget.exe"
 )
 
 Set-StrictMode -Version Latest
@@ -13,17 +18,83 @@ function Resolve-PythonRuntime {
 
     if ($ExplicitPython) {
         $resolved = (Resolve-Path -LiteralPath $ExplicitPython -ErrorAction Stop).Path
-        return [pscustomobject]@{ File = $resolved; Prefix = @() }
+        return (Assert-PythonRuntime -PythonPath $resolved)
     }
     $launcher = Get-Command py.exe -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($launcher) {
-        return [pscustomobject]@{ File = $launcher.Source; Prefix = @("-3.12") }
+        $resolved = (& $launcher.Source -3.12 -c "import sys; print(sys.executable)").Trim()
+        if ($LASTEXITCODE -eq 0 -and $resolved) {
+            return (Assert-PythonRuntime -PythonPath $resolved)
+        }
     }
     $python = Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($python) {
-        return [pscustomobject]@{ File = $python.Source; Prefix = @() }
+        return (Assert-PythonRuntime -PythonPath $python.Source)
     }
-    throw "Python 3.12 is required to install the WAD tokenizer dependency. Install Python first, then rerun this installer."
+    foreach ($candidate in @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"),
+        (Join-Path ${env:ProgramFiles} "Python312\python.exe")
+    )) {
+        if (Test-Path -LiteralPath $candidate) {
+            return (Assert-PythonRuntime -PythonPath $candidate)
+        }
+    }
+    return $null
+}
+
+function Assert-PythonRuntime {
+    param([Parameter(Mandatory)] [string]$PythonPath)
+
+    $version = (& $PythonPath -c "import sys; print('.'.join(map(str, sys.version_info[:2])))").Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw "The selected Python runtime could not be queried: $PythonPath"
+    }
+    $parts = $version.Split('.')
+    if ($parts.Count -ne 2 -or [int]$parts[0] -ne 3 -or [int]$parts[1] -lt 9) {
+        throw "The selected Python runtime must be Python 3.9 or later: $PythonPath ($version)"
+    }
+    return [pscustomobject]@{ File = $PythonPath; Version = $version }
+}
+
+function Get-PythonBootstrapPlan {
+    param([Parameter(Mandatory)] [string]$WingetPath)
+
+    $resolvedWinget = Get-Command $WingetPath -ErrorAction SilentlyContinue | Select-Object -First 1
+    [pscustomobject]@{
+        status = if ($resolvedWinget) { "planned" } else { "blocked" }
+        package = "Python.Python.3.12"
+        source = "winget"
+        executable = if ($resolvedWinget) { $resolvedWinget.Source } else { $WingetPath }
+        arguments = @("install", "--id", "Python.Python.3.12", "--exact", "--source", "winget", "--accept-package-agreements", "--accept-source-agreements")
+        reason = if ($resolvedWinget) { "Python is needed only to provision the pinned WAD tokenizer dependency." } else { "winget is unavailable; WAD will not select an alternate installer automatically." }
+    }
+}
+
+function Install-PythonRuntime {
+    param(
+        [Parameter(Mandatory)] [object]$Plan,
+        [switch]$Install,
+        [switch]$Confirm
+    )
+
+    if (-not $Install) {
+        throw "No usable Python 3.9+ runtime was found. Review the plan with -PlanPythonBootstrap, or rerun with -InstallPython -ConfirmPythonInstall to authorize the documented Python.Python.3.12 winget installation."
+    }
+    if (-not $Confirm) {
+        throw "Python bootstrap requires explicit confirmation. Re-run with -InstallPython -ConfirmPythonInstall after reviewing the plan."
+    }
+    if ($Plan.status -ne "planned") {
+        throw "Python bootstrap is blocked: $($Plan.reason)"
+    }
+    & $Plan.executable @($Plan.arguments)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python bootstrap failed with exit code $LASTEXITCODE. The WAD launcher was not activated."
+    }
+    $runtime = Resolve-PythonRuntime
+    if (-not $runtime) {
+        throw "Python installation completed but no usable runtime is visible in this process. Open a new terminal and rerun the WAD installer; the launcher was not activated."
+    }
+    return $runtime
 }
 
 function Invoke-RuntimePython {
@@ -32,7 +103,7 @@ function Invoke-RuntimePython {
         [Parameter(Mandatory)] [string[]]$Arguments
     )
 
-    & $Runtime.File @($Runtime.Prefix + $Arguments)
+    & $Runtime.File @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "Python command failed with exit code $LASTEXITCODE."
     }
@@ -49,6 +120,10 @@ function Assert-Tokenizer {
 
 $requirementsPath = (Resolve-Path -LiteralPath $Requirements -ErrorAction Stop).Path
 $rootPath = [System.IO.Path]::GetFullPath($Root)
+if ($PlanPythonBootstrap) {
+    Get-PythonBootstrapPlan -WingetPath $Winget | ConvertTo-Json -Compress
+    return
+}
 $venvPython = Join-Path $rootPath "Scripts\python.exe"
 if (Test-Path -LiteralPath $venvPython) {
     Assert-Tokenizer -PythonPath $venvPython
@@ -62,7 +137,11 @@ if (Test-Path -LiteralPath $rootPath) {
 $parent = Split-Path -Parent $rootPath
 New-Item -ItemType Directory -Path $parent -Force | Out-Null
 $staging = "$rootPath.$PID.new"
-$runtime = Resolve-PythonRuntime -ExplicitPython $Python
+$runtime = if ($ForcePythonBootstrap) { $null } else { Resolve-PythonRuntime -ExplicitPython $Python }
+if (-not $runtime) {
+    $plan = Get-PythonBootstrapPlan -WingetPath $Winget
+    $runtime = Install-PythonRuntime -Plan $plan -Install:$InstallPython -Confirm:$ConfirmPythonInstall
+}
 try {
     Invoke-RuntimePython -Runtime $runtime -Arguments @("-m", "venv", $staging)
     $stagingPython = Join-Path $staging "Scripts\python.exe"
