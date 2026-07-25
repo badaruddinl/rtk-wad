@@ -162,6 +162,10 @@ manifest before any latency or token-saving claim is published.
 the first verified native Windows and WSL1/WSL2 measurements, including raw
 latency, RTK token savings, WAD overhead, and the final automatic decision.
 
+[The P20 local release gate](docs/RELEASE_GATE_P20.md) runs the current
+commit's Rust, process, tokenizer, packaging, setup, and exact-provider
+preflight checks as one explicit no-publish verification command.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture
