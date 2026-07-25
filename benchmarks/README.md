@@ -122,12 +122,12 @@ not already on `PATH`.
 ## Node package-manager runner
 
 `run-npm-run-list-three-way.mjs` measures the read-only `npm run` script-list
-operation on a real Windows worktree. It compares `npm.cmd`, stock native RTK,
-and WAD auto mode with rotating warm and measured rounds. It records hashes,
-exit codes, latency, and `o200k_base` token counts for all variants. A route
-policy is emitted only when every measured command exits successfully; it is
-limited to the exact `npm run` form. `npm run <script>` is intentionally out of
-scope because scripts may mutate source, dependencies, or external state.
+operation on a real Windows worktree. It requires P18 preflight for the exact
+stock native RTK, records raw Windows, the explicit WAD native candidate, and
+WAD auto mode after importing a v2 context-bound policy into state unique to
+the artifact. It records hashes, exit codes, latency, and `o200k_base` token
+counts for all variants. `npm run <script>` is intentionally out of scope
+because scripts may mutate source, dependencies, or external state.
 
 ```powershell
 node .\benchmarks\run-npm-run-list-three-way.mjs `
@@ -135,8 +135,8 @@ node .\benchmarks\run-npm-run-list-three-way.mjs `
   --native-rtk C:\tools\rtk.exe `
   --wad C:\tools\rtk-wad.exe `
   --python C:\path\to\python.exe `
-  --output .\benchmarks\results\flowpeek-npm-run-list.json `
-  --install-policy
+  --preflight .\.flowpeek\cache\p18-benchmark-preflight.json `
+  --output .\benchmarks\results\flowpeek-npm-run-list.json
 ```
 
 Set `RTK_WAD_BENCH_NPM` to an explicit `npm.cmd` only when it is not available
