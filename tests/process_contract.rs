@@ -270,6 +270,108 @@ fn wad_rejects_unsafe_generic_provider_names_before_discovery() {
     std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
 }
 
+fn resolved_windows_candidate(output: &std::process::Output) -> serde_json::Value {
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let resolution: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("provider resolution is JSON");
+    resolution["candidates"]
+        .as_array()
+        .expect("provider resolution lists candidates")
+        .iter()
+        .find(|candidate| {
+            candidate["kind"]
+                .as_str()
+                .is_some_and(|kind| kind.starts_with("windows_"))
+        })
+        .expect("Windows Git provider is discovered")
+        .clone()
+}
+
+#[test]
+fn wad_resolve_verifies_wsl_project_paths_for_windows_providers() {
+    let (launcher, directory) = wad_launcher();
+    let state = directory.join("state");
+    let mut distros = vec!["Ubuntu".to_owned()];
+    if let Ok(wsl1_distro) = std::env::var("RTK_WSL1_TEST_DISTRO")
+        && !distros.contains(&wsl1_distro)
+    {
+        distros.push(wsl1_distro);
+    }
+
+    for distro in distros {
+        let user = Command::new("wsl.exe")
+            .args(["-d", &distro, "--exec", "id", "-un"])
+            .output()
+            .expect("selected WSL user is inspected");
+        assert!(user.status.success());
+        let user = String::from_utf8_lossy(&user.stdout).trim().to_owned();
+        assert!(!user.is_empty());
+        let mounted = Command::new(&launcher)
+            .env("RTK_WAD_STATE_DIR", &state)
+            .env("RTK_WSL_DISTRO", &distro)
+            .env("RTK_WSL_USER", &user)
+            .env("RTK_WSL_CWD", "/mnt/e/luthfi/project/rtk-wsl")
+            .args(["resolve", "git", "--json", "--refresh"])
+            .output()
+            .expect("mounted WSL project resolution starts");
+        let mounted_candidate = resolved_windows_candidate(&mounted);
+        assert_eq!(mounted_candidate["usable"], true);
+        assert!(
+            mounted_candidate["project_path"]
+                .as_str()
+                .is_some_and(|path| path.eq_ignore_ascii_case(r"E:\luthfi\project\rtk-wsl")),
+            "mounted {distro} project mapping: {mounted_candidate}"
+        );
+
+        let native_path = format!(
+            "/tmp/rtk-wad-p13-native-{}-{}",
+            std::process::id(),
+            distro.replace(|character: char| !character.is_ascii_alphanumeric(), "-")
+        );
+        let created = Command::new("wsl.exe")
+            .args(["-d", &distro, "--exec", "mkdir", "-p", &native_path])
+            .status()
+            .expect("temporary native WSL project is created");
+        assert!(created.success());
+        let native = Command::new(&launcher)
+            .env("RTK_WAD_STATE_DIR", &state)
+            .env("RTK_WSL_DISTRO", &distro)
+            .env("RTK_WSL_USER", &user)
+            .env("RTK_WSL_CWD", &native_path)
+            .args(["resolve", "git", "--json", "--refresh"])
+            .output()
+            .expect("native WSL project resolution starts");
+        let native_candidate = resolved_windows_candidate(&native);
+        assert_eq!(native_candidate["usable"], true);
+        let native_windows_path = native_candidate["project_path"]
+            .as_str()
+            .expect("native WSL project has a Windows path");
+        let expected_prefix = format!(
+            r"\\wsl.localhost\{}\tmp\rtk-wad-p13-native-{}-",
+            distro.to_ascii_lowercase(),
+            std::process::id()
+        );
+        assert!(
+            native_windows_path
+                .to_ascii_lowercase()
+                .starts_with(&expected_prefix),
+            "native {distro} project mapping: {native_windows_path}"
+        );
+
+        let removed = Command::new("wsl.exe")
+            .args(["-d", &distro, "--exec", "rmdir", &native_path])
+            .status()
+            .expect("temporary native WSL project cleanup starts");
+        assert!(removed.success());
+    }
+    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+}
+
 #[test]
 fn provisioned_wsl1_bridge_preserves_the_process_contract_when_requested() {
     let Ok(distro) = std::env::var("RTK_WSL1_TEST_DISTRO") else {

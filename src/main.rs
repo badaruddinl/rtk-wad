@@ -1007,20 +1007,36 @@ fn cached_or_discovered_tool(
     (discovered, "miss")
 }
 
-fn wsl_mapping_arguments(distro: &str, windows_path: &str) -> Vec<OsString> {
-    vec![
-        OsString::from("-d"),
-        OsString::from(distro),
-        OsString::from("--exec"),
+fn wsl_exec_prefix(distro: &str, user: Option<&str>) -> Vec<OsString> {
+    let mut arguments = vec![OsString::from("-d"), OsString::from(distro)];
+    if let Some(user) = user {
+        arguments.extend([OsString::from("-u"), OsString::from(user)]);
+    }
+    arguments.push(OsString::from("--exec"));
+    arguments
+}
+
+fn wsl_mapping_arguments_with_user(
+    distro: &str,
+    user: Option<&str>,
+    windows_path: &str,
+) -> Vec<OsString> {
+    let mut arguments = wsl_exec_prefix(distro, user);
+    arguments.extend([
         OsString::from("wslpath"),
         OsString::from("-a"),
         OsString::from(windows_path),
-    ]
+    ]);
+    arguments
 }
 
-fn mapped_windows_project_path(distro: &str, windows_path: &str) -> Option<String> {
+fn mapped_windows_project_path(
+    distro: &str,
+    user: Option<&str>,
+    windows_path: &str,
+) -> Option<String> {
     Command::new("wsl.exe")
-        .args(wsl_mapping_arguments(distro, windows_path))
+        .args(wsl_mapping_arguments_with_user(distro, user, windows_path))
         .output()
         .ok()
         .filter(|output| output.status.success())
@@ -1028,40 +1044,146 @@ fn mapped_windows_project_path(distro: &str, windows_path: &str) -> Option<Strin
         .filter(|path| path.starts_with('/'))
 }
 
+fn windows_mapping_arguments_with_user(
+    distro: &str,
+    user: Option<&str>,
+    linux_path: &str,
+) -> Vec<OsString> {
+    let mut arguments = wsl_exec_prefix(distro, user);
+    arguments.extend([
+        OsString::from("wslpath"),
+        OsString::from("-w"),
+        OsString::from("-a"),
+        OsString::from(linux_path),
+    ]);
+    arguments
+}
+
+fn mapped_wsl_project_path(distro: &str, user: Option<&str>, linux_path: &str) -> Option<String> {
+    Command::new("wsl.exe")
+        .args(windows_mapping_arguments_with_user(
+            distro, user, linux_path,
+        ))
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| first_output_line(&output.stdout))
+}
+
+fn wsl_directory_exists(distro: &str, user: Option<&str>, path: &str) -> bool {
+    Command::new("wsl.exe")
+        .args({
+            let mut arguments = wsl_exec_prefix(distro, user);
+            arguments.extend([
+                OsString::from("test"),
+                OsString::from("-d"),
+                OsString::from(path),
+            ]);
+            arguments
+        })
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn is_windows_project_path_for_distro(path: &str, expected_distro: Option<&str>) -> bool {
+    match classify_project_path(path) {
+        ProjectLocation {
+            kind: ProjectLocationKind::Windows,
+            ..
+        } => true,
+        ProjectLocation {
+            kind: ProjectLocationKind::Wsl,
+            distro: Some(distro),
+            ..
+        } => expected_distro.is_some_and(|expected| distro.eq_ignore_ascii_case(expected)),
+        ProjectLocation {
+            kind: ProjectLocationKind::Wsl | ProjectLocationKind::Unknown,
+            ..
+        } => false,
+    }
+}
+
 fn wsl_project_path_with(
     project: &ProjectLocation,
     probe: &WslToolProbe,
     map_windows_path: impl FnOnce(&str, &str) -> Option<String>,
+    directory_exists: impl FnOnce(&str, &str) -> bool,
 ) -> Option<String> {
-    match project.kind {
+    let path = match project.kind {
         ProjectLocationKind::Windows => map_windows_path(&probe.distro, &project.path),
         ProjectLocationKind::Wsl if project.distro.as_deref() == Some(probe.distro.as_str()) => {
             Some(project.path.clone())
         }
         ProjectLocationKind::Wsl | ProjectLocationKind::Unknown => None,
-    }
+    }?;
+    (path.starts_with('/') && directory_exists(&probe.distro, &path)).then_some(path)
 }
 
-fn wsl_project_path(project: &ProjectLocation, probe: &WslToolProbe) -> Option<String> {
-    wsl_project_path_with(project, probe, mapped_windows_project_path)
+fn wsl_project_path(
+    project: &ProjectLocation,
+    probe: &WslToolProbe,
+    user: Option<&str>,
+) -> Option<String> {
+    wsl_project_path_with(
+        project,
+        probe,
+        |distro, path| mapped_windows_project_path(distro, user, path),
+        |distro, path| wsl_directory_exists(distro, user, path),
+    )
+}
+
+fn windows_project_path_with(
+    project: &ProjectLocation,
+    map_wsl_path: impl FnOnce(&str, &str) -> Option<String>,
+    directory_exists: impl FnOnce(&str) -> bool,
+) -> Option<String> {
+    let path = match project.kind {
+        ProjectLocationKind::Windows => Some(project.path.clone()),
+        ProjectLocationKind::Wsl => project
+            .distro
+            .as_deref()
+            .and_then(|distro| map_wsl_path(distro, &project.path)),
+        ProjectLocationKind::Unknown => None,
+    }?;
+    let expected_distro = (project.kind == ProjectLocationKind::Wsl)
+        .then_some(project.distro.as_deref())
+        .flatten();
+    (is_windows_project_path_for_distro(&path, expected_distro) && directory_exists(&path))
+        .then_some(path)
+}
+
+fn windows_project_path(project: &ProjectLocation, user: Option<&str>) -> Option<String> {
+    windows_project_path_with(
+        project,
+        |distro, path| mapped_wsl_project_path(distro, user, path),
+        |path| Path::new(path).is_dir(),
+    )
 }
 
 fn resolve_tool_provider(tool: &str, config: &Config, refresh: bool) -> ProviderResolution {
     let project = current_project_location(config);
     let (discovery, cache) = cached_or_discovered_tool(tool, config, refresh, true);
-    resolve_tool_provider_from_discovery(tool, project, discovery, cache)
+    resolve_tool_provider_from_discovery_with_user(
+        tool,
+        project,
+        discovery,
+        cache,
+        config.user.as_deref(),
+    )
 }
 
-fn resolve_tool_provider_from_discovery(
+fn resolve_tool_provider_from_discovery_with_user(
     tool: &str,
     project: ProjectLocation,
     discovery: ProviderCacheEntry,
     cache: &'static str,
+    user: Option<&str>,
 ) -> ProviderResolution {
     let availability = discovery.clone();
     let mut candidates = Vec::new();
     if let Some(executable) = discovery.windows.executable {
-        let usable = project.kind != ProjectLocationKind::Wsl;
+        let project_path = windows_project_path(&project, user);
+        let usable = project_path.is_some();
         candidates.push(ProviderCandidate {
             kind: if discovery.windows.native_rtk.is_some() {
                 ProviderKind::WindowsRtk
@@ -1072,19 +1194,23 @@ fn resolve_tool_provider_from_discovery(
             wsl_version: None,
             executable,
             rtk: discovery.windows.native_rtk,
-            project_path: None,
+            project_path,
             usable,
             reason: if usable {
-                "native Windows toolchain is available".to_owned()
+                if project.kind == ProjectLocationKind::Wsl {
+                    "Windows toolchain and WSL-to-Windows project mapping are verified; generic execution remains diagnostic until P14".to_owned()
+                } else {
+                    "native Windows toolchain and project directory are available".to_owned()
+                }
             } else {
-                "Windows execution from a WSL project is intentionally not automatic in PD1"
+                "provider is present but its project directory is not verified for Windows execution"
                     .to_owned()
             },
         });
     }
     for probe in discovery.wsl {
         if let Some(executable) = &probe.executable {
-            let project_path = wsl_project_path(&project, &probe);
+            let project_path = wsl_project_path(&project, &probe, user);
             let usable = project_path.is_some();
             candidates.push(ProviderCandidate {
                 kind: if probe.rtk.is_some() {
@@ -3932,17 +4058,25 @@ mod tests {
             distro: None,
         };
         assert_eq!(
-            wsl_project_path_with(&windows_project, &probe, |distro, path| {
-                assert_eq!(distro, "Ubuntu");
-                assert_eq!(path, r"E:\work");
-                None
-            }),
+            wsl_project_path_with(
+                &windows_project,
+                &probe,
+                |distro, path| {
+                    assert_eq!(distro, "Ubuntu");
+                    assert_eq!(path, r"E:\work");
+                    None
+                },
+                |_, _| true,
+            ),
             None
         );
         assert_eq!(
-            wsl_project_path_with(&windows_project, &probe, |_, _| {
-                Some("/mnt/e/work".to_owned())
-            }),
+            wsl_project_path_with(
+                &windows_project,
+                &probe,
+                |_, _| Some("/mnt/e/work".to_owned()),
+                |distro, path| distro == "Ubuntu" && path == "/mnt/e/work",
+            ),
             Some("/mnt/e/work".to_owned())
         );
 
@@ -3952,11 +4086,22 @@ mod tests {
             distro: Some("Ubuntu".to_owned()),
         };
         assert_eq!(
-            wsl_project_path_with(&same_wsl_project, &probe, |_, _| None),
+            wsl_project_path_with(
+                &same_wsl_project,
+                &probe,
+                |_, _| None,
+                |distro, path| distro == "Ubuntu" && path == "/home/test/work",
+            ),
             Some("/home/test/work".to_owned())
         );
 
-        let mapping = wsl_mapping_arguments("Ubuntu", r"E:\work with spaces\$literal");
+        assert_eq!(
+            wsl_project_path_with(&same_wsl_project, &probe, |_, _| None, |_, _| false,),
+            None
+        );
+
+        let mapping =
+            wsl_mapping_arguments_with_user("Ubuntu", None, r"E:\work with spaces\$literal");
         assert_eq!(
             mapping,
             vec![
@@ -3966,6 +4111,104 @@ mod tests {
                 OsString::from("wslpath"),
                 OsString::from("-a"),
                 OsString::from(r"E:\work with spaces\$literal"),
+            ]
+        );
+        assert_eq!(
+            wsl_mapping_arguments_with_user("Ubuntu", Some("luthfi"), r"E:\work"),
+            vec![
+                OsString::from("-d"),
+                OsString::from("Ubuntu"),
+                OsString::from("-u"),
+                OsString::from("luthfi"),
+                OsString::from("--exec"),
+                OsString::from("wslpath"),
+                OsString::from("-a"),
+                OsString::from(r"E:\work"),
+            ]
+        );
+    }
+
+    #[test]
+    fn provider_resolution_verifies_wsl_to_windows_project_mappings() {
+        let windows_project = ProjectLocation {
+            kind: ProjectLocationKind::Windows,
+            path: r"E:\work with spaces\漢字".to_owned(),
+            distro: None,
+        };
+        assert_eq!(
+            windows_project_path_with(
+                &windows_project,
+                |_, _| None,
+                |path| { path == r"E:\work with spaces\漢字" }
+            ),
+            Some(r"E:\work with spaces\漢字".to_owned())
+        );
+
+        let wsl_project = ProjectLocation {
+            kind: ProjectLocationKind::Wsl,
+            path: "/home/luthfi/work with spaces/漢字".to_owned(),
+            distro: Some("Ubuntu".to_owned()),
+        };
+        assert_eq!(
+            windows_project_path_with(
+                &wsl_project,
+                |distro, path| {
+                    assert_eq!(distro, "Ubuntu");
+                    assert_eq!(path, "/home/luthfi/work with spaces/漢字");
+                    Some(r"\\wsl.localhost\Ubuntu\home\luthfi\work with spaces\漢字".to_owned())
+                },
+                |path| path.contains("work with spaces"),
+            ),
+            Some(r"\\wsl.localhost\Ubuntu\home\luthfi\work with spaces\漢字".to_owned())
+        );
+        assert_eq!(
+            windows_project_path_with(
+                &wsl_project,
+                |_, _| Some(r"\\wsl.localhost\Other\home\luthfi\work".to_owned()),
+                |_| true,
+            ),
+            None,
+            "a mapped UNC path must name the source WSL distribution"
+        );
+        assert_eq!(
+            windows_project_path_with(
+                &wsl_project,
+                |_, _| Some(r"\\wsl.localhost\Ubuntu\home\luthfi\work".to_owned()),
+                |_| false,
+            ),
+            None,
+            "a path that Windows cannot read is never executable"
+        );
+
+        let arguments = windows_mapping_arguments_with_user(
+            "Ubuntu",
+            None,
+            "/home/luthfi/work with spaces/$literal",
+        );
+        assert_eq!(
+            arguments,
+            vec![
+                OsString::from("-d"),
+                OsString::from("Ubuntu"),
+                OsString::from("--exec"),
+                OsString::from("wslpath"),
+                OsString::from("-w"),
+                OsString::from("-a"),
+                OsString::from("/home/luthfi/work with spaces/$literal"),
+            ]
+        );
+        assert_eq!(
+            windows_mapping_arguments_with_user("Ubuntu", Some("luthfi"), "/home/luthfi/work"),
+            vec![
+                OsString::from("-d"),
+                OsString::from("Ubuntu"),
+                OsString::from("-u"),
+                OsString::from("luthfi"),
+                OsString::from("--exec"),
+                OsString::from("wslpath"),
+                OsString::from("-w"),
+                OsString::from("-a"),
+                OsString::from("/home/luthfi/work"),
             ]
         );
     }

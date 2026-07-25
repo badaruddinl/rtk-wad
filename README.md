@@ -112,6 +112,11 @@ generic cross-host registry work.
 extends on-demand provider discovery beyond Go while retaining the P13 gate for
 automatic cross-host execution.
 
+[P13 bidirectional provider mapping](docs/BIDIRECTIONAL_PROVIDER_MAPPING_P13.md)
+requires structured path conversion and a target-host directory probe in both
+directions before a cross-host provider can be reported as usable. It remains a
+diagnostic gate until P14 proves generic execution.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture
