@@ -1,6 +1,10 @@
 # RTK-WAD
 
-RTK Windows Adaptive Dispatcher. `rtk-wad` is a native Windows launcher that
+RTK Windows Adaptive Dispatcher. `rtk-wad` is the canonical product, Cargo
+package, and release executable. The repository retains its historical
+`rtk-wsl` name so existing repository links continue to work. `rtk-wsl` and
+`rtk-wsl1` remain compatibility command aliases only. `rtk-wad` is a native
+Windows launcher that
 chooses one safe execution route for each RTK command: raw native execution for
 mutations, stock Windows RTK for verified structured adapters, or isolated
 WSL1 RTK when Linux semantics are required. It forwards arguments as structured
@@ -25,15 +29,15 @@ rtk-wad calibration show
 rtk-wad gain
 ```
 
-Current baseline: `0.2.0-alpha.1` (P20 local freeze candidate). The immutable
-`v0.1.0` tag remains the prior stable companion release. Project home:
+Current baseline: `0.2.0-alpha.2` (canonical-name and honest-statistics
+candidate). The immutable `v0.1.0` tag remains the prior stable companion
+release. Project home:
 `https://github.com/badaruddinl/rtk-wsl`.
 
 ## Build and use
 
 ```powershell
 cargo build --release
-.\target\release\rtk-wsl.exe rg "pattern" .
 .\target\release\rtk-wad.exe rg "pattern" .
 .\target\release\rtk-wad.exe gain
 ```
@@ -71,6 +75,11 @@ another installer automatically.
 See [the adaptive routing contract](docs/RTK_WAD.md) for route selection,
 structured-argument safety, local `gain` accounting, and non-NTFS source-volume
 support.
+
+[The P20 benchmark comparison](docs/BENCHMARK_COMPARISON_P20.md) places the
+versioned raw Windows, stock RTK, and RTK-WAD measurements side-by-side. It
+shows both token savings and latency cost, and it labels unmeasured raw routes
+honestly in the local `gain` output.
 
 The first real-corpus comparison is available in
 [the Flowpeek three-way benchmark](docs/BENCHMARK_FLOWPEEK_2026-07-24.md). It

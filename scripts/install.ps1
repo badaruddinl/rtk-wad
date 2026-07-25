@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Destination = (Join-Path $env:USERPROFILE ".local\bin"),
-    [string]$Source = (Join-Path $PSScriptRoot "..\target\release\rtk-wsl.exe"),
+    [string]$Source = (Join-Path $PSScriptRoot "..\target\release\rtk-wad.exe"),
     [ValidateSet("rtk-wad", "rtk-wsl", "rtk-wsl1")]
     [string]$CommandName = "rtk-wad",
     [string]$TokenizerRoot,

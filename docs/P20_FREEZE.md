@@ -1,8 +1,10 @@
-# P20 local freeze: 0.2.0-alpha.1
+# P20 local freeze: 0.2.0-alpha.2
 
-`0.2.0-alpha.1` is the local freeze candidate for the P18–P20 work. It is a
-new prerelease baseline, not a replacement for the existing immutable
-`v0.1.0` stable companion release.
+`0.2.0-alpha.2` is the local freeze candidate for the P18–P20 work plus the
+canonical RTK-WAD artifact and honest local-accounting refinement. It is a new
+prerelease baseline, not a replacement for the existing immutable `v0.1.0`
+stable companion release. The published `v0.2.0-alpha.1` tag remains immutable
+as the earlier P20 baseline.
 
 ## Included scope
 

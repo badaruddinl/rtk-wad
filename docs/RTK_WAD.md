@@ -228,8 +228,8 @@ exec` after WAD validates the candidate host and project path.
 
 ## Local token savings ledger
 
-`rtk-wad gain` and its `stats` compatibility alias show aggregate token savings
-in a native-RTK-style summary. WAD creates a unique temporary RTK tracker
+`rtk-wad gain` and its `stats` compatibility alias show local **RTK-measured
+token accounting**, not an estimate for every invocation. WAD creates a unique temporary RTK tracker
 database for an individual routed invocation, reads only aggregate counters,
 then removes the temporary database and its WAL sidecars. The persistent local
 ledger contains timestamp, route, command family, aggregate token counts,
@@ -248,8 +248,12 @@ so a repository may stay on exFAT, FAT, a network drive, or another non-NTFS
 source volume. The source filesystem is never used for the ledger or WSL runtime
 state.
 
-Raw routes are included as invocations but are initially marked unmeasured;
-WAD never fabricates a token-saving estimate by rerunning a command.
+Raw routes are included only as invocation counts and are marked unmeasured;
+their input, output, and avoided-token fields remain zero. The summary labels
+its measured scope explicitly and never turns raw output into a fabricated
+token-saving estimate by replaying a command. A positive value means only that
+the selected RTK tracker reported avoided tokens; it is not a claim that WAD
+made every invocation faster or that it measured raw-route token savings.
 
 ## Diagnostics
 

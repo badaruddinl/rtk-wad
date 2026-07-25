@@ -2653,7 +2653,7 @@ impl WadMetrics {
         let root = wad_data_root();
         let ledger_path = root.join("metrics-v1.sqlite");
         if !ledger_path.exists() {
-            println!("RTK-WAD Token Savings\n\nNo measured commands yet.");
+            println!("RTK-WAD Measured Token Accounting\n\nNo RTK-measured commands yet.");
             return Ok(());
         }
         let connection = Connection::open(&ledger_path)
@@ -2670,17 +2670,21 @@ impl WadMetrics {
         } else {
             0.0
         };
-        println!("RTK-WAD Token Savings");
+        let unmeasured = totals.0.saturating_sub(totals.5);
+        println!("RTK-WAD Measured Token Accounting");
         println!();
-        println!("Invocations: {} ({} measured by RTK)", totals.0, totals.5);
-        println!("Commands optimized: {}", totals.1);
-        println!("Input tokens: {}", totals.2);
-        println!("Output tokens: {}", totals.3);
-        println!("Tokens saved: {} ({savings:.1}%)", totals.4);
+        println!(
+            "Invocations: {} ({} RTK-measured, {} unmeasured)",
+            totals.0, totals.5, unmeasured
+        );
+        println!("RTK-measured commands: {}", totals.1);
+        println!("RTK input tokens: {}", totals.2);
+        println!("RTK output tokens: {}", totals.3);
+        println!("RTK-reported tokens avoided: {} ({savings:.1}%)", totals.4);
         println!();
-        println!("By route:");
+        println!("By route (RTK-reported accounting only):");
         let mut statement = connection
-            .prepare("SELECT route, COUNT(*), COALESCE(SUM(saved_tokens), 0) FROM invocations GROUP BY route ORDER BY saved_tokens DESC, route")
+            .prepare("SELECT route, COUNT(*), COALESCE(SUM(commands), 0), COALESCE(SUM(saved_tokens), 0), COALESCE(SUM(measured), 0) FROM invocations GROUP BY route ORDER BY saved_tokens DESC, route")
             .map_err(|error| format!("unable to prepare local metrics summary: {error}"))?;
         let rows = statement
             .query_map([], |row| {
@@ -2688,13 +2692,17 @@ impl WadMetrics {
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
                 ))
             })
             .map_err(|error| format!("unable to read local metrics summary: {error}"))?;
         for row in rows {
-            let (route, count, saved) =
+            let (route, count, commands, saved, measured) =
                 row.map_err(|error| format!("unable to decode local metrics summary: {error}"))?;
-            println!("  {route}: {count} invocation(s), {saved} tokens saved");
+            println!(
+                "  {route}: {count} invocation(s), {measured} RTK-measured, {commands} measured command(s), {saved} RTK-reported tokens avoided"
+            );
         }
         Ok(())
     }

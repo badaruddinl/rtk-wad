@@ -126,8 +126,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "rtk-wsl"
-version = "0.2.0-alpha.1"
+name = "rtk-wad"
+version = "0.2.0-alpha.2"
 dependencies = [
  "rusqlite",
  "serde",

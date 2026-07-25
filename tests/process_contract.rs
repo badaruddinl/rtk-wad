@@ -201,7 +201,7 @@ fn wad_profile_selects_one_route_and_uses_a_local_gain_ledger() {
         .expect("WAD gain starts");
     assert!(gain.status.success());
     let gain_stdout = String::from_utf8_lossy(&gain.stdout);
-    assert!(gain_stdout.contains("RTK-WAD Token Savings"));
+    assert!(gain_stdout.contains("RTK-WAD Measured Token Accounting"));
     assert!(gain_stdout.contains("Invocations: 1"));
 
     std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");

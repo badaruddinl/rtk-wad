@@ -21,7 +21,7 @@ setup.
 Run the gate after a release build:
 
 ```powershell
-.\tests\setup-readiness-contract.ps1 -Source .\target\release\rtk-wsl.exe
+.\tests\setup-readiness-contract.ps1 -Source .\target\release\rtk-wad.exe
 ```
 
 ## Frozen operator contract

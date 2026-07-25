@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "target\release\rtk-wsl.exe"),
+    [string]$Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "target\release\rtk-wad.exe"),
     [string]$NativeRtk
 )
 

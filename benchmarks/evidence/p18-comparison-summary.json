@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "title": "P18 raw Windows, stock RTK, and RTK-WAD comparison summary",
+  "source_record": "docs/BENCHMARK_CORE_MATRIX_P18_2026-07-25.md",
+  "method": {
+    "rounds": 5,
+    "tokenizer": "o200k_base",
+    "tokenizer_package": "tiktoken==0.12.0",
+    "scope": "Exact Windows machine, provider paths, warmed rtk-wsl corpus, and command forms recorded in the source record."
+  },
+  "native_windows_workloads": [
+    {"id":"git-status","raw_median_ms":127.613,"stock_rtk_median_ms":393.760,"rtk_wad_native_candidate_median_ms":518.466,"rtk_wad_auto_median_ms":266.283,"raw_tokens":37,"stock_rtk_tokens":37,"rtk_wad_auto_tokens":37,"auto_route":"raw","reason":"No measured token reduction; raw was lower latency."},
+    {"id":"git-log-100","raw_median_ms":126.856,"stock_rtk_median_ms":209.866,"rtk_wad_native_candidate_median_ms":346.381,"rtk_wad_auto_median_ms":309.754,"raw_tokens":864,"stock_rtk_tokens":864,"rtk_wad_auto_tokens":864,"auto_route":"raw","reason":"No measured token reduction; raw was lower latency."},
+    {"id":"rg-focused","raw_median_ms":71.723,"stock_rtk_median_ms":158.591,"rtk_wad_native_candidate_median_ms":291.880,"rtk_wad_auto_median_ms":138.457,"raw_tokens":94,"stock_rtk_tokens":94,"rtk_wad_auto_tokens":94,"auto_route":"raw","reason":"No measured token reduction; raw was lower latency."},
+    {"id":"rg-broad","raw_median_ms":69.994,"stock_rtk_median_ms":157.517,"rtk_wad_native_candidate_median_ms":288.386,"rtk_wad_auto_median_ms":293.102,"raw_tokens":3164,"stock_rtk_tokens":2082,"rtk_wad_auto_tokens":2082,"auto_route":"native-rtk","reason":"34.2% measured token reduction cleared the 25% policy threshold despite latency cost."}
+  ],
+  "limitations": [
+    "These are medians, not universal performance claims.",
+    "RTK-WAD auto is an end-to-end dispatcher result and must not be compared as if it were raw Windows execution.",
+    "Only the listed command forms and corpus are performance-covered."
+  ]
+}
