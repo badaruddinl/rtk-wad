@@ -155,6 +155,29 @@ enum Route {
     Wsl2,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutionEnvironment {
+    Adaptive,
+    WindowsOnly,
+}
+
+impl ExecutionEnvironment {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Adaptive => "adaptive",
+            Self::WindowsOnly => "windows-only",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "adaptive" => Ok(Self::Adaptive),
+            "windows-only" => Ok(Self::WindowsOnly),
+            _ => Err("environment must be adaptive or windows-only".to_owned()),
+        }
+    }
+}
+
 impl Route {
     fn as_str(self) -> &'static str {
         match self {
@@ -201,6 +224,7 @@ struct Config {
     git_mode: GitMode,
     extra_path: Option<String>,
     wad_route: Route,
+    environment: ExecutionEnvironment,
     native_rtk_path: String,
 }
 
@@ -282,6 +306,14 @@ impl Config {
             }
             None => Route::Auto,
         };
+        let environment = match lookup("RTK_WAD_ENVIRONMENT") {
+            Some(value) if value.trim().is_empty() => {
+                return Err("RTK_WAD_ENVIRONMENT must not be empty when set".to_owned());
+            }
+            Some(value) => ExecutionEnvironment::parse(&value)
+                .map_err(|error| format!("RTK_WAD_ENVIRONMENT {error}"))?,
+            None => ExecutionEnvironment::Adaptive,
+        };
         let native_rtk_path = lookup("RTK_WAD_NATIVE_RTK_PATH")
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "rtk.exe".to_owned());
@@ -307,6 +339,7 @@ impl Config {
             git_mode,
             extra_path,
             wad_route,
+            environment,
             native_rtk_path,
         })
     }
@@ -2342,6 +2375,7 @@ fn adaptive_context_signature(config: &Config) -> String {
         }
     };
     append(&command_manifest().upstream_rtk_version);
+    append(config.environment.as_str());
     append(&config.native_rtk_path);
     append(&env::var_os("PATH").unwrap_or_default().to_string_lossy());
     format!("{hash:016x}")
@@ -3354,6 +3388,82 @@ fn auto_wad_route_with_context(
     }
 }
 
+fn is_rtk_meta_command(command: &str) -> bool {
+    matches!(
+        command,
+        "smart"
+            | "err"
+            | "test"
+            | "json"
+            | "deps"
+            | "env"
+            | "log"
+            | "summary"
+            | "init"
+            | "wget"
+            | "wc"
+            | "cc-economics"
+            | "config"
+            | "discover"
+            | "session"
+            | "telemetry"
+            | "learn"
+            | "run"
+            | "proxy"
+            | "pipe"
+            | "trust"
+            | "untrust"
+            | "verify"
+            | "hook-audit"
+            | "rewrite"
+            | "hook"
+    )
+}
+
+fn auto_wad_route_for_environment(
+    arguments: &[OsString],
+    current_directory: Option<&str>,
+    policy: Option<&RoutePolicyFile>,
+    context_signature: Option<&str>,
+    environment: ExecutionEnvironment,
+) -> (Route, &'static str) {
+    if environment == ExecutionEnvironment::Adaptive {
+        return auto_wad_route_with_context(
+            arguments,
+            current_directory,
+            policy,
+            context_signature,
+        );
+    }
+
+    let command = wad_command_family(arguments);
+    if is_rtk_meta_command(command) || command_surface(command) == CommandSurface::WadInternal {
+        return (
+            Route::NativeRtk,
+            "windows-only environment requires native RTK for an RTK meta command",
+        );
+    }
+    match command_surface(command) {
+        CommandSurface::NativeStructured
+            if command == "git" && !is_verified_read_only_git(arguments) =>
+        {
+            (
+                Route::Raw,
+                "windows-only environment executes Git mutation once with native Git",
+            )
+        }
+        CommandSurface::NativeStructured => (
+            Route::NativeRtk,
+            "windows-only environment selects the structured native RTK adapter",
+        ),
+        CommandSurface::RawNative | CommandSurface::Wsl1Conservative | CommandSurface::Unknown => (
+            Route::Raw,
+            "windows-only environment disables automatic WSL routing and uses the native command",
+        ),
+        CommandSurface::WadInternal => unreachable!("WAD internal commands were handled above"),
+    }
+}
+
 fn configured_wsl_backend(config: &Config, route: Route) -> Config {
     let mut selected = config.clone();
     match route {
@@ -3378,6 +3488,7 @@ fn print_adapter_info(config: &Config) {
     println!("adapter=rtk-wad");
     println!("profile={}", config.profile.as_str());
     println!("route_preference={}", config.wad_route.as_str());
+    println!("environment={}", config.environment.as_str());
     println!("native_rtk_path={}", config.native_rtk_path);
     println!("metrics=local-aggregate-only");
     println!("compatibility_aliases=rtk-wsl,rtk-wsl1");
@@ -3680,8 +3791,10 @@ fn run_wsl_route(
 fn parse_wad_options(
     mut arguments: Vec<OsString>,
     configured: Route,
-) -> Result<(Vec<OsString>, Route, bool), String> {
+    configured_environment: ExecutionEnvironment,
+) -> Result<(Vec<OsString>, Route, ExecutionEnvironment, bool), String> {
     let mut route = configured;
+    let mut environment = configured_environment;
     let mut explain = false;
     loop {
         match arguments.first().and_then(|argument| argument.to_str()) {
@@ -3692,11 +3805,18 @@ fn parse_wad_options(
                 route = Route::parse(&arguments[1].to_string_lossy())?;
                 arguments.drain(0..2);
             }
+            Some("--environment") => {
+                if arguments.len() < 2 {
+                    return Err("--environment requires adaptive or windows-only".to_owned());
+                }
+                environment = ExecutionEnvironment::parse(&arguments[1].to_string_lossy())?;
+                arguments.drain(0..2);
+            }
             Some(EXPLAIN_ROUTE_ARGUMENT) => {
                 explain = true;
                 arguments.remove(0);
             }
-            _ => return Ok((arguments, route, explain)),
+            _ => return Ok((arguments, route, environment, explain)),
         }
     }
 }
@@ -3817,24 +3937,27 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
             }
         };
     }
-    let (arguments, requested_route, explain) = match parse_wad_options(arguments, config.wad_route)
-    {
-        Ok(options) => options,
-        Err(error) => {
-            eprintln!("rtk-wad: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (arguments, requested_route, environment, explain) =
+        match parse_wad_options(arguments, config.wad_route, config.environment) {
+            Ok(options) => options,
+            Err(error) => {
+                eprintln!("rtk-wad: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+    let mut invocation_config = config.clone();
+    invocation_config.environment = environment;
     let current_directory = env::current_dir().ok();
     let started = Instant::now();
-    let adaptive_context = adaptive_context_signature(config);
+    let adaptive_context = adaptive_context_signature(&invocation_config);
     let policy = load_route_policy();
     let (initial_route, initial_reason) = if requested_route == Route::Auto {
-        auto_wad_route_with_context(
+        auto_wad_route_for_environment(
             &arguments,
             current_directory.as_deref().and_then(|path| path.to_str()),
             policy.as_ref(),
             Some(&adaptive_context),
+            environment,
         )
     } else {
         (requested_route, "explicit route preference")
@@ -3861,10 +3984,10 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         route = plan.route;
         reason = plan.reason.to_owned();
     }
-    let mut selected_config = configured_wsl_backend(config, route);
+    let mut selected_config = configured_wsl_backend(&invocation_config, route);
     let mut provider_missing = None;
-    if requested_route == Route::Auto {
-        match go_provider_decision(&arguments, config, route) {
+    if requested_route == Route::Auto && environment == ExecutionEnvironment::Adaptive {
+        match go_provider_decision(&arguments, &invocation_config, route) {
             GoProviderDecision::KeepStaticRoute => {}
             GoProviderDecision::UseWsl {
                 route: provider_route,
@@ -3926,7 +4049,8 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         Route::NativeRtk => match run_native_rtk(&arguments, &selected_config, metrics.as_ref()) {
             Err(error)
                 if error.kind() == std::io::ErrorKind::NotFound
-                    && requested_route == Route::Auto =>
+                    && requested_route == Route::Auto
+                    && environment == ExecutionEnvironment::Adaptive =>
             {
                 trace(
                     "native RTK was not found; falling back to isolated WSL1 before any child started",
@@ -3941,7 +4065,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
                     console_installed = true;
                 }
                 executed_route = Route::Wsl1;
-                let fallback_config = configured_wsl_backend(config, Route::Wsl1);
+                let fallback_config = configured_wsl_backend(&invocation_config, Route::Wsl1);
                 run_wsl_route(
                     arguments.clone(),
                     &fallback_config,
@@ -4667,7 +4791,7 @@ mod tests {
 
     #[test]
     fn wad_route_options_are_explicit_and_validate_values() {
-        let (arguments, route, explain) = parse_wad_options(
+        let (arguments, route, environment, explain) = parse_wad_options(
             vec![
                 OsString::from("--route"),
                 OsString::from("native-rtk"),
@@ -4675,17 +4799,85 @@ mod tests {
                 OsString::from("rg"),
             ],
             Route::Auto,
+            ExecutionEnvironment::Adaptive,
         )
         .expect("route options are valid");
         assert_eq!(route, Route::NativeRtk);
+        assert_eq!(environment, ExecutionEnvironment::Adaptive);
         assert!(explain);
         assert_eq!(arguments, vec![OsString::from("rg")]);
         assert!(
             parse_wad_options(
                 vec![OsString::from("--route"), OsString::from("unsafe")],
-                Route::Auto
+                Route::Auto,
+                ExecutionEnvironment::Adaptive,
             )
             .is_err()
+        );
+
+        let (arguments, route, environment, explain) = parse_wad_options(
+            vec![
+                OsString::from("--environment"),
+                OsString::from("windows-only"),
+                OsString::from("pytest"),
+            ],
+            Route::Auto,
+            ExecutionEnvironment::Adaptive,
+        )
+        .expect("windows-only option is valid");
+        assert_eq!(arguments, vec![OsString::from("pytest")]);
+        assert_eq!(route, Route::Auto);
+        assert_eq!(environment, ExecutionEnvironment::WindowsOnly);
+        assert!(!explain);
+        assert!(
+            parse_wad_options(
+                vec![OsString::from("--environment"), OsString::from("hybrid")],
+                Route::Auto,
+                ExecutionEnvironment::Adaptive,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn windows_only_routes_external_commands_raw_and_keeps_rtk_meta_native() {
+        assert_eq!(
+            auto_wad_route_for_environment(
+                &[OsString::from("pytest"), OsString::from("-q")],
+                Some(r"E:\work"),
+                None,
+                None,
+                ExecutionEnvironment::WindowsOnly,
+            )
+            .0,
+            Route::Raw
+        );
+        assert_eq!(
+            auto_wad_route_for_environment(
+                &[OsString::from("init"), OsString::from("-g")],
+                Some(r"E:\work"),
+                None,
+                None,
+                ExecutionEnvironment::WindowsOnly,
+            )
+            .0,
+            Route::NativeRtk
+        );
+        assert_eq!(
+            auto_wad_route_for_environment(
+                &[
+                    OsString::from("git"),
+                    OsString::from("commit"),
+                    OsString::from("-m"),
+                    OsString::from("x")
+                ],
+                Some(r"E:\work"),
+                None,
+                None,
+                ExecutionEnvironment::WindowsOnly,
+            )
+            .0,
+            Route::Raw
         );
     }
 

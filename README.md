@@ -67,17 +67,27 @@ Install it for the current user:
 rtk-wad gain
 ```
 
-The canonical installer provisions the private tokenizer environment declared
-by [`requirements/wad-tokenizer.txt`](requirements/wad-tokenizer.txt). It never
-alters the global Python environment. On a fresh PC without Python, inspect the
-plan first:
+The core installer has no Python or tokenizer dependency. The pinned
+[`tiktoken`](requirements/wad-tokenizer.txt) environment is optional and used
+only to reproduce benchmark token counts. Install it explicitly when running a
+benchmark; it never alters the global Python environment. On a fresh PC without
+Python, inspect the plan first:
 
 ```powershell
 .\scripts\install-tokenizer.ps1 -PlanPythonBootstrap
 ```
 
-Only a separately confirmed `-InstallPython -ConfirmPythonInstall` can install
-the documented Python dependency.
+Only `-InstallTokenizer -InstallPython -ConfirmPythonInstall` can install the
+documented Python dependency together with the optional tokenizer.
+
+To prevent automatic WSL selection for a Windows-only workflow, use the
+per-command environment mode. It keeps RTK meta commands on native RTK and
+runs unverified external commands directly on Windows:
+
+```powershell
+rtk-wad --environment windows-only --explain-route pytest -q
+$env:RTK_WAD_ENVIRONMENT = "windows-only"
+```
 
 ## A route decision you can inspect
 

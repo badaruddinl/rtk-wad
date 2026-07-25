@@ -35,8 +35,19 @@ another backend as a stand-in.
 ```
 
 The benchmark runner uses a real local corpus and never turns a failed external
-integration into a synthetic success. Command families are classified before a
-run as follows:
+integration into a synthetic success. For publishable evidence, use the pinned,
+public projects in [`public-corpora.json`](public-corpora.json), not the WAD
+repository or a private workstation project. Provision them outside the WAD
+worktree; the script pins the tag and commit, reuses only an exact existing
+clone, and never overwrites a corpus:
+
+```powershell
+.\scripts\provision-public-benchmark-corpus.ps1 -Corpus ripgrep-14.1.1
+```
+
+The optional `tiktoken` Python environment is required only by a benchmark
+runner. Install it explicitly with `scripts/install.ps1 -InstallTokenizer`.
+Command families are classified before a run as follows:
 
 | Coverage tier | Command families | Evidence requirement |
 | --- | --- | --- |
@@ -58,8 +69,9 @@ performs one warm-up and ten rotating measured rounds per variant. The resulting
 JSON records each sample plus median and p95 latency, output bytes, exit codes,
 SHA-256 output hashes, and exact `o200k_base` counts.
 
-The runner requires the WAD-managed Python environment with `tiktoken` and does not silently substitute a
-different tokenizer. It intentionally reports output-equivalence evidence rather
+The runner requires the explicitly installed WAD benchmark Python environment
+with `tiktoken` and does not silently substitute a different tokenizer. It
+intentionally reports output-equivalence evidence rather
 than asserting byte equality: RTK is expected to reduce output.
 
 The ripgrep corpus is discovered from existing `src`, `tests`, `test`, and

@@ -6,6 +6,7 @@ param(
     [string]$CommandName = "rtk-wad",
     [string]$TokenizerRoot,
     [string]$TokenizerPython,
+    [switch]$InstallTokenizer,
     [switch]$InstallPython,
     [switch]$ConfirmPythonInstall,
     [switch]$SkipTokenizer,
@@ -19,8 +20,21 @@ $target = Join-Path $targetDirectory "$CommandName.exe"
 $temporary = Join-Path $targetDirectory ".$CommandName.exe.$PID.new"
 $tokenizerInstaller = Join-Path $PSScriptRoot "install-tokenizer.ps1"
 
+if ($InstallTokenizer -and $SkipTokenizer) {
+    throw "Choose either -InstallTokenizer or the legacy -SkipTokenizer switch, not both."
+}
+if ($CommandName -ne "rtk-wad" -and $InstallTokenizer) {
+    throw "The optional benchmark tokenizer is supported only by the canonical rtk-wad install."
+}
+if (-not $InstallTokenizer -and ($TokenizerRoot -or $TokenizerPython -or $InstallPython -or $ConfirmPythonInstall)) {
+    throw "Tokenizer options require -InstallTokenizer. The core WAD launcher has no Python or tokenizer dependency."
+}
+if ($SkipTokenizer) {
+    Write-Warning "-SkipTokenizer is no longer needed: tokenizer installation is opt-in."
+}
+
 New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
-if ($CommandName -eq "rtk-wad" -and -not $SkipTokenizer) {
+if ($CommandName -eq "rtk-wad" -and $InstallTokenizer) {
     $tokenizerArguments = @{
         Python = $TokenizerPython
         InstallPython = $InstallPython
@@ -28,7 +42,7 @@ if ($CommandName -eq "rtk-wad" -and -not $SkipTokenizer) {
     }
     if ($TokenizerRoot) { $tokenizerArguments.Root = $TokenizerRoot }
     & $tokenizerInstaller @tokenizerArguments
-    if ($LASTEXITCODE -ne 0) { throw "WAD tokenizer dependency installation failed." }
+    if ($LASTEXITCODE -ne 0) { throw "Optional WAD benchmark tokenizer installation failed." }
 }
 try {
     Copy-Item -LiteralPath $source -Destination $temporary -ErrorAction Stop

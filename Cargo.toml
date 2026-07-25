@@ -2,7 +2,7 @@
 name = "rtk-wad"
 version = "0.2.0"
 edition = "2024"
-description = "Native Windows launcher for running Linux RTK through WSL with structured arguments"
+description = "Safe adaptive Windows execution policy for raw commands, native RTK, and verified WSL providers"
 license = "Apache-2.0"
 homepage = "https://github.com/badaruddinl/rtk-wad"
 repository = "https://github.com/badaruddinl/rtk-wad"
