@@ -25,7 +25,8 @@ rtk-wad calibration show
 rtk-wad gain
 ```
 
-Current baseline: `0.1.0-alpha.1` (local stabilization). Project home:
+Current baseline: `0.2.0-alpha.1` (P20 local freeze candidate). The immutable
+`v0.1.0` tag remains the prior stable companion release. Project home:
 `https://github.com/badaruddinl/rtk-wsl`.
 
 ## Build and use
