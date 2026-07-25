@@ -296,6 +296,13 @@ fn resolved_windows_candidate(output: &std::process::Output) -> serde_json::Valu
 fn wad_resolve_verifies_wsl_project_paths_for_windows_providers() {
     let (launcher, directory) = wad_launcher();
     let state = directory.join("state");
+    let project_directory = std::env::current_dir().expect("test project directory is available");
+    let expected_project_path = project_directory.to_string_lossy().to_string();
+    let project_path = expected_project_path.replace('\\', "/");
+    let (drive, remainder) = project_path
+        .split_once(':')
+        .expect("test project directory has a Windows drive prefix");
+    let mounted_project_path = format!("/mnt/{}{}", drive.to_lowercase(), remainder);
     let mut distros = vec!["Ubuntu".to_owned()];
     if let Ok(wsl1_distro) = std::env::var("RTK_WSL1_TEST_DISTRO")
         && !distros.contains(&wsl1_distro)
@@ -315,7 +322,7 @@ fn wad_resolve_verifies_wsl_project_paths_for_windows_providers() {
             .env("RTK_WAD_STATE_DIR", &state)
             .env("RTK_WSL_DISTRO", &distro)
             .env("RTK_WSL_USER", &user)
-            .env("RTK_WSL_CWD", "/mnt/e/luthfi/project/rtk-wsl")
+            .env("RTK_WSL_CWD", &mounted_project_path)
             .args(["resolve", "git", "--json", "--refresh"])
             .output()
             .expect("mounted WSL project resolution starts");
@@ -324,7 +331,7 @@ fn wad_resolve_verifies_wsl_project_paths_for_windows_providers() {
         assert!(
             mounted_candidate["project_path"]
                 .as_str()
-                .is_some_and(|path| path.eq_ignore_ascii_case(r"E:\luthfi\project\rtk-wsl")),
+                .is_some_and(|path| path.eq_ignore_ascii_case(&expected_project_path)),
             "mounted {distro} project mapping: {mounted_candidate}"
         );
 
@@ -409,6 +416,10 @@ fn wad_provider_exec_runs_each_verified_provider_without_replay() {
     let inherited_path = std::env::var_os("PATH").expect("PATH is available");
     let path = std::env::join_paths([directory.as_os_str(), inherited_path.as_ref()])
         .expect("test PATH is valid");
+    let expected_cwd = std::env::current_dir()
+        .expect("test project directory is available")
+        .to_string_lossy()
+        .to_string();
     let literal = "space;and&dollar$HOME\\漢字";
 
     let raw = Command::new(&launcher)
@@ -420,7 +431,7 @@ fn wad_provider_exec_runs_each_verified_provider_without_replay() {
         .expect("Windows raw provider starts");
     assert_eq!(raw.status.code(), Some(42));
     let raw_stdout = String::from_utf8_lossy(&raw.stdout);
-    assert!(raw_stdout.contains("tool-cwd:E:\\luthfi\\project\\rtk-wsl"));
+    assert!(raw_stdout.contains(&format!("tool-cwd:{expected_cwd}")));
     assert!(raw_stdout.contains(literal));
     assert_eq!(raw_stdout.matches("tool-args:").count(), 1);
 
@@ -434,7 +445,7 @@ fn wad_provider_exec_runs_each_verified_provider_without_replay() {
         .expect("Windows RTK provider starts");
     assert_eq!(native.status.code(), Some(43));
     let native_stdout = String::from_utf8_lossy(&native.stdout);
-    assert!(native_stdout.contains("rtk-cwd:E:\\luthfi\\project\\rtk-wsl"));
+    assert!(native_stdout.contains(&format!("rtk-cwd:{expected_cwd}")));
     assert!(native_stdout.contains("p14-tool"));
     assert!(native_stdout.contains(literal));
     assert_eq!(native_stdout.matches("rtk-args:").count(), 1);
