@@ -90,6 +90,18 @@ node .\benchmarks\run-core-three-way.mjs `
   --install-policy
 ```
 
+For a public corpus with different source roots or symbols, make those choices
+explicit in the artifact rather than relying on WAD's directory conventions:
+
+```powershell
+node .\benchmarks\run-core-three-way.mjs `
+  --repo $env:LOCALAPPDATA\rtk-wad\benchmark-corpora\ripgrep-14.1.1 `
+  --search-roots crates,tests `
+  --focused-pattern RegexBuilder `
+  --broad-pattern 'fn|struct|impl|use|pub' `
+  # ...the same native RTK, WAD, Python, preflight, and output options
+```
+
 Set `RTK_WAD_BENCH_GIT` or `RTK_WAD_BENCH_RG` only when the corresponding raw
 Windows executable is not discoverable on `PATH`. Benchmark output is an
 English, machine-readable artifact; the release report must include both wins

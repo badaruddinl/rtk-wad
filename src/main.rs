@@ -11,6 +11,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
+mod agent;
+
 const DEFAULT_DISTRO: &str = "Ubuntu";
 const DEFAULT_WSL1_DISTRO: &str = "Ubuntu-RTK-WSL1";
 const DEFAULT_LOCK_PATH: &str = "/tmp/rtk-wsl.lock";
@@ -26,6 +28,7 @@ const DOCTOR_ARGUMENT: &str = "doctor";
 const PROVIDER_ARGUMENT: &str = "provider";
 const SURFACE_ARGUMENT: &str = "surface";
 const SETUP_ARGUMENT: &str = "setup";
+const AGENT_ARGUMENT: &str = "agent";
 const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 2;
 const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
 const ROUTE_POLICY_SCHEMA_VERSION: u32 = 2;
@@ -3822,6 +3825,12 @@ fn parse_wad_options(
 }
 
 fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == AGENT_ARGUMENT)
+    {
+        return agent::command(&arguments, &config.native_rtk_path);
+    }
     if arguments
         .first()
         .is_some_and(|argument| argument == SURFACE_ARGUMENT)

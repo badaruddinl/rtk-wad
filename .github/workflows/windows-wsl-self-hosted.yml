@@ -1,0 +1,30 @@
+name: Windows WSL Process Contract
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  process-contract:
+    # This job is intentionally separate from hosted Windows CI. Register a
+    # controlled Windows runner with all three labels and an Ubuntu WSL distro.
+    runs-on: [self-hosted, Windows, WSL]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Require the controlled Ubuntu WSL provider
+        shell: pwsh
+        run: |
+          $available = @(wsl.exe --list --quiet 2>$null) -match '^Ubuntu$'
+          if (-not $available) { throw 'The self-hosted WSL runner must provide an Ubuntu distro.' }
+          wsl.exe --distribution Ubuntu --exec /usr/bin/env true
+
+      - name: Run Windows/WSL process contract
+        run: cargo test --test process_contract -- --test-threads=1
