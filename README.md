@@ -10,10 +10,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/badaruddinl/rtk-wsl/actions/workflows/windows-ci.yml"><img src="https://github.com/badaruddinl/rtk-wsl/actions/workflows/windows-ci.yml/badge.svg?branch=master" alt="Windows CI" /></a>
-  <a href="https://github.com/badaruddinl/rtk-wsl/tags"><img src="https://img.shields.io/github/v/tag/badaruddinl/rtk-wsl?sort=semver&label=version" alt="Version tag" /></a>
+  <a href="https://github.com/badaruddinl/rtk-wad/actions/workflows/windows-ci.yml"><img src="https://github.com/badaruddinl/rtk-wad/actions/workflows/windows-ci.yml/badge.svg?branch=master" alt="Windows CI" /></a>
+  <a href="https://github.com/badaruddinl/rtk-wad/tags"><img src="https://img.shields.io/github/v/tag/badaruddinl/rtk-wad?sort=semver&label=version" alt="Version tag" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0 license" /></a>
-  <a href="docs/RELEASE_GATE_P20.md"><img src="https://img.shields.io/badge/status-alpha-orange.svg" alt="Alpha status" /></a>
+  <a href="docs/RELEASE_GATE_P20.md"><img src="https://img.shields.io/badge/status-stable-success.svg" alt="Stable status" /></a>
 </p>
 
 RTK-WAD is a native Windows launcher for [RTK](https://github.com/rtk-ai/rtk).
@@ -22,9 +22,9 @@ shell command string—and chooses one auditable execution route for each comman
 It is designed for Windows developers who need RTK's compact output without
 blindly paying a WSL bridge cost or risking cross-shell quoting failures.
 
-> **Alpha software.** The current baseline is `v0.2.0-alpha.2`. The historical
-> repository name remains `rtk-wsl`; the canonical package and executable are
-> `rtk-wad`. `rtk-wsl` and `rtk-wsl1` are compatibility aliases.
+> **Stable baseline.** The current release is `v0.2.0`. The canonical
+> repository, package, and executable are `rtk-wad`. `rtk-wsl` and `rtk-wsl1`
+> remain compatibility aliases for existing local integrations.
 
 ## Why RTK-WAD
 

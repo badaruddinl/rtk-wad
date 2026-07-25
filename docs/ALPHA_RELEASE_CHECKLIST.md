@@ -57,7 +57,7 @@ an upstream contribution. Check an item only with current evidence.
 ## Publication decision gate
 
 - [x] Apache-2.0 is the selected license for this standalone companion repository.
-- [x] `badaruddinl/rtk-wsl` is a standalone companion project, not an official
+- [x] `badaruddinl/rtk-wad` is a standalone companion project, not an official
   upstream RTK artifact.
 - [x] Tag `v0.1.0-alpha.1` exists; a GitHub Release with binary assets remains
   intentionally deferred until post-freeze dogfooding and CI review.
