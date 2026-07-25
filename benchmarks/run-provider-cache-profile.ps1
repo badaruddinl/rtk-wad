@@ -42,7 +42,9 @@ try {
     $sortedWarm = $warm | Sort-Object
     $sortedRaw = $raw | Sort-Object
     $result = [ordered]@{
-        schema_version = 1
+        schema_version = 2
+        protocol = "provider-cache-profile-v2"
+        adaptive_policy_eligible = $false
         command = @('go', 'version')
         warm_runs = $WarmRuns
         cold_wad_auto_ms = $cold

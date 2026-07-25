@@ -288,7 +288,7 @@ const summaries = workloads.map((workload) => {
 });
 
 writeFileSync(settings.output, JSON.stringify({
-  schema_version: 1,
+  schema_version: 2,
   protocol: "four-way-core-v2",
   tokenizer: "o200k_base",
   tokenizer_package: `tiktoken==${tokenizerVersion()}`,
@@ -298,6 +298,7 @@ writeFileSync(settings.output, JSON.stringify({
   native_rtk: settings.nativeRtk,
   rtk_wad: settings.wad,
   isolated_wad_state: isolatedWadState,
+  route_policy: policyOutput,
   summaries,
   samples: allSamples.map(({ stdout, stderr, ...sample }) => ({
     ...sample,

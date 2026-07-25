@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 
@@ -24,6 +24,7 @@ const settings = {
   wsl2Distro: option("--wsl2-distro"),
   wsl2Rtk: option("--wsl2-rtk"),
   rounds: Number(process.argv.includes("--rounds") ? option("--rounds") : 5),
+  workloads: process.argv.includes("--workloads") ? option("--workloads").split(",").map((value) => value.trim()).filter(Boolean) : null,
 };
 if (!Number.isInteger(settings.rounds) || settings.rounds < 5) {
   throw new Error("--rounds must be an integer of at least 5 for bridge evidence");
@@ -55,7 +56,7 @@ requirePreflightProvider(settings.wsl2Distro, 2, settings.wsl2Rtk);
 
 const rawGit = process.env.RTK_WAD_BENCH_GIT || "git.exe";
 const rawRg = process.env.RTK_WAD_BENCH_RG || "rg.exe";
-const isolatedWadState = resolve(dirname(settings.output), "wad-bridge-state");
+const isolatedWadState = resolve(dirname(settings.output), `${basename(settings.output, ".json")}.wad-state`);
 const searchRoots = ["src", "tests", "test", "docs"]
   .filter((candidate) => existsSync(resolve(settings.repo, candidate)));
 if (searchRoots.length === 0) {
@@ -67,6 +68,10 @@ const workloads = [
   { id: "rg-focused", raw: [rawRg, ["-n", "graphVersion", ...searchRoots]], rtk: ["rg", "-n", "graphVersion", ...searchRoots] },
   { id: "rg-broad", raw: [rawRg, ["-n", "function|const|class|require|module", ...searchRoots]], rtk: ["rg", "-n", "function|const|class|require|module", ...searchRoots] },
 ];
+const selectedWorkloads = settings.workloads === null ? workloads : workloads.filter((workload) => settings.workloads.includes(workload.id));
+if (selectedWorkloads.length === 0 || (settings.workloads && selectedWorkloads.length !== settings.workloads.length)) {
+  throw new Error("--workloads must name one or more supported bridge workloads");
+}
 
 function execute(file, args, environment = {}) {
   return new Promise((resolveExecution, reject) => {
@@ -158,7 +163,7 @@ function variants(workload) {
 }
 
 const samples = [];
-for (const workload of workloads) {
+for (const workload of selectedWorkloads) {
   const entries = Object.entries(variants(workload));
   for (const [, variant] of entries) {
     requireSuccessful(await execute(variant.file, variant.args, variant.environment), `${workload.id} warm-up`);
@@ -173,7 +178,7 @@ for (const workload of workloads) {
   }
 }
 
-const summaries = workloads.map((workload) => {
+const summaries = selectedWorkloads.map((workload) => {
   const perVariant = {};
   const rawSamples = samples.filter((sample) => sample.workload === workload.id && sample.variant === "raw_windows");
   const rawTokens = exactTokens(Buffer.concat([rawSamples[0].stdout, rawSamples[0].stderr]));
@@ -185,17 +190,21 @@ const summaries = workloads.map((workload) => {
 
 mkdirSync(dirname(settings.output), { recursive: true });
 writeFileSync(settings.output, JSON.stringify({
-  schema_version: 1,
-  protocol: "wsl-bridge-core-v1",
+  schema_version: 2,
+  protocol: "wsl-bridge-core-v2",
   tokenizer: "o200k_base",
   tokenizer_package: `tiktoken==${tokenizerVersion()}`,
   rounds: settings.rounds,
+  workloads: selectedWorkloads.map((workload) => workload.id),
   corpus: settings.repo,
   search_roots: searchRoots,
   rtk_wad: settings.wad,
+  preflight: settings.preflight,
   wsl1: { distro: settings.wsl1Distro, rtk: settings.wsl1Rtk },
   wsl2: { distro: settings.wsl2Distro, rtk: settings.wsl2Rtk },
   isolated_wad_state: isolatedWadState,
+  adaptive_policy_eligible: false,
+  adaptive_policy_reason: "Forced WSL1 and WSL2 bridge rows describe backend cost and token shape; they do not establish an auto-route policy.",
   summaries,
   samples: samples.map(({ stdout, stderr, ...sample }) => ({
     ...sample,
