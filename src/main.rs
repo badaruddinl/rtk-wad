@@ -22,6 +22,7 @@ const POLICY_ARGUMENT: &str = "policy";
 const CALIBRATION_ARGUMENT: &str = "calibration";
 const RESOLVE_ARGUMENT: &str = "resolve";
 const DOCTOR_ARGUMENT: &str = "doctor";
+const PROVIDER_ARGUMENT: &str = "provider";
 const SETUP_ARGUMENT: &str = "setup";
 const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 2;
 const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
@@ -3018,8 +3019,20 @@ fn run_native_rtk(
     config: &Config,
     metrics: Option<&WadMetrics>,
 ) -> std::io::Result<ExitStatus> {
-    let mut command = Command::new(&config.native_rtk_path);
+    run_native_rtk_at(&config.native_rtk_path, arguments, None, metrics)
+}
+
+fn run_native_rtk_at(
+    executable: &str,
+    arguments: &[OsString],
+    current_directory: Option<&str>,
+    metrics: Option<&WadMetrics>,
+) -> std::io::Result<ExitStatus> {
+    let mut command = Command::new(executable);
     command.args(arguments);
+    if let Some(current_directory) = current_directory {
+        command.current_dir(current_directory);
+    }
     if let Some(metrics) = metrics {
         command.env("RTK_DB_PATH", metrics.scratch_windows_path());
     }
@@ -3042,10 +3055,226 @@ fn run_raw(arguments: &[OsString]) -> std::io::Result<ExitStatus> {
         Some("flutter") => OsString::from("flutter.bat"),
         _ => program.clone(),
     };
-    Command::new(executable)
-        .args(arguments.iter().skip(1))
-        .spawn()
-        .and_then(|mut child| child.wait())
+    run_raw_at(&executable, &arguments[1..], None)
+}
+
+fn run_raw_at(
+    executable: &OsString,
+    arguments: &[OsString],
+    current_directory: Option<&str>,
+) -> std::io::Result<ExitStatus> {
+    let mut command = Command::new(executable);
+    command.args(arguments);
+    if let Some(current_directory) = current_directory {
+        command.current_dir(current_directory);
+    }
+    command.spawn().and_then(|mut child| child.wait())
+}
+
+fn has_foreign_absolute_path(arguments: &[OsString], candidate: &ProviderCandidate) -> bool {
+    match candidate.kind {
+        ProviderKind::WindowsRaw | ProviderKind::WindowsRtk => arguments.iter().any(is_wsl_path),
+        ProviderKind::WslRaw | ProviderKind::WslRtk => arguments.iter().any(|argument| {
+            argument
+                .to_str()
+                .and_then(windows_path_to_wsl_path)
+                .is_some()
+        }),
+    }
+}
+
+fn provider_execution_route(candidate: &ProviderCandidate) -> Option<Route> {
+    match candidate.kind {
+        ProviderKind::WindowsRaw => Some(Route::Raw),
+        ProviderKind::WindowsRtk => Some(Route::NativeRtk),
+        ProviderKind::WslRaw | ProviderKind::WslRtk => wsl_route_for_version(candidate.wsl_version),
+    }
+}
+
+fn provider_execution_config(config: &Config, candidate: &ProviderCandidate) -> Option<Config> {
+    let route = provider_execution_route(candidate)?;
+    let mut selected = configured_wsl_backend(config, route);
+    if matches!(candidate.kind, ProviderKind::WslRaw | ProviderKind::WslRtk) {
+        selected.distro = candidate.distro.clone()?;
+        selected.cwd = candidate.project_path.clone();
+        selected.rtk_path = Some(match candidate.kind {
+            ProviderKind::WslRaw => candidate.executable.clone(),
+            ProviderKind::WslRtk => candidate.rtk.clone()?,
+            ProviderKind::WindowsRaw | ProviderKind::WindowsRtk => unreachable!(),
+        });
+    }
+    Some(selected)
+}
+
+fn run_provider_candidate(
+    tool: &str,
+    arguments: &[OsString],
+    config: &Config,
+    candidate: &ProviderCandidate,
+    metrics: Option<&WadMetrics>,
+) -> std::io::Result<ExitStatus> {
+    let project_path = candidate.project_path.as_deref().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "provider candidate has no verified project directory",
+        )
+    })?;
+    match candidate.kind {
+        ProviderKind::WindowsRaw => run_raw_at(
+            &OsString::from(&candidate.executable),
+            arguments,
+            Some(project_path),
+        ),
+        ProviderKind::WindowsRtk => {
+            let mut forwarded = Vec::with_capacity(arguments.len() + 1);
+            forwarded.push(OsString::from(tool));
+            forwarded.extend(arguments.iter().cloned());
+            run_native_rtk_at(
+                candidate.rtk.as_deref().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "Windows RTK candidate has no RTK executable",
+                    )
+                })?,
+                &forwarded,
+                Some(project_path),
+                metrics,
+            )
+        }
+        ProviderKind::WslRaw | ProviderKind::WslRtk => {
+            let selected = provider_execution_config(config, candidate).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "WSL provider has no supported WSL version or project directory",
+                )
+            })?;
+            let forwarded = if candidate.kind == ProviderKind::WslRtk {
+                let mut forwarded = Vec::with_capacity(arguments.len() + 1);
+                forwarded.push(OsString::from(tool));
+                forwarded.extend(arguments.iter().cloned());
+                forwarded
+            } else {
+                arguments.to_vec()
+            };
+            let route = provider_execution_route(candidate)
+                .expect("WSL provider execution requires a supported WSL route");
+            run_wsl_route(
+                forwarded,
+                &selected,
+                route,
+                (candidate.kind == ProviderKind::WslRtk)
+                    .then_some(metrics)
+                    .flatten(),
+            )
+        }
+    }
+}
+
+fn provider_exec_command(arguments: &[OsString], config: &Config) -> ExitCode {
+    let Some(tool) = arguments.get(2).and_then(|argument| argument.to_str()) else {
+        eprintln!("rtk-wad: usage: provider exec <tool> [--candidate <index>] -- <args...>");
+        return ExitCode::FAILURE;
+    };
+    if !is_safe_provider_tool_name(tool) {
+        eprintln!("rtk-wad: tool names must contain only ASCII letters, digits, '.', '_', or '-'");
+        return ExitCode::FAILURE;
+    }
+    let separator = arguments.iter().position(|argument| argument == "--");
+    let Some(separator) = separator else {
+        eprintln!("rtk-wad: provider execution requires `--` before tool arguments");
+        return ExitCode::FAILURE;
+    };
+    if separator < 3 {
+        eprintln!("rtk-wad: usage: provider exec <tool> [--candidate <index>] -- <args...>");
+        return ExitCode::FAILURE;
+    }
+    let options = &arguments[3..separator];
+    let candidate_index = match options {
+        [] => None,
+        [flag, index] if flag == "--candidate" => index.to_string_lossy().parse::<usize>().ok(),
+        _ => None,
+    };
+    if !options.is_empty() && candidate_index.is_none() {
+        eprintln!("rtk-wad: usage: provider exec <tool> [--candidate <index>] -- <args...>");
+        return ExitCode::FAILURE;
+    }
+    // Execution is explicit and must not reuse a provider identity discovered
+    // under a previous RTK path or tool installation state.
+    let resolution = resolve_tool_provider(tool, config, true);
+    let index = candidate_index.or(resolution.recommended);
+    let Some(index) = index else {
+        eprintln!(
+            "rtk-wad: no verified provider is available; run `rtk-wad doctor {tool}` for details"
+        );
+        return ExitCode::from(127);
+    };
+    let Some(candidate) = resolution.candidates.get(index) else {
+        eprintln!(
+            "rtk-wad: provider candidate {index} does not exist; run `rtk-wad resolve {tool}`"
+        );
+        return ExitCode::FAILURE;
+    };
+    if !candidate.usable {
+        eprintln!(
+            "rtk-wad: provider candidate {index} is not verified: {}",
+            candidate.reason
+        );
+        return ExitCode::from(127);
+    }
+    let forwarded = &arguments[separator + 1..];
+    if has_foreign_absolute_path(forwarded, candidate) {
+        eprintln!(
+            "rtk-wad: provider execution does not translate foreign absolute arguments; run from the verified project directory with relative paths"
+        );
+        return ExitCode::FAILURE;
+    }
+    let Some(route) = provider_execution_route(candidate) else {
+        eprintln!("rtk-wad: provider candidate {index} has an unsupported WSL version");
+        return ExitCode::FAILURE;
+    };
+    let needs_console_handler = matches!(route, Route::Wsl1 | Route::Wsl2);
+    if needs_console_handler && !console::install() {
+        eprintln!("rtk-wad: unable to register the Windows console cancellation handler");
+        return ExitCode::FAILURE;
+    }
+    let started = Instant::now();
+    let metrics = match if matches!(
+        candidate.kind,
+        ProviderKind::WindowsRaw | ProviderKind::WslRaw
+    ) {
+        WadMetrics::begin_unmeasured()
+    } else {
+        WadMetrics::begin()
+    } {
+        Ok(metrics) => Some(metrics),
+        Err(error) => {
+            eprintln!("rtk-wad: metrics disabled for this invocation: {error}");
+            None
+        }
+    };
+    let result = run_provider_candidate(tool, forwarded, config, candidate, metrics.as_ref());
+    if needs_console_handler {
+        console::uninstall();
+    }
+    let exit_code = result
+        .as_ref()
+        .ok()
+        .and_then(|status| status.code())
+        .unwrap_or(1);
+    if let Some(metrics) = metrics {
+        let command_family = format!("provider:{}", candidate.kind.as_str());
+        if let Err(error) = metrics.finish(route, &command_family, started.elapsed(), exit_code) {
+            eprintln!("rtk-wad: metrics were not recorded: {error}");
+        }
+    }
+    match result {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+        Err(error) => {
+            eprintln!("rtk-wad: unable to start provider candidate {index}: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn run_wsl_route(
@@ -3104,6 +3333,16 @@ fn parse_wad_options(
 }
 
 fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == PROVIDER_ARGUMENT)
+    {
+        if arguments.get(1).is_some_and(|argument| argument == "exec") {
+            return provider_exec_command(&arguments, config);
+        }
+        eprintln!("rtk-wad: usage: provider exec <tool> [--candidate <index>] -- <args...>");
+        return ExitCode::FAILURE;
+    }
     if arguments
         .first()
         .is_some_and(|argument| argument == RESOLVE_ARGUMENT)

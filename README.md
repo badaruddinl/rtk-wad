@@ -117,6 +117,11 @@ requires structured path conversion and a target-host directory probe in both
 directions before a cross-host provider can be reported as usable. It remains a
 diagnostic gate until P14 proves generic execution.
 
+[P14 generic provider execution](docs/PROVIDER_EXECUTION_ENGINE_P14.md)
+adds the explicit `provider exec` boundary for verified Windows and WSL
+providers. Automatic command routing remains deferred until P15 classifies the
+complete RTK command surface.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture

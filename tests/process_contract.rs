@@ -372,6 +372,142 @@ fn wad_resolve_verifies_wsl_project_paths_for_windows_providers() {
     std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
 }
 
+fn provider_candidate_index(
+    resolution: &serde_json::Value,
+    kind: &str,
+    distro: Option<&str>,
+) -> usize {
+    resolution["candidates"]
+        .as_array()
+        .expect("provider resolution lists candidates")
+        .iter()
+        .position(|candidate| {
+            candidate["kind"] == kind
+                && distro.is_none_or(|distro| candidate["distro"] == distro)
+                && candidate["usable"] == true
+        })
+        .expect("requested verified provider candidate is present")
+}
+
+#[test]
+fn wad_provider_exec_runs_each_verified_provider_without_replay() {
+    let (launcher, directory) = wad_launcher();
+    let state = directory.join("state");
+    let native_state = directory.join("native-state");
+    let fake_tool = directory.join("p14-tool.cmd");
+    let fake_rtk = directory.join("p14-rtk.cmd");
+    std::fs::write(
+        &fake_tool,
+        "@echo off\r\necho tool-cwd:%CD%\r\necho tool-args:%*\r\nexit /b 42\r\n",
+    )
+    .expect("fake raw provider is written");
+    std::fs::write(
+        &fake_rtk,
+        "@echo off\r\necho rtk-cwd:%CD%\r\necho rtk-args:%*\r\nexit /b 43\r\n",
+    )
+    .expect("fake native RTK provider is written");
+    let inherited_path = std::env::var_os("PATH").expect("PATH is available");
+    let path = std::env::join_paths([directory.as_os_str(), inherited_path.as_ref()])
+        .expect("test PATH is valid");
+    let literal = "space;and&dollar$HOME\\漢字";
+
+    let raw = Command::new(&launcher)
+        .env("PATH", &path)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .env("RTK_WSL_DISTRO", "Ubuntu")
+        .args(["provider", "exec", "p14-tool", "--", literal])
+        .output()
+        .expect("Windows raw provider starts");
+    assert_eq!(raw.status.code(), Some(42));
+    let raw_stdout = String::from_utf8_lossy(&raw.stdout);
+    assert!(raw_stdout.contains("tool-cwd:E:\\luthfi\\project\\rtk-wsl"));
+    assert!(raw_stdout.contains(literal));
+    assert_eq!(raw_stdout.matches("tool-args:").count(), 1);
+
+    let native = Command::new(&launcher)
+        .env("PATH", &path)
+        .env("RTK_WAD_STATE_DIR", &native_state)
+        .env("RTK_WAD_NATIVE_RTK_PATH", &fake_rtk)
+        .env("RTK_WSL_DISTRO", "Ubuntu")
+        .args(["provider", "exec", "p14-tool", "--", literal])
+        .output()
+        .expect("Windows RTK provider starts");
+    assert_eq!(native.status.code(), Some(43));
+    let native_stdout = String::from_utf8_lossy(&native.stdout);
+    assert!(native_stdout.contains("rtk-cwd:E:\\luthfi\\project\\rtk-wsl"));
+    assert!(native_stdout.contains("p14-tool"));
+    assert!(native_stdout.contains(literal));
+    assert_eq!(native_stdout.matches("rtk-args:").count(), 1);
+
+    let resolution = Command::new(&launcher)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .env("RTK_WSL_DISTRO", "Ubuntu")
+        .args(["resolve", "git", "--json", "--refresh"])
+        .output()
+        .expect("Git provider resolution starts");
+    assert!(resolution.status.success());
+    let resolution: serde_json::Value =
+        serde_json::from_slice(&resolution.stdout).expect("Git provider resolution is JSON");
+    let wsl_rtk_index = provider_candidate_index(&resolution, "wsl_rtk", Some("Ubuntu"));
+    let wsl_raw_index = provider_candidate_index(&resolution, "wsl_raw", Some("Ubuntu-RTK-WSL1"));
+
+    let wsl_rtk = Command::new(&launcher)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .env("RTK_WSL_DISTRO", "Ubuntu")
+        .args([
+            "provider",
+            "exec",
+            "git",
+            "--candidate",
+            &wsl_rtk_index.to_string(),
+            "--",
+            "--version",
+        ])
+        .output()
+        .expect("WSL RTK provider starts");
+    assert!(wsl_rtk.status.success());
+    assert!(String::from_utf8_lossy(&wsl_rtk.stdout).starts_with("git version "));
+
+    let wsl_raw = Command::new(&launcher)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .env("RTK_WSL_DISTRO", "Ubuntu")
+        .args([
+            "provider",
+            "exec",
+            "git",
+            "--candidate",
+            &wsl_raw_index.to_string(),
+            "--",
+            "--version",
+        ])
+        .output()
+        .expect("WSL raw provider starts");
+    assert!(wsl_raw.status.success());
+    assert!(String::from_utf8_lossy(&wsl_raw.stdout).starts_with("git version "));
+
+    let rejected = Command::new(&launcher)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .env("RTK_WSL_DISTRO", "Ubuntu")
+        .args([
+            "provider",
+            "exec",
+            "git",
+            "--candidate",
+            &wsl_raw_index.to_string(),
+            "--",
+            r"E:\foreign\path",
+        ])
+        .output()
+        .expect("foreign-path rejection starts");
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("does not translate foreign absolute arguments")
+    );
+
+    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+}
+
 #[test]
 fn provisioned_wsl1_bridge_preserves_the_process_contract_when_requested() {
     let Ok(distro) = std::env::var("RTK_WSL1_TEST_DISTRO") else {

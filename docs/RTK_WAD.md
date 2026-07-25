@@ -132,6 +132,11 @@ the structured `wsl.exe --exec wslpath` form plus a target-host directory
 probe. This is still diagnostic-only; see
 [`BIDIRECTIONAL_PROVIDER_MAPPING_P13.md`](BIDIRECTIONAL_PROVIDER_MAPPING_P13.md).
 
+P14 adds `rtk-wad provider exec <tool> [--candidate <index>] -- <args...>` for
+one verified provider execution without shell reconstruction or post-start
+fallback. It remains explicit while P15 classifies the command surface; see
+[`PROVIDER_EXECUTION_ENGINE_P14.md`](PROVIDER_EXECUTION_ENGINE_P14.md).
+
 PD3 uses a complete verified Go provider for automatic execution only when
 Windows Go is unavailable. A missing safe provider exits `127` before a child
 starts; installation remains disabled. See
