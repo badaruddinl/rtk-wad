@@ -1,6 +1,6 @@
 [package]
-name = "rtk-wsl"
-version = "0.1.0"
+name = "rtk-wad"
+version = "0.2.0-alpha.2"
 edition = "2024"
 description = "Native Windows launcher for running Linux RTK through WSL with structured arguments"
 license = "Apache-2.0"
@@ -9,4 +9,15 @@ repository = "https://github.com/badaruddinl/rtk-wsl"
 readme = "README.md"
 publish = false
 
+[[bin]]
+name = "rtk-wad"
+path = "src/main.rs"
+
+[[bin]]
+name = "rtk-wsl"
+path = "src/bin/rtk-wsl.rs"
+
 [dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -1,17 +1,35 @@
 [CmdletBinding()]
 param(
     [string]$Destination = (Join-Path $env:USERPROFILE ".local\bin"),
-    [string]$Source = (Join-Path $PSScriptRoot "..\target\release\rtk-wsl.exe"),
+    [string]$Source = (Join-Path $PSScriptRoot "..\target\release\rtk-wad.exe"),
+    [ValidateSet("rtk-wad", "rtk-wsl", "rtk-wsl1")]
+    [string]$CommandName = "rtk-wad",
+    [string]$TokenizerRoot,
+    [string]$TokenizerPython,
+    [switch]$InstallPython,
+    [switch]$ConfirmPythonInstall,
+    [switch]$SkipTokenizer,
     [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
 $source = (Resolve-Path -LiteralPath $source).Path
 $targetDirectory = [System.IO.Path]::GetFullPath($Destination)
-$target = Join-Path $targetDirectory "rtk-wsl.exe"
-$temporary = Join-Path $targetDirectory ".rtk-wsl.exe.$PID.new"
+$target = Join-Path $targetDirectory "$CommandName.exe"
+$temporary = Join-Path $targetDirectory ".$CommandName.exe.$PID.new"
+$tokenizerInstaller = Join-Path $PSScriptRoot "install-tokenizer.ps1"
 
 New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
+if ($CommandName -eq "rtk-wad" -and -not $SkipTokenizer) {
+    $tokenizerArguments = @{
+        Python = $TokenizerPython
+        InstallPython = $InstallPython
+        ConfirmPythonInstall = $ConfirmPythonInstall
+    }
+    if ($TokenizerRoot) { $tokenizerArguments.Root = $TokenizerRoot }
+    & $tokenizerInstaller @tokenizerArguments
+    if ($LASTEXITCODE -ne 0) { throw "WAD tokenizer dependency installation failed." }
+}
 try {
     Copy-Item -LiteralPath $source -Destination $temporary -ErrorAction Stop
 

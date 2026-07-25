@@ -40,6 +40,13 @@ an upstream contribution. Check an item only with current evidence.
 - [x] Two concise release-binary cycles completed on `rtk-wsl` and Flowpeek.
 - [x] Failure, fallback, and latency-outlier evidence is recorded without raw logs.
 - [x] Complete two normal development work cycles with the active installed binary
+
+## Toolchain evidence follow-up
+
+- [x] Real-corpus Go, Dart, and Flutter adapter evidence is recorded, including
+  the exact `go test ./...` token-first policy contract.
+- [ ] Obtain a pinned local .NET corpus before publishing any .NET latency or
+  token-saving claim. The current `dotnet` route is compatibility-only evidence.
   and review the record for recurring fallback or lock contention (post-freeze
   monitoring; it does not block this technical baseline).
 - [x] Run the Windows CI workflow once and review its WSL runner result. Rust

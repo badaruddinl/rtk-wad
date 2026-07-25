@@ -1,87 +1,179 @@
-# rtk-wsl
+<p align="center">
+  <img src="assets/rtk-wad-routing-hero.png" alt="RTK-WAD routing one Windows command through native, RTK, or WSL execution" width="100%" />
+</p>
 
-Native Windows launcher for the Linux RTK binary in WSL. It uses `wsl.exe --exec` and forwards every argument as structured process arguments; it does not rebuild a shell command string. Git commands started from a Windows-drive worktree use native `git.exe` by default, avoiding WSL `/mnt/<drive>` traversal and CRLF-index mismatches; every other RTK command remains in WSL.
+<h1 align="center">RTK-WAD</h1>
 
-Current stable release: `0.1.0`. Project home: `https://github.com/badaruddinl/rtk-wsl`.
+<p align="center">
+  <strong>Windows Adaptive Dispatcher for RTK.</strong><br />
+  One safe command boundary that chooses raw Windows, native RTK, or a verified WSL route.
+</p>
 
-## Build and use
+<p align="center">
+  <a href="https://github.com/badaruddinl/rtk-wsl/actions/workflows/windows-ci.yml"><img src="https://github.com/badaruddinl/rtk-wsl/actions/workflows/windows-ci.yml/badge.svg?branch=master" alt="Windows CI" /></a>
+  <a href="https://github.com/badaruddinl/rtk-wsl/tags"><img src="https://img.shields.io/github/v/tag/badaruddinl/rtk-wsl?sort=semver&label=version" alt="Version tag" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0 license" /></a>
+  <a href="docs/RELEASE_GATE_P20.md"><img src="https://img.shields.io/badge/status-alpha-orange.svg" alt="Alpha status" /></a>
+</p>
+
+RTK-WAD is a native Windows launcher for [RTK](https://github.com/rtk-ai/rtk).
+It preserves arguments as structured process arguments—never by rebuilding a
+shell command string—and chooses one auditable execution route for each command.
+It is designed for Windows developers who need RTK's compact output without
+blindly paying a WSL bridge cost or risking cross-shell quoting failures.
+
+> **Alpha software.** The current baseline is `v0.2.0-alpha.2`. The historical
+> repository name remains `rtk-wsl`; the canonical package and executable are
+> `rtk-wad`. `rtk-wsl` and `rtk-wsl1` are compatibility aliases.
+
+## Why RTK-WAD
+
+```mermaid
+flowchart LR
+    A[Windows command and argv] --> B[RTK-WAD]
+    B --> C{Safe, verified local evidence?}
+    C -->|Mutation or no benefit| D[Raw Windows]
+    C -->|Compact output helps| E[Native Windows RTK]
+    C -->|Linux semantics required and verified| F[WSL1 or WSL2 RTK]
+    D --> G[One exit code, stdout, and stderr contract]
+    E --> G
+    F --> G
+```
+
+| Route | When RTK-WAD uses it | What it protects |
+| --- | --- | --- |
+| Raw Windows | Mutations, unknown commands, or no measured RTK benefit | Lowest avoidable latency; native Windows toolchain behavior |
+| Native RTK | A verified read-only command has a useful compact-output result | RTK filtering without a WSL bridge |
+| WSL RTK | A verified provider and path mapping require Linux semantics | Structured cross-host execution, not ad-hoc shell quoting |
+
+The dispatcher never replays a command merely to train its policy. Mutating
+commands do not become adaptive. Provider discovery is local-first and does not
+install a language runtime or tool automatically.
+
+## Quick start
+
+Build a release binary on Windows:
 
 ```powershell
 cargo build --release
-.\target\release\rtk-wsl.exe rg "pattern" .
-.\target\release\rtk-wsl.exe stats
+.\target\release\rtk-wad.exe --version
+.\target\release\rtk-wad.exe --explain-route rg -n "pattern" src
 ```
 
-Install the release binary for the current Windows user:
+Install it for the current user:
 
 ```powershell
 .\scripts\install.ps1
+rtk-wad gain
 ```
 
-It installs `rtk-wsl.exe` beside the existing `rtk-wsl.cmd`. Windows resolves the `.exe` first; removing that one file restores the previous wrapper. The installer refuses to replace an existing `.exe` unless `-Force` is supplied.
-
-For an upgrade, rebuild first and use `-Force`; the previous executable is retained as `rtk-wsl.exe.previous.exe`. To remove the Rust launcher and fall back to the retained `.cmd` wrapper, run:
+The canonical installer provisions the private tokenizer environment declared
+by [`requirements/wad-tokenizer.txt`](requirements/wad-tokenizer.txt). It never
+alters the global Python environment. On a fresh PC without Python, inspect the
+plan first:
 
 ```powershell
-.\scripts\uninstall.ps1
+.\scripts\install-tokenizer.ps1 -PlanPythonBootstrap
 ```
 
-To restore the last backed-up executable instead, run `./scripts/uninstall.ps1 -RestorePrevious`.
+Only a separately confirmed `-InstallPython -ConfirmPythonInstall` can install
+the documented Python dependency.
 
-The launcher runs RTK through `flock` and a clean Linux environment, preserving the existing tracking lock behavior. `stats` remains a compatibility alias for RTK `gain`.
+## A route decision you can inspect
 
-## Configuration
+RTK-WAD exposes the policy decision instead of hiding it. This is a captured
+local example from the repository's current release binary; another machine or
+command form may choose differently.
 
-By default, the launcher uses the selected distro's default user and that user's
-`$HOME/.local/bin/rtk`. Override only when needed:
+```text
+> rtk-wad --explain-route rg -n RTK_WAD src
+route=native-rtk
+reason=local calibration candidate: first safe observation uses native RTK
+command_family=rg
+```
 
-- `RTK_WSL_DISTRO` (default: `Ubuntu`)
-- `RTK_WSL_USER` (optional; selects a specific WSL user)
-- `RTK_WSL_RTK_PATH` (optional; defaults to `$HOME/.local/bin/rtk` inside WSL)
-- `RTK_WSL_LOCK_PATH` (default: `/tmp/rtk-wsl.lock`)
-- `RTK_WSL_LOCK_WAIT_SECONDS` (default: `120`)
-- `RTK_WSL_CWD` (optional; an absolute Linux path for UNC shares or custom WSL mounts)
-- `RTK_WSL_GIT_MODE` (`auto`, default; `native`; or `wsl`)
+Use `rtk-wad policy show` and `rtk-wad calibration show` to inspect the local
+evidence behind later decisions.
 
-Every configured Linux path must be absolute. Empty values and a non-positive lock
-timeout are rejected before WSL starts. The default path is derived by the fixed
-launcher script from the selected WSL user's existing `HOME`; it does not probe or
-cache user information for each invocation.
+## Benchmark result: token saving *and* latency
 
-`RTK_WSL_GIT_MODE=auto` selects `git.exe` only when the caller is in a normal
-Windows-drive worktree and no WSL `-C`, `--git-dir`, or `--work-tree` path is
-supplied. This preserves exact Git argv and the user's Windows Git configuration.
-Use `wsl` for a Linux worktree or when WSL Git is intentionally required; use
-`native` to force native Git from another supported Windows context.
-Native Git keeps the ordinary Windows console cancellation behavior; WSL commands
-retain the dedicated Linux-process-group interruption and lock-release contract.
+The public benchmark does not claim that RTK-WAD is universally faster. It uses
+five warmed measurements on the recorded Windows host and `tiktoken==0.12.0`
+over combined stdout and stderr. `Tokens saved` is always `raw tokens -
+RTK-WAD auto tokens` for the same command form.
 
-## Alpha verification
+| Workload | Raw Windows | RTK-WAD auto | Raw → auto tokens | Tokens saved | Saving | Automatic route |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `git status --short --branch` | 127.613 ms | 266.283 ms | 37 → 37 | 0 | 0.0% | Raw |
+| `git log --oneline -100` | 126.856 ms | 309.754 ms | 864 → 864 | 0 | 0.0% | Raw |
+| Focused `rg` | 71.723 ms | 138.457 ms | 94 → 94 | 0 | 0.0% | Raw |
+| Broad `rg` | 69.994 ms | 293.102 ms | 3,164 → 2,082 | 1,082 | 34.2% | Native RTK |
 
-Run the Rust process contract on Windows with WSL available:
+```mermaid
+flowchart LR
+    A[Four measured workloads] --> B[git status, git log, focused rg]
+    B --> C[Raw Windows selected\n0 tokens saved]
+    A --> D[Broad rg]
+    D --> E[Native RTK selected\n1,082 tokens saved / 34.2%\nwith measured latency cost]
+```
+
+Three of four measured workloads save no tokens, so RTK-WAD keeps them raw.
+Broad `rg` saves 1,082 tokens (34.2%) and clears the documented 25% token-first
+threshold despite being slower on this host. See the versioned
+[comparison and methodology](docs/BENCHMARK_COMPARISON_P20.md), the
+[full Windows/WSL matrix](docs/BENCHMARK_CORE_MATRIX_P18_2026-07-25.md), and
+[machine-readable evidence](benchmarks/evidence/p18-comparison-summary.json).
+
+### Read `gain` honestly
+
+`rtk-wad gain` is local RTK tracker accounting, not a benchmark runner and not
+a raw-token estimator. It reports all invocations, but only native/WSL RTK
+routes contribute RTK-measured token fields. Raw-route invocations are retained
+as explicitly **unmeasured**; RTK-WAD does not invent a token estimate for them.
+
+Token saving is also not a promise of lower API cost or lower latency. Prompt,
+system, conversation, output, and model pricing all affect an eventual bill.
+
+## Windows and WSL safety contract
+
+- Exact argv forwarding handles spaces, quotes, Unicode, `&`, `;`, `$`, and
+  backslashes without shell reconstruction.
+- Drive CWD mapping, exit code propagation, stdout/stderr, Ctrl+C, child
+  processes, and lock release have automated process-contract coverage.
+- WSL use requires an explicit verified provider and path mapping. WSL1 and
+  WSL2 are measured routes, not a default performance claim.
+- Existing Windows and WSL tool installations can be diagnosed on demand.
+  Installation is always separately planned and confirmed.
+
+## Documentation
+
+| Topic | Reference |
+| --- | --- |
+| Routing, configuration, and local accounting | [RTK-WAD contract](docs/RTK_WAD.md) |
+| Public benchmark comparison | [P20 comparison](docs/BENCHMARK_COMPARISON_P20.md) |
+| Full native Windows, WSL1, and WSL2 matrix | [P18 core matrix](docs/BENCHMARK_CORE_MATRIX_P18_2026-07-25.md) |
+| Provider discovery, mapping, and execution | [Provider documentation index](docs/README.md#cross-host-providers-and-setup) |
+| Fresh-machine tokenizer dependency | [Runtime dependencies](docs/DEPENDENCIES.md) |
+| Installation, rollback, and uninstall | [Packaging/recovery contract](tests/packaging-contract.ps1) |
+| Full local alpha verification | [P20 release gate](docs/RELEASE_GATE_P20.md) |
+| Alpha delivery history | [Milestone documents](docs/README.md#release-and-project-history) |
+
+## Verify from source
 
 ```powershell
+cargo fmt --check
 cargo test
+cargo clippy -- -D warnings
+.\scripts\verify-release.ps1
 ```
 
-It covers literal arguments (including Unicode), stdout/stderr, exit codes,
-interactive stdin, and Ctrl+Break cancellation releasing the shared lock. The
-launcher forwards Windows cancellation to only the Linux process group it started;
-it never terminates the whole WSL distro. Run the installer/recovery contract after
-a release build:
+The release gate covers Rust checks, process contracts, tokenizer bootstrap,
+packaging/recovery, setup readiness, exact Windows/WSL provider preflight,
+command-surface parity, and crate hygiene.
 
-```powershell
-cargo build --release
-.\tests\packaging-contract.ps1
-```
+## License and upstream boundary
 
-The packaging contract uses a temporary destination only; it does not change the
-active launcher installation.
-
-The first milestone is intentionally small: executable launch, lossless argv forwarding, clean Linux RTK environment, and exit-code propagation. Windows-tool shims, an optional `rtkw.exe` alias, and upstream contribution work remain in the queued milestones.
-
-## License and upstream contribution
-
-This proof of concept uses the Apache License 2.0 to match upstream RTK. It is marked `publish = false` and is not presented as an official RTK package.
-
-Upstream contributions target the `develop` branch, require focused tests and documentation, and currently use a CLA Assistant workflow. Do not submit the code upstream until the contributor confirms that they own the contribution or have any employer permission required by the upstream contribution terms.
+RTK-WAD is Apache-2.0 licensed to match RTK. It is not an official RTK package
+and remains `publish = false`. Potential upstream contributions must target
+RTK's `develop` branch, be scoped and tested independently, and comply with
+its contributor requirements.
