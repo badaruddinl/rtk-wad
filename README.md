@@ -108,6 +108,10 @@ when no imported benchmark policy exists.
 local-first inventory of Windows and WSL tool/RTK providers that gates the
 generic cross-host registry work.
 
+[P12 generic provider registry](docs/GENERIC_PROVIDER_REGISTRY_P12.md)
+extends on-demand provider discovery beyond Go while retaining the P13 gate for
+automatic cross-host execution.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture

@@ -23,7 +23,7 @@ const CALIBRATION_ARGUMENT: &str = "calibration";
 const RESOLVE_ARGUMENT: &str = "resolve";
 const DOCTOR_ARGUMENT: &str = "doctor";
 const SETUP_ARGUMENT: &str = "setup";
-const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 1;
+const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 2;
 const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
 const CALIBRATION_SCHEMA_VERSION: u32 = 1;
 const CALIBRATION_MAX_SAMPLES: usize = 5;
@@ -616,6 +616,10 @@ struct ProjectLocation {
 struct WindowsToolProbe {
     executable: Option<String>,
     native_rtk: Option<String>,
+    #[serde(default)]
+    executable_identity: Option<BinaryIdentity>,
+    #[serde(default)]
+    native_rtk_identity: Option<BinaryIdentity>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -624,6 +628,17 @@ struct WslToolProbe {
     wsl_version: Option<u8>,
     executable: Option<String>,
     rtk: Option<String>,
+    #[serde(default)]
+    executable_identity: Option<BinaryIdentity>,
+    #[serde(default)]
+    rtk_identity: Option<BinaryIdentity>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct BinaryIdentity {
+    path: String,
+    size_bytes: u64,
+    modified_unix_seconds: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -710,7 +725,7 @@ struct SetupTransaction {
 }
 
 fn provider_cache_path() -> PathBuf {
-    wad_data_root().join("provider-cache-v1.json")
+    wad_data_root().join("provider-cache-v2.json")
 }
 
 fn unix_seconds() -> u64 {
@@ -776,6 +791,36 @@ fn configured_windows_executable(path: &str) -> Option<String> {
         .or_else(|| first_windows_executable(path))
 }
 
+fn windows_binary_identity(path: &str) -> Option<BinaryIdentity> {
+    let metadata = fs::metadata(path).ok()?;
+    let modified_unix_seconds = metadata
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some(BinaryIdentity {
+        path: path.to_owned(),
+        size_bytes: metadata.len(),
+        modified_unix_seconds,
+    })
+}
+
+fn parse_wsl_binary_identity(
+    path: Option<String>,
+    identity: Option<String>,
+) -> Option<BinaryIdentity> {
+    let path = path?;
+    let (size_bytes, modified_unix_seconds) = identity?
+        .split_once(':')
+        .and_then(|(size, modified)| Some((size.parse().ok()?, modified.parse().ok()?)))?;
+    Some(BinaryIdentity {
+        path,
+        size_bytes,
+        modified_unix_seconds,
+    })
+}
+
 fn parse_wsl_distributions(output: &str) -> Vec<(String, Option<u8>)> {
     output
         .lines()
@@ -818,7 +863,7 @@ fn installed_wsl_distributions() -> Vec<(String, Option<u8>)> {
 }
 
 fn probe_wsl_tool(distro: &str, wsl_version: Option<u8>, tool: &str) -> WslToolProbe {
-    let script = "tool_path=$(command -v \"$1\" 2>/dev/null || true); rtk_path=$(command -v rtk 2>/dev/null || true); printf '%s\\n%s\\n' \"$tool_path\" \"$rtk_path\"";
+    let script = "tool_path=$(command -v \"$1\" 2>/dev/null || true); rtk_path=$(command -v rtk 2>/dev/null || true); tool_identity=$(stat -Lc '%s:%Y' -- \"$tool_path\" 2>/dev/null || true); rtk_identity=$(stat -Lc '%s:%Y' -- \"$rtk_path\" 2>/dev/null || true); printf '%s\\n%s\\n%s\\n%s\\n' \"$tool_path\" \"$rtk_path\" \"$tool_identity\" \"$rtk_identity\"";
     let output = Command::new("wsl.exe")
         .args([
             "-d",
@@ -831,23 +876,31 @@ fn probe_wsl_tool(distro: &str, wsl_version: Option<u8>, tool: &str) -> WslToolP
             tool,
         ])
         .output();
-    let (executable, rtk) = output
+    let (executable, rtk, executable_identity, rtk_identity) = output
         .ok()
         .filter(|result| result.status.success())
         .map(|result| {
             let rendered = decode_wsl_output(&result.stdout);
             let mut lines = rendered.lines().map(str::trim).map(str::to_owned);
+            let executable = lines.next().filter(|line| !line.is_empty());
+            let rtk = lines.next().filter(|line| !line.is_empty());
+            let executable_identity = lines.next().filter(|line| !line.is_empty());
+            let rtk_identity = lines.next().filter(|line| !line.is_empty());
             (
-                lines.next().filter(|line| !line.is_empty()),
-                lines.next().filter(|line| !line.is_empty()),
+                executable.clone(),
+                rtk.clone(),
+                parse_wsl_binary_identity(executable, executable_identity),
+                parse_wsl_binary_identity(rtk, rtk_identity),
             )
         })
-        .unwrap_or((None, None));
+        .unwrap_or((None, None, None, None));
     WslToolProbe {
         distro: distro.to_owned(),
         wsl_version,
         executable,
         rtk,
+        executable_identity,
+        rtk_identity,
     }
 }
 
@@ -903,9 +956,15 @@ fn current_project_location(config: &Config) -> ProjectLocation {
 
 fn discover_tool(tool: &str, config: &Config, include_wsl: bool) -> ProviderCacheEntry {
     let executable = if tool == "go" { "go.exe" } else { tool };
+    let windows_executable = first_windows_executable(executable);
+    let native_rtk = configured_windows_executable(&config.native_rtk_path);
     let windows = WindowsToolProbe {
-        executable: first_windows_executable(executable),
-        native_rtk: configured_windows_executable(&config.native_rtk_path),
+        executable_identity: windows_executable
+            .as_deref()
+            .and_then(windows_binary_identity),
+        native_rtk_identity: native_rtk.as_deref().and_then(windows_binary_identity),
+        executable: windows_executable,
+        native_rtk,
     };
     let wsl = include_wsl
         .then(installed_wsl_distributions)
@@ -1059,7 +1118,7 @@ fn resolve_tool_provider_from_discovery(
         availability,
         candidates,
         recommended,
-        install: "disabled_in_pd1",
+        install: "disabled_in_p12",
     }
 }
 
@@ -1213,21 +1272,33 @@ fn print_provider_resolution(
             .as_deref()
             .unwrap_or("missing")
     );
+    println!(
+        "windows_{}_identity={}",
+        resolution.tool,
+        binary_identity_display(resolution.availability.windows.executable_identity.as_ref())
+    );
+    println!(
+        "windows_rtk_identity={}",
+        binary_identity_display(resolution.availability.windows.native_rtk_identity.as_ref())
+    );
     for probe in &resolution.availability.wsl {
         println!(
-            "inspected_distro={};wsl_version={};{}_path={};rtk_path={}",
+            "inspected_distro={};wsl_version={};{}_path={};{}_identity={};rtk_path={};rtk_identity={}",
             probe.distro,
             probe
                 .wsl_version
                 .map_or_else(|| "unknown".to_owned(), |version| version.to_string()),
             resolution.tool,
             probe.executable.as_deref().unwrap_or("missing"),
-            probe.rtk.as_deref().unwrap_or("missing")
+            resolution.tool,
+            binary_identity_display(probe.executable_identity.as_ref()),
+            probe.rtk.as_deref().unwrap_or("missing"),
+            binary_identity_display(probe.rtk_identity.as_ref())
         );
     }
     if resolution.candidates.is_empty() {
         println!("recommended=none");
-        println!("install=disabled_in_pd1");
+        println!("install={}", resolution.install);
         return if doctor {
             ExitCode::FAILURE
         } else {
@@ -1253,7 +1324,7 @@ fn print_provider_resolution(
             .recommended
             .map_or_else(|| "none".to_owned(), |index| index.to_string())
     );
-    println!("install=disabled_in_pd1");
+    println!("install={}", resolution.install);
     if doctor && resolution.recommended.is_none() {
         ExitCode::FAILURE
     } else {
@@ -1261,10 +1332,30 @@ fn print_provider_resolution(
     }
 }
 
+fn binary_identity_display(identity: Option<&BinaryIdentity>) -> String {
+    identity.map_or_else(
+        || "missing".to_owned(),
+        |identity| {
+            format!(
+                "{}:{}:{}",
+                identity.path, identity.size_bytes, identity.modified_unix_seconds
+            )
+        },
+    )
+}
+
+fn is_safe_provider_tool_name(tool: &str) -> bool {
+    !tool.is_empty()
+        && tool.len() <= 128
+        && tool
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
 fn provider_command(arguments: &[OsString], config: &Config, doctor: bool) -> ExitCode {
     let Some(tool) = arguments.get(1).and_then(|argument| argument.to_str()) else {
         eprintln!(
-            "rtk-wad: usage: {} go [--json] [--refresh]",
+            "rtk-wad: usage: {} <tool> [--json] [--refresh]",
             if doctor {
                 DOCTOR_ARGUMENT
             } else {
@@ -1273,8 +1364,8 @@ fn provider_command(arguments: &[OsString], config: &Config, doctor: bool) -> Ex
         );
         return ExitCode::FAILURE;
     };
-    if tool != "go" || arguments.len() > 4 {
-        eprintln!("rtk-wad: PD1 currently supports discovery only for the exact tool name `go`");
+    if !is_safe_provider_tool_name(tool) || arguments.len() > 4 {
+        eprintln!("rtk-wad: tool names must contain only ASCII letters, digits, '.', '_', or '-'");
         return ExitCode::FAILURE;
     }
     let json = arguments
@@ -1291,7 +1382,7 @@ fn provider_command(arguments: &[OsString], config: &Config, doctor: bool) -> Ex
         .any(|argument| argument != "--json" && argument != "--refresh")
     {
         eprintln!(
-            "rtk-wad: usage: {} go [--json] [--refresh]",
+            "rtk-wad: usage: {} <tool> [--json] [--refresh]",
             if doctor {
                 DOCTOR_ARGUMENT
             } else {
@@ -3809,6 +3900,8 @@ mod tests {
             windows: WindowsToolProbe {
                 executable: None,
                 native_rtk: None,
+                executable_identity: None,
+                native_rtk_identity: None,
             },
             wsl_probe_complete: true,
             wsl: Vec::new(),
@@ -3830,6 +3923,8 @@ mod tests {
             wsl_version: Some(2),
             executable: Some("/usr/bin/go".to_owned()),
             rtk: Some("/home/test/.local/bin/rtk".to_owned()),
+            executable_identity: None,
+            rtk_identity: None,
         };
         let windows_project = ProjectLocation {
             kind: ProjectLocationKind::Windows,
@@ -3893,6 +3988,8 @@ mod tests {
                 windows: WindowsToolProbe {
                     executable: None,
                     native_rtk: None,
+                    executable_identity: None,
+                    native_rtk_identity: None,
                 },
                 wsl_probe_complete: true,
                 wsl: Vec::new(),
@@ -3943,6 +4040,8 @@ mod tests {
                 windows: WindowsToolProbe {
                     executable: None,
                     native_rtk: None,
+                    executable_identity: None,
+                    native_rtk_identity: None,
                 },
                 wsl_probe_complete: true,
                 wsl: Vec::new(),
@@ -3977,6 +4076,8 @@ mod tests {
                 windows: WindowsToolProbe {
                     executable: None,
                     native_rtk: Some(r"C:\tools\rtk.exe".to_owned()),
+                    executable_identity: None,
+                    native_rtk_identity: None,
                 },
                 wsl_probe_complete: true,
                 wsl: Vec::new(),
@@ -4022,6 +4123,8 @@ mod tests {
                 windows: WindowsToolProbe {
                     executable: Some(r"C:\Go\bin\go.exe".to_owned()),
                     native_rtk: None,
+                    executable_identity: None,
+                    native_rtk_identity: None,
                 },
                 wsl_probe_complete: true,
                 wsl: Vec::new(),
@@ -4040,6 +4143,8 @@ mod tests {
                 windows: WindowsToolProbe {
                     executable: None,
                     native_rtk: None,
+                    executable_identity: None,
+                    native_rtk_identity: None,
                 },
                 ..ready.availability.clone()
             },
@@ -4067,6 +4172,8 @@ mod tests {
         let windows = WindowsToolProbe {
             executable: Some(r"C:\Program Files\Go\bin\go.exe".to_owned()),
             native_rtk: None,
+            executable_identity: None,
+            native_rtk_identity: None,
         };
         let windows_project = ProjectLocation {
             kind: ProjectLocationKind::Windows,
@@ -4163,6 +4270,38 @@ mod tests {
         assert_ne!(
             signature,
             calibration_signature(&[OsString::from("rg"), OsString::from("other")], r"E:\work")
+        );
+    }
+
+    #[test]
+    fn provider_registry_accepts_safe_generic_tool_names_only() {
+        for tool in ["git", "python3", "cargo-next", "tool.name", "go"] {
+            assert!(
+                is_safe_provider_tool_name(tool),
+                "{tool} should be accepted"
+            );
+        }
+        for tool in ["", "../tool", "tool/path", "tool;echo", "tool name", "工具"] {
+            assert!(
+                !is_safe_provider_tool_name(tool),
+                "{tool} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_registry_parses_wsl_binary_identity_without_retaining_command_output() {
+        let identity = parse_wsl_binary_identity(
+            Some("/usr/local/bin/rtk".to_owned()),
+            Some("2291200:1721880000".to_owned()),
+        )
+        .expect("valid stat identity is parsed");
+        assert_eq!(identity.path, "/usr/local/bin/rtk");
+        assert_eq!(identity.size_bytes, 2_291_200);
+        assert_eq!(identity.modified_unix_seconds, 1_721_880_000);
+        assert!(
+            parse_wsl_binary_identity(Some("/bin/tool".to_owned()), Some("bad".to_owned()))
+                .is_none()
         );
     }
 }

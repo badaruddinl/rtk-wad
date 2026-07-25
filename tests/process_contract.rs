@@ -259,6 +259,18 @@ fn wad_calibrates_safe_commands_across_natural_invocations() {
 }
 
 #[test]
+fn wad_rejects_unsafe_generic_provider_names_before_discovery() {
+    let (launcher, directory) = wad_launcher();
+    let output = Command::new(&launcher)
+        .args(["resolve", "tool;not-run"])
+        .output()
+        .expect("provider validation starts");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("tool names must contain only ASCII"));
+    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+}
+
+#[test]
 fn provisioned_wsl1_bridge_preserves_the_process_contract_when_requested() {
     let Ok(distro) = std::env::var("RTK_WSL1_TEST_DISTRO") else {
         return;
