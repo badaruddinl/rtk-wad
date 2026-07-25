@@ -187,6 +187,7 @@ system, conversation, output, and model pricing all affect an eventual bill.
 | Public benchmark comparison | [P20 comparison](docs/BENCHMARK_COMPARISON_P20.md) |
 | Public external-corpus benchmark | [P21 ripgrep evidence](docs/P21_PUBLIC_RIPGREP_BENCHMARK.md) |
 | Public Node-package benchmark | [P21 TypeScript `npm run` evidence](docs/P21_PUBLIC_TYPESCRIPT_NPM_BENCHMARK.md) |
+| Public pytest capability | [P21 pytest evidence gap](docs/P21_PUBLIC_PYTEST_CAPABILITY.md) |
 | Full native Windows, WSL1, and WSL2 matrix | [P18 core matrix](docs/BENCHMARK_CORE_MATRIX_P18_2026-07-25.md) |
 | Provider discovery, mapping, and execution | [Provider documentation index](docs/README.md#cross-host-providers-and-setup) |
 | Fresh-machine tokenizer dependency | [Runtime dependencies](docs/DEPENDENCIES.md) |
