@@ -203,12 +203,11 @@ pass; it must remove only a documented, non-semantic volatile field.
 
 The `fixtures` directory supplies executable doubles for AWS, curl, Docker,
 GitHub CLI, GitLab CLI, Kubernetes, OpenShift, PostgreSQL, and wget. Install the
-Windows and WSL fixture directories, then run `run-fixture-three-way.mjs` with
-both paths. WAD receives the Linux fixture directory through
+Windows and WSL1 fixture directories, then run `run-fixture-three-way.mjs` with
+both paths, the selected WSL1 distro/RTK path, and the P18 preflight. WAD is
+forced to WSL1 and receives the Linux fixture directory through
 `RTK_WSL_EXTRA_PATH`; stock RTK receives the Windows fixture directory through
-its child PATH. The fixture runner rotates variants and rejects coverage when a
-variant exits unsuccessfully, raw execution does not receive the exact caller
-argv, or stock RTK and WAD differ in normalized adapter output. RTK may add its
-documented semantic options (such as JSON output), so raw and RTK output are not
-required to be byte-identical. It records the same three-way evidence without
-contacting a network service.
+its child PATH. The runner rejects coverage when a variant exits unsuccessfully,
+raw execution does not receive exact argv, or stock RTK and WSL1 WAD differ in
+normalized adapter output. It never emits a route policy: fixture results prove
+compatibility only and cannot promote adaptive execution.
