@@ -42,9 +42,9 @@ Generic `setup <tool>` and `doctor <tool>` remain diagnostic-only. They can
 report an existing provider or a missing provider but do not infer a package
 manager, package identifier, dependency chain, or privilege escalation.
 
-The only WAD-owned runtime dependency is the pinned private tokenizer
-`tiktoken==0.12.0`. A normal fresh `rtk-wad` install provisions it before the
-launcher becomes active. On a machine without Python, the installer exposes the
+WAD has no owned runtime dependency. The pinned private tokenizer
+`tiktoken==0.12.0` is optional and used only by reproducible benchmarks. On a
+machine without Python, the explicit `-InstallTokenizer` path exposes the
 single exact `winget` plan for `Python.Python.3.12` and runs it only with both
 `-InstallPython` and `-ConfirmPythonInstall`. It never installs an unrelated
 tool or modifies the global Python environment.

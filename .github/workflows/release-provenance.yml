@@ -1,0 +1,57 @@
+name: Release Provenance
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable version tag to build and attest
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build-attest:
+    runs-on: windows-latest
+    steps:
+      - name: Check out requested tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Build and verify release binary
+        shell: pwsh
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --bin rtk-wad -- --test-threads=1
+          cargo build --release
+          $dist = 'dist'
+          New-Item -ItemType Directory -Path $dist -Force | Out-Null
+          Copy-Item target\release\rtk-wad.exe $dist\rtk-wad.exe
+          Copy-Item target\release\rtk-wsl.exe $dist\rtk-wsl.exe
+          Compress-Archive -Path $dist\rtk-wad.exe,$dist\rtk-wsl.exe -DestinationPath "$dist\rtk-wad-${{ inputs.tag }}-windows-x86_64.zip" -Force
+          Get-FileHash "$dist\rtk-wad-${{ inputs.tag }}-windows-x86_64.zip" -Algorithm SHA256 | ForEach-Object { $_.Hash + '  ' + $_.Path } | Set-Content "$dist\rtk-wad-${{ inputs.tag }}-windows-x86_64.zip.sha256"
+
+      - name: Attest release archive provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*.zip
+
+      - name: Upload attested release artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.zip
+            dist/*.sha256

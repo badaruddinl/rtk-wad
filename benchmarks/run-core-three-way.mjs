@@ -25,6 +25,9 @@ const settings = {
   rounds: Number(process.argv.includes("--rounds") ? option("--rounds") : 10),
   installPolicy: process.argv.includes("--install-policy"),
   workloads: process.argv.includes("--workloads") ? option("--workloads").split(",").map((value) => value.trim()).filter(Boolean) : null,
+  searchRoots: process.argv.includes("--search-roots") ? option("--search-roots").split(",").map((value) => value.trim()).filter(Boolean) : null,
+  focusedPattern: process.argv.includes("--focused-pattern") ? option("--focused-pattern") : "graphVersion",
+  broadPattern: process.argv.includes("--broad-pattern") ? option("--broad-pattern") : "function|const|class|require|module",
 };
 if (!Number.isInteger(settings.rounds) || settings.rounds < 1) {
     throw new Error("--rounds must be a positive integer");
@@ -47,7 +50,7 @@ if (!matchingNativeRtk) {
 const rawGit = process.env.RTK_WAD_BENCH_GIT || "git.exe";
 const rawRg = process.env.RTK_WAD_BENCH_RG || "rg.exe";
 const isolatedWadState = resolve(dirname(settings.output), `${basename(settings.output, ".json")}.wad-state`);
-const searchRoots = ["src", "tests", "test", "docs"]
+const searchRoots = (settings.searchRoots || ["src", "tests", "test", "docs"])
   .filter((candidate) => existsSync(resolve(settings.repo, candidate)));
 if (searchRoots.length === 0) {
   throw new Error("The benchmark corpus has no existing src, tests, test, or docs directory for ripgrep workloads");
@@ -65,13 +68,13 @@ const workloads = [
   },
   {
     id: "rg-focused",
-    raw: [rawRg, ["-n", "graphVersion", ...searchRoots]],
-    rtk: ["rg", "-n", "graphVersion", ...searchRoots],
+    raw: [rawRg, ["-n", settings.focusedPattern, ...searchRoots]],
+    rtk: ["rg", "-n", settings.focusedPattern, ...searchRoots],
   },
   {
     id: "rg-broad",
-    raw: [rawRg, ["-n", "function|const|class|require|module", ...searchRoots]],
-    rtk: ["rg", "-n", "function|const|class|require|module", ...searchRoots],
+    raw: [rawRg, ["-n", settings.broadPattern, ...searchRoots]],
+    rtk: ["rg", "-n", settings.broadPattern, ...searchRoots],
   },
 ];
 const selectedWorkloads = settings.workloads === null ? workloads : workloads.filter((workload) => settings.workloads.includes(workload.id));
@@ -301,6 +304,8 @@ writeFileSync(settings.output, JSON.stringify({
   workloads: selectedWorkloads.map((workload) => workload.id),
   corpus: settings.repo,
   search_roots: searchRoots,
+  focused_pattern: settings.focusedPattern,
+  broad_pattern: settings.broadPattern,
   native_rtk: settings.nativeRtk,
   rtk_wad: settings.wad,
   isolated_wad_state: isolatedWadState,

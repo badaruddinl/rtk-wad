@@ -67,17 +67,48 @@ Install it for the current user:
 rtk-wad gain
 ```
 
-The canonical installer provisions the private tokenizer environment declared
-by [`requirements/wad-tokenizer.txt`](requirements/wad-tokenizer.txt). It never
-alters the global Python environment. On a fresh PC without Python, inspect the
-plan first:
+The core installer has no Python or tokenizer dependency. The pinned
+[`tiktoken`](requirements/wad-tokenizer.txt) environment is optional and used
+only to reproduce benchmark token counts. Install it explicitly when running a
+benchmark; it never alters the global Python environment. On a fresh PC without
+Python, inspect the plan first:
 
 ```powershell
 .\scripts\install-tokenizer.ps1 -PlanPythonBootstrap
 ```
 
-Only a separately confirmed `-InstallPython -ConfirmPythonInstall` can install
-the documented Python dependency.
+Only `-InstallTokenizer -InstallPython -ConfirmPythonInstall` can install the
+documented Python dependency together with the optional tokenizer.
+
+To prevent automatic WSL selection for a Windows-only workflow, use the
+per-command environment mode. It keeps RTK meta commands on native RTK and
+runs unverified external commands directly on Windows:
+
+```powershell
+rtk-wad --environment windows-only --explain-route pytest -q
+$env:RTK_WAD_ENVIRONMENT = "windows-only"
+```
+
+## Agent hook adapters
+
+RTK-WAD provides conservative adapters for the native RTK hooks used by Claude
+Code, Cursor, Gemini CLI, and GitHub Copilot. Each adapter delegates rewrite
+decisions to stock RTK, then changes only an emitted
+`rtk ...` command into `rtk-wad ...`; it does not parse or rebuild agent shell
+commands itself. The registration is deliberately opt-in so existing agent
+hooks are not silently changed:
+
+```powershell
+rtk-wad agent integration claude
+rtk-wad agent integration cursor
+rtk-wad agent integration gemini
+rtk-wad agent integration copilot
+```
+
+Follow the printed three-step setup, then use the matching `rtk-wad agent hook
+<agent>` command in the hook registration. See [agent
+integration](docs/AGENT_INTEGRATION.md) for the supported boundary and failure
+behavior.
 
 ## A route decision you can inspect
 
@@ -123,6 +154,9 @@ threshold despite being slower on this host. See the versioned
 [comparison and methodology](docs/BENCHMARK_COMPARISON_P20.md), the
 [full Windows/WSL matrix](docs/BENCHMARK_CORE_MATRIX_P18_2026-07-25.md), and
 [machine-readable evidence](benchmarks/evidence/p18-comparison-summary.json).
+A separate [public ripgrep corpus measurement](docs/P21_PUBLIC_RIPGREP_BENCHMARK.md)
+records a zero-saving result; it is retained precisely because benchmark claims
+must remain corpus-specific and falsifiable.
 
 ### Read `gain` honestly
 
@@ -151,9 +185,15 @@ system, conversation, output, and model pricing all affect an eventual bill.
 | --- | --- |
 | Routing, configuration, and local accounting | [RTK-WAD contract](docs/RTK_WAD.md) |
 | Public benchmark comparison | [P20 comparison](docs/BENCHMARK_COMPARISON_P20.md) |
+| Public external-corpus benchmark | [P21 ripgrep evidence](docs/P21_PUBLIC_RIPGREP_BENCHMARK.md) |
+| Public Node-package benchmark | [P21 TypeScript `npm run` evidence](docs/P21_PUBLIC_TYPESCRIPT_NPM_BENCHMARK.md) |
+| Public pytest capability | [P21 pytest evidence gap](docs/P21_PUBLIC_PYTEST_CAPABILITY.md) |
 | Full native Windows, WSL1, and WSL2 matrix | [P18 core matrix](docs/BENCHMARK_CORE_MATRIX_P18_2026-07-25.md) |
 | Provider discovery, mapping, and execution | [Provider documentation index](docs/README.md#cross-host-providers-and-setup) |
 | Fresh-machine tokenizer dependency | [Runtime dependencies](docs/DEPENDENCIES.md) |
+| Claude Code adapter | [Agent integration](docs/AGENT_INTEGRATION.md) |
+| Controlled Windows/WSL evidence | [Self-hosted WSL CI](docs/SELF_HOSTED_WSL_CI.md) |
+| Artifact provenance and signing readiness | [Release provenance](docs/RELEASE_PROVENANCE.md) |
 | Installation, rollback, and uninstall | [Packaging/recovery contract](tests/packaging-contract.ps1) |
 | Full local alpha verification | [P20 release gate](docs/RELEASE_GATE_P20.md) |
 | Alpha delivery history | [Milestone documents](docs/README.md#release-and-project-history) |

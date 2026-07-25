@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "purpose": "Pinned, public, non-WAD repositories for reproducible Windows benchmark evidence.",
+  "corpora": [
+    {
+      "id": "pytest-8.4.0",
+      "repository": "https://github.com/pytest-dev/pytest.git",
+      "tag": "8.4.0",
+      "commit": "315b3ae798fe38264b3ab2312dced212c46f1e21",
+      "language": "Python",
+      "use": "pytest and ruff-style Python output workloads"
+    },
+    {
+      "id": "typescript-5.9.3",
+      "repository": "https://github.com/microsoft/TypeScript.git",
+      "tag": "v5.9.3",
+      "commit": "c63de15a992d37f0d6cec03ac7631872838602cb",
+      "language": "TypeScript",
+      "use": "npm, npx, TypeScript, ripgrep, and Git workloads"
+    },
+    {
+      "id": "ripgrep-14.1.1",
+      "repository": "https://github.com/BurntSushi/ripgrep.git",
+      "tag": "14.1.1",
+      "commit": "4649aa9700619f94cf9c66876e9549d83420e16c",
+      "language": "Rust",
+      "use": "cargo, ripgrep, and Git workloads"
+    }
+  ]
+}

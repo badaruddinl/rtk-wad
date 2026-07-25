@@ -4,12 +4,17 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, ExitStatus};
-use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
+
+mod agent;
+mod command_surface;
+mod metrics;
+
+use command_surface::{CommandSurface, command_manifest, command_surface, command_surface_report};
+use metrics::{TokenTotals, WadMetrics, wad_data_root};
 
 const DEFAULT_DISTRO: &str = "Ubuntu";
 const DEFAULT_WSL1_DISTRO: &str = "Ubuntu-RTK-WSL1";
@@ -26,12 +31,12 @@ const DOCTOR_ARGUMENT: &str = "doctor";
 const PROVIDER_ARGUMENT: &str = "provider";
 const SURFACE_ARGUMENT: &str = "surface";
 const SETUP_ARGUMENT: &str = "setup";
+const AGENT_ARGUMENT: &str = "agent";
 const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 2;
 const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
 const ROUTE_POLICY_SCHEMA_VERSION: u32 = 2;
 const CALIBRATION_SCHEMA_VERSION: u32 = 2;
 const CALIBRATION_MAX_SAMPLES: usize = 5;
-const COMMAND_MANIFEST: &str = include_str!("../benchmarks/command-manifest.json");
 const CANCEL_SCRIPT: &str = r#"
 if [ -r "$1" ]; then
     worker=$(cat "$1")
@@ -155,6 +160,29 @@ enum Route {
     Wsl2,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutionEnvironment {
+    Adaptive,
+    WindowsOnly,
+}
+
+impl ExecutionEnvironment {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Adaptive => "adaptive",
+            Self::WindowsOnly => "windows-only",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "adaptive" => Ok(Self::Adaptive),
+            "windows-only" => Ok(Self::WindowsOnly),
+            _ => Err("environment must be adaptive or windows-only".to_owned()),
+        }
+    }
+}
+
 impl Route {
     fn as_str(self) -> &'static str {
         match self {
@@ -201,6 +229,7 @@ struct Config {
     git_mode: GitMode,
     extra_path: Option<String>,
     wad_route: Route,
+    environment: ExecutionEnvironment,
     native_rtk_path: String,
 }
 
@@ -282,6 +311,14 @@ impl Config {
             }
             None => Route::Auto,
         };
+        let environment = match lookup("RTK_WAD_ENVIRONMENT") {
+            Some(value) if value.trim().is_empty() => {
+                return Err("RTK_WAD_ENVIRONMENT must not be empty when set".to_owned());
+            }
+            Some(value) => ExecutionEnvironment::parse(&value)
+                .map_err(|error| format!("RTK_WAD_ENVIRONMENT {error}"))?,
+            None => ExecutionEnvironment::Adaptive,
+        };
         let native_rtk_path = lookup("RTK_WAD_NATIVE_RTK_PATH")
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "rtk.exe".to_owned());
@@ -307,6 +344,7 @@ impl Config {
             git_mode,
             extra_path,
             wad_route,
+            environment,
             native_rtk_path,
         })
     }
@@ -469,14 +507,6 @@ fn optional_linux_path_list(
     Ok(value)
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-struct TokenTotals {
-    commands: i64,
-    input_tokens: i64,
-    output_tokens: i64,
-    saved_tokens: i64,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 struct RoutePolicyFile {
     schema_version: u32,
@@ -620,17 +650,6 @@ fn select_adaptive_route(
     }
 }
 
-fn wad_data_root() -> PathBuf {
-    env::var_os("RTK_WAD_STATE_DIR")
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("LOCALAPPDATA")
-                .map(PathBuf::from)
-                .map(|root| root.join("rtk-wad"))
-        })
-        .unwrap_or_else(env::temp_dir)
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum ProjectLocationKind {
@@ -644,125 +663,6 @@ struct ProjectLocation {
     kind: ProjectLocationKind,
     path: String,
     distro: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct CommandManifest {
-    schema_version: u32,
-    upstream_rtk_version: String,
-    native_structured: Vec<String>,
-    raw_native: Vec<String>,
-    wsl1_conservative: Vec<String>,
-    wad_internal: Vec<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum CommandSurface {
-    NativeStructured,
-    RawNative,
-    Wsl1Conservative,
-    WadInternal,
-    Unknown,
-}
-
-impl CommandSurface {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::NativeStructured => "native-structured",
-            Self::RawNative => "raw-native",
-            Self::Wsl1Conservative => "wsl1-conservative",
-            Self::WadInternal => "wad-internal",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    fn default_route(self) -> &'static str {
-        match self {
-            Self::NativeStructured => "native-rtk",
-            Self::RawNative => "raw",
-            Self::Wsl1Conservative | Self::Unknown => "wsl1",
-            Self::WadInternal => "internal",
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct CommandSurfaceRow {
-    command: String,
-    classification: CommandSurface,
-    default_route: &'static str,
-}
-
-#[derive(Serialize)]
-struct CommandSurfaceReport {
-    schema_version: u32,
-    upstream_rtk_version: String,
-    upstream_command_count: usize,
-    commands: Vec<CommandSurfaceRow>,
-}
-
-fn command_manifest() -> &'static CommandManifest {
-    static PARSED: OnceLock<CommandManifest> = OnceLock::new();
-    PARSED.get_or_init(|| {
-        serde_json::from_str(COMMAND_MANIFEST)
-            .expect("embedded command manifest must be valid JSON")
-    })
-}
-
-fn command_surface(command: &str) -> CommandSurface {
-    let manifest = command_manifest();
-    if manifest
-        .native_structured
-        .iter()
-        .any(|item| item == command)
-    {
-        CommandSurface::NativeStructured
-    } else if manifest.raw_native.iter().any(|item| item == command) {
-        CommandSurface::RawNative
-    } else if manifest
-        .wsl1_conservative
-        .iter()
-        .any(|item| item == command)
-    {
-        CommandSurface::Wsl1Conservative
-    } else if manifest.wad_internal.iter().any(|item| item == command) {
-        CommandSurface::WadInternal
-    } else {
-        CommandSurface::Unknown
-    }
-}
-
-fn command_surface_report() -> CommandSurfaceReport {
-    let manifest = command_manifest();
-    let mut commands = manifest
-        .native_structured
-        .iter()
-        .chain(&manifest.raw_native)
-        .chain(&manifest.wsl1_conservative)
-        .chain(&manifest.wad_internal)
-        .filter(|command| !command.starts_with('-') && command.as_str() != "stats")
-        .cloned()
-        .collect::<Vec<_>>();
-    commands.sort();
-    commands.dedup();
-    let rows = commands
-        .into_iter()
-        .map(|command| {
-            let classification = command_surface(&command);
-            CommandSurfaceRow {
-                default_route: classification.default_route(),
-                command,
-                classification,
-            }
-        })
-        .collect::<Vec<_>>();
-    CommandSurfaceReport {
-        schema_version: manifest.schema_version,
-        upstream_rtk_version: manifest.upstream_rtk_version.clone(),
-        upstream_command_count: rows.len(),
-        commands: rows,
-    }
 }
 
 fn print_command_surface(arguments: &[OsString]) -> ExitCode {
@@ -2342,6 +2242,7 @@ fn adaptive_context_signature(config: &Config) -> String {
         }
     };
     append(&command_manifest().upstream_rtk_version);
+    append(config.environment.as_str());
     append(&config.native_rtk_path);
     append(&env::var_os("PATH").unwrap_or_default().to_string_lossy());
     format!("{hash:016x}")
@@ -2542,259 +2443,6 @@ fn print_calibration() -> Result<(), String> {
         println!();
     }
     Ok(())
-}
-
-struct WadMetrics {
-    ledger_path: PathBuf,
-    scratch_path: PathBuf,
-}
-
-impl WadMetrics {
-    fn begin() -> Result<Self, String> {
-        Self::begin_with_tracker(true)
-    }
-
-    fn begin_unmeasured() -> Result<Self, String> {
-        Self::begin_with_tracker(false)
-    }
-
-    fn begin_with_tracker(with_tracker: bool) -> Result<Self, String> {
-        let root = wad_data_root();
-        let scratch_directory = root.join("scratch");
-        fs::create_dir_all(&scratch_directory)
-            .map_err(|error| format!("unable to create local metrics directory: {error}"))?;
-        cleanup_stale_scratch(&scratch_directory);
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        let scratch_path = scratch_directory.join(format!("{}-{nonce}.sqlite", std::process::id()));
-        if with_tracker {
-            let tracker_template = root.join("tracker-template.sqlite");
-            if !tracker_template.exists() {
-                initialize_tracker_template(&tracker_template)?;
-            }
-            fs::copy(&tracker_template, &scratch_path)
-                .map_err(|error| format!("unable to prepare temporary RTK metrics: {error}"))?;
-        }
-        let ledger_path = root.join("metrics-v1.sqlite");
-        let metrics = Self {
-            ledger_path,
-            scratch_path,
-        };
-        if !metrics.ledger_path.exists() {
-            metrics.initialize_ledger()?;
-        }
-        Ok(metrics)
-    }
-
-    fn initialize_ledger(&self) -> Result<(), String> {
-        let connection = Connection::open(&self.ledger_path)
-            .map_err(|error| format!("unable to open local metrics ledger: {error}"))?;
-        connection
-            .execute_batch(
-                "PRAGMA journal_mode=WAL;
-                 PRAGMA busy_timeout=5000;
-                 CREATE TABLE IF NOT EXISTS invocations (
-                    id INTEGER PRIMARY KEY,
-                    timestamp TEXT NOT NULL,
-                    route TEXT NOT NULL,
-                    command_family TEXT NOT NULL,
-                    commands INTEGER NOT NULL,
-                    input_tokens INTEGER NOT NULL,
-                    output_tokens INTEGER NOT NULL,
-                    saved_tokens INTEGER NOT NULL,
-                    elapsed_ms INTEGER NOT NULL,
-                    exit_code INTEGER NOT NULL,
-                    measured INTEGER NOT NULL
-                 );
-                 CREATE INDEX IF NOT EXISTS idx_invocations_timestamp ON invocations(timestamp);",
-            )
-            .map_err(|error| format!("unable to initialize local metrics ledger: {error}"))
-    }
-
-    fn scratch_windows_path(&self) -> &Path {
-        &self.scratch_path
-    }
-
-    fn finish(
-        self,
-        route: Route,
-        command_family: &str,
-        elapsed: Duration,
-        exit_code: i32,
-    ) -> Result<TokenTotals, String> {
-        let totals = read_upstream_totals(&self.scratch_path)?;
-        let measured = i64::from(totals.commands > 0);
-        let connection = Connection::open(&self.ledger_path)
-            .map_err(|error| format!("unable to reopen local metrics ledger: {error}"))?;
-        connection
-            .execute(
-                "INSERT INTO invocations (timestamp, route, command_family, commands, input_tokens, output_tokens, saved_tokens, elapsed_ms, exit_code, measured)
-                 VALUES (datetime('now'), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    route.as_str(),
-                    command_family,
-                    totals.commands,
-                    totals.input_tokens,
-                    totals.output_tokens,
-                    totals.saved_tokens,
-                    i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX),
-                    exit_code,
-                    measured,
-                ],
-            )
-            .map_err(|error| format!("unable to record local metrics: {error}"))?;
-        remove_scratch_database(&self.scratch_path);
-        Ok(totals)
-    }
-
-    fn print_gain() -> Result<(), String> {
-        let root = wad_data_root();
-        let ledger_path = root.join("metrics-v1.sqlite");
-        if !ledger_path.exists() {
-            println!("RTK-WAD Measured Token Accounting\n\nNo RTK-measured commands yet.");
-            return Ok(());
-        }
-        let connection = Connection::open(&ledger_path)
-            .map_err(|error| format!("unable to open local metrics ledger: {error}"))?;
-        let totals = connection
-            .query_row(
-                "SELECT COUNT(*), COALESCE(SUM(commands), 0), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(saved_tokens), 0), COALESCE(SUM(measured), 0) FROM invocations",
-                [],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?)),
-            )
-            .map_err(|error| format!("unable to read local metrics ledger: {error}"))?;
-        let savings = if totals.2 > 0 {
-            (totals.4 as f64 / totals.2 as f64) * 100.0
-        } else {
-            0.0
-        };
-        let unmeasured = totals.0.saturating_sub(totals.5);
-        println!("RTK-WAD Measured Token Accounting");
-        println!();
-        println!(
-            "Invocations: {} ({} RTK-measured, {} unmeasured)",
-            totals.0, totals.5, unmeasured
-        );
-        println!("RTK-measured commands: {}", totals.1);
-        println!("RTK input tokens: {}", totals.2);
-        println!("RTK output tokens: {}", totals.3);
-        println!("RTK-reported tokens avoided: {} ({savings:.1}%)", totals.4);
-        println!();
-        println!("By route (RTK-reported accounting only):");
-        let mut statement = connection
-            .prepare("SELECT route, COUNT(*), COALESCE(SUM(commands), 0), COALESCE(SUM(saved_tokens), 0), COALESCE(SUM(measured), 0) FROM invocations GROUP BY route ORDER BY saved_tokens DESC, route")
-            .map_err(|error| format!("unable to prepare local metrics summary: {error}"))?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                ))
-            })
-            .map_err(|error| format!("unable to read local metrics summary: {error}"))?;
-        for row in rows {
-            let (route, count, commands, saved, measured) =
-                row.map_err(|error| format!("unable to decode local metrics summary: {error}"))?;
-            println!(
-                "  {route}: {count} invocation(s), {measured} RTK-measured, {commands} measured command(s), {saved} RTK-reported tokens avoided"
-            );
-        }
-        Ok(())
-    }
-}
-
-fn initialize_tracker_template(path: &Path) -> Result<(), String> {
-    let connection = Connection::open(path)
-        .map_err(|error| format!("unable to create RTK metrics template: {error}"))?;
-    connection
-        .execute_batch(
-            "CREATE TABLE IF NOT EXISTS commands (
-                id INTEGER PRIMARY KEY,
-                timestamp TEXT NOT NULL,
-                original_cmd TEXT NOT NULL,
-                rtk_cmd TEXT NOT NULL,
-                input_tokens INTEGER NOT NULL,
-                output_tokens INTEGER NOT NULL,
-                saved_tokens INTEGER NOT NULL,
-                savings_pct REAL NOT NULL,
-                exec_time_ms INTEGER DEFAULT 0,
-                project_path TEXT DEFAULT ''
-             );
-             CREATE INDEX IF NOT EXISTS idx_timestamp ON commands(timestamp);
-             CREATE INDEX IF NOT EXISTS idx_project_path_timestamp ON commands(project_path, timestamp);
-             CREATE TABLE IF NOT EXISTS parse_failures (
-                id INTEGER PRIMARY KEY,
-                timestamp TEXT NOT NULL,
-                raw_command TEXT NOT NULL,
-                error_message TEXT NOT NULL,
-                fallback_succeeded INTEGER NOT NULL DEFAULT 0
-             );
-             CREATE INDEX IF NOT EXISTS idx_pf_timestamp ON parse_failures(timestamp);",
-        )
-        .map_err(|error| format!("unable to initialize RTK metrics template: {error}"))?;
-    Ok(())
-}
-
-fn read_upstream_totals(path: &Path) -> Result<TokenTotals, String> {
-    if !path.exists() {
-        return Ok(TokenTotals::default());
-    }
-    let connection = Connection::open(path)
-        .map_err(|error| format!("unable to read temporary RTK metrics: {error}"))?;
-    let exists: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'commands'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("unable to inspect temporary RTK metrics: {error}"))?;
-    if exists == 0 {
-        return Ok(TokenTotals::default());
-    }
-    connection
-        .query_row(
-            "SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(saved_tokens), 0) FROM commands",
-            [],
-            |row| {
-                Ok(TokenTotals {
-                    commands: row.get(0)?,
-                    input_tokens: row.get(1)?,
-                    output_tokens: row.get(2)?,
-                    saved_tokens: row.get(3)?,
-                })
-            },
-        )
-        .map_err(|error| format!("unable to aggregate temporary RTK metrics: {error}"))
-}
-
-fn remove_scratch_database(path: &Path) {
-    for suffix in ["", "-wal", "-shm"] {
-        let candidate = PathBuf::from(format!("{}{}", path.display(), suffix));
-        let _ = fs::remove_file(candidate);
-    }
-}
-
-fn cleanup_stale_scratch(directory: &Path) {
-    let cutoff = SystemTime::now().checked_sub(Duration::from_secs(24 * 60 * 60));
-    let Ok(entries) = fs::read_dir(directory) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let remove = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .zip(cutoff)
-            .is_some_and(|(modified, cutoff)| modified < cutoff);
-        if remove {
-            let _ = fs::remove_file(entry.path());
-        }
-    }
 }
 
 fn windows_path_to_wsl_path(path: &str) -> Option<String> {
@@ -3354,6 +3002,82 @@ fn auto_wad_route_with_context(
     }
 }
 
+fn is_rtk_meta_command(command: &str) -> bool {
+    matches!(
+        command,
+        "smart"
+            | "err"
+            | "test"
+            | "json"
+            | "deps"
+            | "env"
+            | "log"
+            | "summary"
+            | "init"
+            | "wget"
+            | "wc"
+            | "cc-economics"
+            | "config"
+            | "discover"
+            | "session"
+            | "telemetry"
+            | "learn"
+            | "run"
+            | "proxy"
+            | "pipe"
+            | "trust"
+            | "untrust"
+            | "verify"
+            | "hook-audit"
+            | "rewrite"
+            | "hook"
+    )
+}
+
+fn auto_wad_route_for_environment(
+    arguments: &[OsString],
+    current_directory: Option<&str>,
+    policy: Option<&RoutePolicyFile>,
+    context_signature: Option<&str>,
+    environment: ExecutionEnvironment,
+) -> (Route, &'static str) {
+    if environment == ExecutionEnvironment::Adaptive {
+        return auto_wad_route_with_context(
+            arguments,
+            current_directory,
+            policy,
+            context_signature,
+        );
+    }
+
+    let command = wad_command_family(arguments);
+    if is_rtk_meta_command(command) || command_surface(command) == CommandSurface::WadInternal {
+        return (
+            Route::NativeRtk,
+            "windows-only environment requires native RTK for an RTK meta command",
+        );
+    }
+    match command_surface(command) {
+        CommandSurface::NativeStructured
+            if command == "git" && !is_verified_read_only_git(arguments) =>
+        {
+            (
+                Route::Raw,
+                "windows-only environment executes Git mutation once with native Git",
+            )
+        }
+        CommandSurface::NativeStructured => (
+            Route::NativeRtk,
+            "windows-only environment selects the structured native RTK adapter",
+        ),
+        CommandSurface::RawNative | CommandSurface::Wsl1Conservative | CommandSurface::Unknown => (
+            Route::Raw,
+            "windows-only environment disables automatic WSL routing and uses the native command",
+        ),
+        CommandSurface::WadInternal => unreachable!("WAD internal commands were handled above"),
+    }
+}
+
 fn configured_wsl_backend(config: &Config, route: Route) -> Config {
     let mut selected = config.clone();
     match route {
@@ -3378,6 +3102,7 @@ fn print_adapter_info(config: &Config) {
     println!("adapter=rtk-wad");
     println!("profile={}", config.profile.as_str());
     println!("route_preference={}", config.wad_route.as_str());
+    println!("environment={}", config.environment.as_str());
     println!("native_rtk_path={}", config.native_rtk_path);
     println!("metrics=local-aggregate-only");
     println!("compatibility_aliases=rtk-wsl,rtk-wsl1");
@@ -3632,7 +3357,12 @@ fn provider_exec_command(arguments: &[OsString], config: &Config) -> ExitCode {
         .unwrap_or(1);
     if let Some(metrics) = metrics {
         let command_family = format!("provider:{}", candidate.kind.as_str());
-        if let Err(error) = metrics.finish(route, &command_family, started.elapsed(), exit_code) {
+        if let Err(error) = metrics.finish(
+            route.as_str(),
+            &command_family,
+            started.elapsed(),
+            exit_code,
+        ) {
             eprintln!("rtk-wad: metrics were not recorded: {error}");
         }
     }
@@ -3680,8 +3410,10 @@ fn run_wsl_route(
 fn parse_wad_options(
     mut arguments: Vec<OsString>,
     configured: Route,
-) -> Result<(Vec<OsString>, Route, bool), String> {
+    configured_environment: ExecutionEnvironment,
+) -> Result<(Vec<OsString>, Route, ExecutionEnvironment, bool), String> {
     let mut route = configured;
+    let mut environment = configured_environment;
     let mut explain = false;
     loop {
         match arguments.first().and_then(|argument| argument.to_str()) {
@@ -3692,16 +3424,29 @@ fn parse_wad_options(
                 route = Route::parse(&arguments[1].to_string_lossy())?;
                 arguments.drain(0..2);
             }
+            Some("--environment") => {
+                if arguments.len() < 2 {
+                    return Err("--environment requires adaptive or windows-only".to_owned());
+                }
+                environment = ExecutionEnvironment::parse(&arguments[1].to_string_lossy())?;
+                arguments.drain(0..2);
+            }
             Some(EXPLAIN_ROUTE_ARGUMENT) => {
                 explain = true;
                 arguments.remove(0);
             }
-            _ => return Ok((arguments, route, explain)),
+            _ => return Ok((arguments, route, environment, explain)),
         }
     }
 }
 
 fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == AGENT_ARGUMENT)
+    {
+        return agent::command(&arguments, &config.native_rtk_path);
+    }
     if arguments
         .first()
         .is_some_and(|argument| argument == SURFACE_ARGUMENT)
@@ -3817,24 +3562,27 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
             }
         };
     }
-    let (arguments, requested_route, explain) = match parse_wad_options(arguments, config.wad_route)
-    {
-        Ok(options) => options,
-        Err(error) => {
-            eprintln!("rtk-wad: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (arguments, requested_route, environment, explain) =
+        match parse_wad_options(arguments, config.wad_route, config.environment) {
+            Ok(options) => options,
+            Err(error) => {
+                eprintln!("rtk-wad: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+    let mut invocation_config = config.clone();
+    invocation_config.environment = environment;
     let current_directory = env::current_dir().ok();
     let started = Instant::now();
-    let adaptive_context = adaptive_context_signature(config);
+    let adaptive_context = adaptive_context_signature(&invocation_config);
     let policy = load_route_policy();
     let (initial_route, initial_reason) = if requested_route == Route::Auto {
-        auto_wad_route_with_context(
+        auto_wad_route_for_environment(
             &arguments,
             current_directory.as_deref().and_then(|path| path.to_str()),
             policy.as_ref(),
             Some(&adaptive_context),
+            environment,
         )
     } else {
         (requested_route, "explicit route preference")
@@ -3861,10 +3609,10 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         route = plan.route;
         reason = plan.reason.to_owned();
     }
-    let mut selected_config = configured_wsl_backend(config, route);
+    let mut selected_config = configured_wsl_backend(&invocation_config, route);
     let mut provider_missing = None;
-    if requested_route == Route::Auto {
-        match go_provider_decision(&arguments, config, route) {
+    if requested_route == Route::Auto && environment == ExecutionEnvironment::Adaptive {
+        match go_provider_decision(&arguments, &invocation_config, route) {
             GoProviderDecision::KeepStaticRoute => {}
             GoProviderDecision::UseWsl {
                 route: provider_route,
@@ -3926,7 +3674,8 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         Route::NativeRtk => match run_native_rtk(&arguments, &selected_config, metrics.as_ref()) {
             Err(error)
                 if error.kind() == std::io::ErrorKind::NotFound
-                    && requested_route == Route::Auto =>
+                    && requested_route == Route::Auto
+                    && environment == ExecutionEnvironment::Adaptive =>
             {
                 trace(
                     "native RTK was not found; falling back to isolated WSL1 before any child started",
@@ -3941,7 +3690,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
                     console_installed = true;
                 }
                 executed_route = Route::Wsl1;
-                let fallback_config = configured_wsl_backend(config, Route::Wsl1);
+                let fallback_config = configured_wsl_backend(&invocation_config, Route::Wsl1);
                 run_wsl_route(
                     arguments.clone(),
                     &fallback_config,
@@ -3967,7 +3716,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     let elapsed = started.elapsed();
     let totals = if let Some(metrics) = metrics {
         match metrics.finish(
-            executed_route,
+            executed_route.as_str(),
             wad_command_family(&arguments),
             elapsed,
             exit_code,
@@ -4667,7 +4416,7 @@ mod tests {
 
     #[test]
     fn wad_route_options_are_explicit_and_validate_values() {
-        let (arguments, route, explain) = parse_wad_options(
+        let (arguments, route, environment, explain) = parse_wad_options(
             vec![
                 OsString::from("--route"),
                 OsString::from("native-rtk"),
@@ -4675,17 +4424,85 @@ mod tests {
                 OsString::from("rg"),
             ],
             Route::Auto,
+            ExecutionEnvironment::Adaptive,
         )
         .expect("route options are valid");
         assert_eq!(route, Route::NativeRtk);
+        assert_eq!(environment, ExecutionEnvironment::Adaptive);
         assert!(explain);
         assert_eq!(arguments, vec![OsString::from("rg")]);
         assert!(
             parse_wad_options(
                 vec![OsString::from("--route"), OsString::from("unsafe")],
-                Route::Auto
+                Route::Auto,
+                ExecutionEnvironment::Adaptive,
             )
             .is_err()
+        );
+
+        let (arguments, route, environment, explain) = parse_wad_options(
+            vec![
+                OsString::from("--environment"),
+                OsString::from("windows-only"),
+                OsString::from("pytest"),
+            ],
+            Route::Auto,
+            ExecutionEnvironment::Adaptive,
+        )
+        .expect("windows-only option is valid");
+        assert_eq!(arguments, vec![OsString::from("pytest")]);
+        assert_eq!(route, Route::Auto);
+        assert_eq!(environment, ExecutionEnvironment::WindowsOnly);
+        assert!(!explain);
+        assert!(
+            parse_wad_options(
+                vec![OsString::from("--environment"), OsString::from("hybrid")],
+                Route::Auto,
+                ExecutionEnvironment::Adaptive,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn windows_only_routes_external_commands_raw_and_keeps_rtk_meta_native() {
+        assert_eq!(
+            auto_wad_route_for_environment(
+                &[OsString::from("pytest"), OsString::from("-q")],
+                Some(r"E:\work"),
+                None,
+                None,
+                ExecutionEnvironment::WindowsOnly,
+            )
+            .0,
+            Route::Raw
+        );
+        assert_eq!(
+            auto_wad_route_for_environment(
+                &[OsString::from("init"), OsString::from("-g")],
+                Some(r"E:\work"),
+                None,
+                None,
+                ExecutionEnvironment::WindowsOnly,
+            )
+            .0,
+            Route::NativeRtk
+        );
+        assert_eq!(
+            auto_wad_route_for_environment(
+                &[
+                    OsString::from("git"),
+                    OsString::from("commit"),
+                    OsString::from("-m"),
+                    OsString::from("x")
+                ],
+                Some(r"E:\work"),
+                None,
+                None,
+                ExecutionEnvironment::WindowsOnly,
+            )
+            .0,
+            Route::Raw
         );
     }
 

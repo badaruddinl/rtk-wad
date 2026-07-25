@@ -35,8 +35,33 @@ another backend as a stand-in.
 ```
 
 The benchmark runner uses a real local corpus and never turns a failed external
-integration into a synthetic success. Command families are classified before a
-run as follows:
+integration into a synthetic success. For publishable evidence, use the pinned,
+public projects in [`public-corpora.json`](public-corpora.json), not the WAD
+repository or a private workstation project. Provision them outside the WAD
+worktree; the script pins the tag and commit, reuses only an exact existing
+clone, and never overwrites a corpus:
+
+```powershell
+.\scripts\provision-public-benchmark-corpus.ps1 -Corpus ripgrep-14.1.1
+```
+
+For a read-only workload that needs only selected repository files, use an
+explicit sparse checkout. It is still pinned to the manifest's exact Git commit
+and origin, but avoids downloading unrelated blobs. For example, the TypeScript
+`npm run` benchmark needs only its root package manifest:
+
+```powershell
+.\scripts\provision-public-benchmark-corpus.ps1 `
+  -Corpus typescript-5.9.3 `
+  -SparsePath package.json
+```
+
+Sparse mode is opt-in. The default corpus provisioner continues to create a
+complete checkout for source-search and toolchain workloads.
+
+The optional `tiktoken` Python environment is required only by a benchmark
+runner. Install it explicitly with `scripts/install.ps1 -InstallTokenizer`.
+Command families are classified before a run as follows:
 
 | Coverage tier | Command families | Evidence requirement |
 | --- | --- | --- |
@@ -58,8 +83,9 @@ performs one warm-up and ten rotating measured rounds per variant. The resulting
 JSON records each sample plus median and p95 latency, output bytes, exit codes,
 SHA-256 output hashes, and exact `o200k_base` counts.
 
-The runner requires the WAD-managed Python environment with `tiktoken` and does not silently substitute a
-different tokenizer. It intentionally reports output-equivalence evidence rather
+The runner requires the explicitly installed WAD benchmark Python environment
+with `tiktoken` and does not silently substitute a different tokenizer. It
+intentionally reports output-equivalence evidence rather
 than asserting byte equality: RTK is expected to reduce output.
 
 The ripgrep corpus is discovered from existing `src`, `tests`, `test`, and
@@ -76,6 +102,18 @@ node .\benchmarks\run-core-three-way.mjs `
   --preflight .\.flowpeek\cache\p18-benchmark-preflight.json `
   --output .\benchmarks\results\flowpeek.json `
   --install-policy
+```
+
+For a public corpus with different source roots or symbols, make those choices
+explicit in the artifact rather than relying on WAD's directory conventions:
+
+```powershell
+node .\benchmarks\run-core-three-way.mjs `
+  --repo $env:LOCALAPPDATA\rtk-wad\benchmark-corpora\ripgrep-14.1.1 `
+  --search-roots crates,tests `
+  --focused-pattern RegexBuilder `
+  --broad-pattern 'fn|struct|impl|use|pub' `
+  # ...the same native RTK, WAD, Python, preflight, and output options
 ```
 
 Set `RTK_WAD_BENCH_GIT` or `RTK_WAD_BENCH_RG` only when the corresponding raw
