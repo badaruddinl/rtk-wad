@@ -168,19 +168,20 @@ node .\benchmarks\run-toolchain-three-way.mjs `
   --native-rtk C:\tools\rtk.exe `
   --wad C:\tools\rtk-wad.exe `
   --python C:\path\to\python.exe `
+  --preflight .\.flowpeek\cache\p18-benchmark-preflight.json `
   --output .\benchmarks\results\go-test.json `
   -- test ./...
 ```
 
 Pass `--policy-key` only for an exactly verified command form with a stock RTK
-comparison; the runner then emits a one-key route-policy artifact. Static raw
-fallbacks remain compatibility defaults until repeated real-project evidence
-justifies such a narrow policy rule. A policy run adds an explicit WAD
-`native-rtk` candidate sample, so its latency includes dispatcher and local
-accounting overhead rather than reusing the stock RTK latency. Each command has
-a 60-second default process-tree deadline; pass
-`--timeout-ms` to record a stricter or looser operational limit. A timeout is a
-failed measurement and never becomes release evidence.
+comparison. The runner requires the P18 preflight to name that exact native
+RTK, obtains a v2 local policy context, measures an explicit WAD `native-rtk`
+candidate, imports only that context-bound policy into a state directory unique
+to the artifact, and finally measures WAD auto mode. Static raw fallbacks
+remain compatibility defaults until repeated real-project evidence justifies
+such a narrow policy rule. Each command has a 60-second default process-tree
+deadline; pass `--timeout-ms` to record a stricter or looser operational limit.
+A timeout is a failed measurement and never becomes release evidence.
 
 `--skip-warmup` is permitted only after one successful raw and one successful
 WAD warm-up have been run separately and recorded in the release note. It
@@ -191,11 +192,11 @@ does not replace `LOCALAPPDATA`, so raw Windows toolchains retain their normal
 per-user caches.
 
 The default comparison is byte-exact. The only current exceptions are
-`--normalizer dart-format-duration` and `--normalizer flutter-analysis-duration`:
-they replace the respective elapsed-time field before semantic comparison while
-retaining the unmodified output hashes. Do not add a normalizer merely to make
-a benchmark pass; it must remove only a documented, non-semantic volatile
-field.
+`--normalizer cargo-check-duration`, `--normalizer dart-format-duration`, and
+`--normalizer flutter-analysis-duration`: they replace only the respective
+non-semantic elapsed-time field before semantic comparison while retaining the
+unmodified output hashes. Do not add a normalizer merely to make a benchmark
+pass; it must remove only a documented, non-semantic volatile field.
 
 ## External-service fixture runner
 
