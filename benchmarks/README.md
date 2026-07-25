@@ -113,11 +113,12 @@ node .\benchmarks\run-wsl-bridge-core.mjs `
   --output .\benchmarks\results\wsl-bridge-core.json
 ```
 
-`run-cargo-three-way.mjs` measures `cargo check` on a real Windows worktree. It
-requires `--target-dir` on NTFS so build cache churn is isolated from a source
-worktree that may reside on exFAT or another non-NTFS volume. Set
-`RTK_WAD_BENCH_CARGO` to an explicit `cargo.exe` when the selected toolchain is
-not already on `PATH`.
+Use `run-toolchain-three-way.mjs --tool cargo --policy-key cargo:check --
+check` for Cargo evidence. It requires a P18 preflight and a private WAD state
+per output artifact. Set `RTK_WAD_BENCH_TOOL` to an explicit `cargo.exe` when
+the selected toolchain is not already on `PATH`. The retired
+`run-cargo-three-way.mjs` schema-v1 runner is intentionally absent so it cannot
+generate an importable-looking but invalid policy artifact.
 
 ## Node package-manager runner
 
