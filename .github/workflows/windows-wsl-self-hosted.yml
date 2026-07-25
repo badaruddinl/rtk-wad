@@ -43,4 +43,4 @@ jobs:
 
       - name: Run Windows/WSL process contract
         shell: powershell
-        run: rustup.exe run stable cargo test --test process_contract -- --test-threads=1
+        run: rustup.exe run stable cargo test --test process_contract

@@ -22,7 +22,7 @@ shell command string—and chooses one auditable execution route for each comman
 It is designed for Windows developers who need RTK's compact output without
 blindly paying a WSL bridge cost or risking cross-shell quoting failures.
 
-> **Stable baseline.** The current release is `v0.2.0`. The canonical
+> **Stable baseline.** The current release is `v0.2.1`. The canonical
 > repository, package, and executable are `rtk-wad`. `rtk-wsl` and `rtk-wsl1`
 > remain compatibility aliases for existing local integrations.
 
@@ -49,6 +49,29 @@ flowchart LR
 The dispatcher never replays a command merely to train its policy. Mutating
 commands do not become adaptive. Provider discovery is local-first and does not
 install a language runtime or tool automatically.
+
+## Download the verified Windows binary
+
+The stable Windows x86_64 archive contains both `rtk-wad.exe` and the
+`rtk-wsl.exe` compatibility alias. It is built from the immutable `v0.2.1` tag,
+published with a SHA-256 sidecar, and accompanied by a GitHub build-provenance
+attestation. It is not Authenticode-signed; see [release
+provenance](docs/RELEASE_PROVENANCE.md) for the explicit trust boundary.
+
+- [Download the v0.2.1 Windows archive](https://github.com/badaruddinl/rtk-wad/releases/download/v0.2.1/rtk-wad-v0.2.1-windows-x86_64.zip)
+- [Download its SHA-256 sidecar](https://github.com/badaruddinl/rtk-wad/releases/download/v0.2.1/rtk-wad-v0.2.1-windows-x86_64.zip.sha256)
+- [Open the v0.2.1 release record](https://github.com/badaruddinl/rtk-wad/releases/tag/v0.2.1)
+
+Verify the archive after downloading it:
+
+```powershell
+Get-FileHash .\rtk-wad-v0.2.1-windows-x86_64.zip -Algorithm SHA256
+Get-Content .\rtk-wad-v0.2.1-windows-x86_64.zip.sha256
+```
+
+Every stable release also requires successful hosted quality gates and a
+recorded self-hosted [Windows/WSL process-contract run](docs/SELF_HOSTED_WSL_CI.md)
+for the release commit.
 
 ## Quick start
 
