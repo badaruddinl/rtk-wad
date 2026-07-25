@@ -218,6 +218,14 @@ The legacy `rtk-wsl` and `rtk-wsl1` compatibility aliases do not provision this
 dependency. The dependency record and upgrade contract are in
 [runtime dependencies](DEPENDENCIES.md).
 
+## Cross-host provider boundary
+
+Verified Windows-to-WSL and WSL-to-Windows provider execution, cache limits,
+and the on-demand dependency boundary are documented in
+[P19 cross-host resolution](CROSS_HOST_ON_DEMAND_P19.md). Generic setup remains
+diagnostic-only; cross-host execution is always explicit through `provider
+exec` after WAD validates the candidate host and project path.
+
 ## Local token savings ledger
 
 `rtk-wad gain` and its `stats` compatibility alias show aggregate token savings

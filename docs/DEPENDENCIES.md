@@ -2,10 +2,13 @@
 
 ## WAD tokenizer
 
-`rtk-wad` manages [tiktoken on PyPI](https://pypi.org/project/tiktoken/) as a
-first-class runtime dependency for reproducible token accounting. The exact
-version is pinned in `requirements/wad-tokenizer.txt` and is installed into a
-private WAD-owned virtual environment during a fresh canonical installation.
+`rtk-wad` manages [tiktoken on PyPI](https://pypi.org/project/tiktoken/) as an
+official first-class runtime dependency for reproducible token accounting.
+`requirements/wad-tokenizer.txt` is the canonical package manifest: the
+installer reads its one exact `tiktoken==<version>` declaration to select the
+private environment, verify the import, and report its installed version. A
+fresh canonical installation installs that declared package into a private
+WAD-owned virtual environment.
 
 The package is not installed globally and is not bundled into the Rust binary.
 The installer verifies the imported package version before it activates the

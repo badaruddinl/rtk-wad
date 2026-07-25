@@ -1,3 +1,5 @@
-# WAD-managed private tokenizer dependency. Keep this direct dependency pinned
-# so benchmark artifacts and installer diagnostics can name the exact version.
+# Official WAD runtime dependency manifest. This exact direct requirement is
+# the single source of truth for installer diagnostics, private-environment
+# location, and reproducible token-accounting artifacts. Upgrade only as a
+# reviewed release change with refreshed benchmark and package-contract proof.
 tiktoken==0.12.0

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Root = (Join-Path $env:LOCALAPPDATA "rtk-wad\tokenizer\tiktoken-0.12.0"),
+    [string]$Root,
     [string]$Python,
     [string]$Requirements = (Join-Path $PSScriptRoot "..\requirements\wad-tokenizer.txt"),
     [switch]$PlanPythonBootstrap,
@@ -109,16 +109,43 @@ function Invoke-RuntimePython {
     }
 }
 
+function Get-TokenizerDependency {
+    param([Parameter(Mandatory)] [string]$RequirementsPath)
+
+    $dependencyMatches = @(
+        Get-Content -LiteralPath $RequirementsPath |
+            ForEach-Object {
+                if ($_ -match '^\s*tiktoken==(?<version>[0-9]+(?:\.[0-9]+)+)\s*(?:#.*)?$') {
+                    [pscustomobject]@{
+                        Requirement = "tiktoken==$($Matches.version)"
+                        Version = $Matches.version
+                    }
+                }
+            }
+    )
+    if ($dependencyMatches.Count -ne 1) {
+        throw "The official WAD tokenizer manifest must declare exactly one tiktoken==<version> dependency."
+    }
+    return $dependencyMatches[0]
+}
+
 function Assert-Tokenizer {
-    param([Parameter(Mandatory)] [string]$PythonPath)
+    param(
+        [Parameter(Mandatory)] [string]$PythonPath,
+        [Parameter(Mandatory)] [string]$ExpectedVersion
+    )
 
     $version = & $PythonPath -c "import tiktoken; print(tiktoken.__version__)"
-    if ($LASTEXITCODE -ne 0 -or "$version".Trim() -ne "0.12.0") {
-        throw "Private tokenizer environment does not provide tiktoken==0.12.0."
+    if ($LASTEXITCODE -ne 0 -or "$version".Trim() -ne $ExpectedVersion) {
+        throw "Private tokenizer environment does not provide tiktoken==$ExpectedVersion."
     }
 }
 
 $requirementsPath = (Resolve-Path -LiteralPath $Requirements -ErrorAction Stop).Path
+$tokenizer = Get-TokenizerDependency -RequirementsPath $requirementsPath
+if (-not $Root) {
+    $Root = Join-Path $env:LOCALAPPDATA "rtk-wad\tokenizer\tiktoken-$($tokenizer.Version)"
+}
 $rootPath = [System.IO.Path]::GetFullPath($Root)
 if ($PlanPythonBootstrap) {
     Get-PythonBootstrapPlan -WingetPath $Winget | ConvertTo-Json -Compress
@@ -126,8 +153,8 @@ if ($PlanPythonBootstrap) {
 }
 $venvPython = Join-Path $rootPath "Scripts\python.exe"
 if (Test-Path -LiteralPath $venvPython) {
-    Assert-Tokenizer -PythonPath $venvPython
-    [pscustomobject]@{ tokenizer = "tiktoken==0.12.0"; root = $rootPath; status = "ready" } | ConvertTo-Json -Compress
+    Assert-Tokenizer -PythonPath $venvPython -ExpectedVersion $tokenizer.Version
+    [pscustomobject]@{ tokenizer = $tokenizer.Requirement; root = $rootPath; status = "ready" } | ConvertTo-Json -Compress
     return
 }
 if (Test-Path -LiteralPath $rootPath) {
@@ -149,11 +176,11 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "pip could not install the WAD tokenizer dependency: $($pipOutput | Select-Object -Last 1)"
     }
-    Assert-Tokenizer -PythonPath $stagingPython
+    Assert-Tokenizer -PythonPath $stagingPython -ExpectedVersion $tokenizer.Version
     Move-Item -LiteralPath $staging -Destination $rootPath -ErrorAction Stop
 } finally {
     if (Test-Path -LiteralPath $staging) {
         Remove-Item -LiteralPath $staging -Recurse -Force
     }
 }
-[pscustomobject]@{ tokenizer = "tiktoken==0.12.0"; root = $rootPath; status = "installed" } | ConvertTo-Json -Compress
+[pscustomobject]@{ tokenizer = $tokenizer.Requirement; root = $rootPath; status = "installed" } | ConvertTo-Json -Compress
