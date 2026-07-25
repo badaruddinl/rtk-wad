@@ -19,7 +19,20 @@ $ErrorActionPreference = "Stop"
 
 $rootPath = (Resolve-Path -LiteralPath $Root -ErrorAction Stop).Path
 $nativeRtkPath = (Resolve-Path -LiteralPath $NativeRtk -ErrorAction Stop).Path
-$cargoCommand = Get-Command $Cargo -ErrorAction Stop | Select-Object -First 1
+$cargoPath = if (Test-Path -LiteralPath $Cargo -PathType Leaf) {
+    (Resolve-Path -LiteralPath $Cargo -ErrorAction Stop).Path
+} else {
+    $fromPath = Get-Command $Cargo -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($fromPath) {
+        $fromPath.Source
+    } else {
+        $perUserCargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
+        if (-not (Test-Path -LiteralPath $perUserCargo -PathType Leaf)) {
+            throw "Cargo was not found. Pass -Cargo with an executable path or install the Rust toolchain for this user."
+        }
+        $perUserCargo
+    }
+}
 $source = Join-Path $rootPath "target\release\rtk-wsl.exe"
 $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("rtk-wad-release-gate-" + [guid]::NewGuid())
 
@@ -51,11 +64,11 @@ try {
     $dirty = @(& git status --porcelain)
     Assert-Condition ($dirty.Count -eq 0) "The release gate requires a clean Git worktree."
 
-    Invoke-Checked -Name "format" -Action { & $cargoCommand.Source fmt --all --check }
-    Invoke-Checked -Name "clippy" -Action { & $cargoCommand.Source clippy --all-targets -- -D warnings }
-    Invoke-Checked -Name "unit tests" -Action { & $cargoCommand.Source test --bin rtk-wsl -- --test-threads=1 }
-    Invoke-Checked -Name "release build" -Action { & $cargoCommand.Source build --release }
-    Invoke-Checked -Name "WSL process contract" -Action { & $cargoCommand.Source test --test process_contract -- --test-threads=1 }
+    Invoke-Checked -Name "format" -Action { & $cargoPath fmt --all --check }
+    Invoke-Checked -Name "clippy" -Action { & $cargoPath clippy --all-targets -- -D warnings }
+    Invoke-Checked -Name "unit tests" -Action { & $cargoPath test --bin rtk-wsl -- --test-threads=1 }
+    Invoke-Checked -Name "release build" -Action { & $cargoPath build --release }
+    Invoke-Checked -Name "WSL process contract" -Action { & $cargoPath test --test process_contract -- --test-threads=1 }
     Invoke-Checked -Name "tokenizer bootstrap contract" -Action { & .\tests\tokenizer-bootstrap-contract.ps1 }
     Invoke-Checked -Name "tokenizer installation contract" -Action { & .\tests\tokenizer-install-contract.ps1 }
     Invoke-Checked -Name "package/recovery contract" -Action { & .\tests\packaging-contract.ps1 }
@@ -79,7 +92,7 @@ try {
     Invoke-Checked -Name "native RTK command manifest" -Action {
         & .\benchmarks\verify-command-manifest.ps1 -NativeRtk $nativeRtkPath
     }
-    Invoke-Checked -Name "cargo package" -Action { & $cargoCommand.Source package }
+    Invoke-Checked -Name "cargo package" -Action { & $cargoPath package }
 
     $archive = Get-ChildItem -LiteralPath (Join-Path $rootPath "target\package") -Filter "*.crate" |
         Sort-Object LastWriteTimeUtc -Descending |
