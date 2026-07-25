@@ -89,21 +89,26 @@ rtk-wad --environment windows-only --explain-route pytest -q
 $env:RTK_WAD_ENVIRONMENT = "windows-only"
 ```
 
-## Agent hook adapter (Claude Code)
+## Agent hook adapters
 
-RTK-WAD provides a conservative adapter for the native RTK Claude hook. It
-delegates rewrite decisions to stock RTK, then changes only an emitted
+RTK-WAD provides conservative adapters for the native RTK hooks used by Claude
+Code, Cursor, Gemini CLI, and GitHub Copilot. Each adapter delegates rewrite
+decisions to stock RTK, then changes only an emitted
 `rtk ...` command into `rtk-wad ...`; it does not parse or rebuild agent shell
 commands itself. The registration is deliberately opt-in so existing agent
 hooks are not silently changed:
 
 ```powershell
 rtk-wad agent integration claude
+rtk-wad agent integration cursor
+rtk-wad agent integration gemini
+rtk-wad agent integration copilot
 ```
 
-Follow the printed three-step setup, then use `rtk-wad agent hook claude` as
-the hook command. See [agent integration](docs/AGENT_INTEGRATION.md) for the
-supported boundary and failure behavior.
+Follow the printed three-step setup, then use the matching `rtk-wad agent hook
+<agent>` command in the hook registration. See [agent
+integration](docs/AGENT_INTEGRATION.md) for the supported boundary and failure
+behavior.
 
 ## A route decision you can inspect
 
