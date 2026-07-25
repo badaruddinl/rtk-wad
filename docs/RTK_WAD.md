@@ -207,6 +207,17 @@ forced WSL route, for example:
 rtk-wad --route wsl1 proxy /bin/sh -c 'printf "%s" "$HOME"'
 ```
 
+## Managed tokenizer dependency
+
+The canonical `rtk-wad` installer provisions `tiktoken==0.12.0` in a private
+WAD-owned virtual environment before activating the launcher. This makes the
+`o200k_base` benchmark tokenizer a pinned product dependency rather than a
+machine-specific helper. It does not install into the user's global Python
+environment, and a failed tokenizer setup leaves the active launcher unchanged.
+The legacy `rtk-wsl` and `rtk-wsl1` compatibility aliases do not provision this
+dependency. The dependency record and upgrade contract are in
+[runtime dependencies](DEPENDENCIES.md).
+
 ## Local token savings ledger
 
 `rtk-wad gain` and its `stats` compatibility alias show aggregate token savings

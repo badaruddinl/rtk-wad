@@ -48,6 +48,13 @@ It installs `rtk-wad.exe`. The compatibility commands `rtk-wsl.exe` and
 `-CommandName rtk-wsl` or `-CommandName rtk-wsl1`. The installer refuses to
 replace an existing executable unless `-Force` is supplied.
 
+Fresh `rtk-wad` installation also creates a private WAD tokenizer environment
+containing the pinned `tiktoken==0.12.0` package. It never changes the global
+Python environment. Installation stops before activating the launcher if the
+tokenizer cannot be provisioned; compatibility aliases do not provision it.
+See [runtime dependencies](docs/DEPENDENCIES.md) for the ownership and upgrade
+contract.
+
 See [the adaptive routing contract](docs/RTK_WAD.md) for route selection,
 structured-argument safety, local `gain` accounting, and non-NTFS source-volume
 support.

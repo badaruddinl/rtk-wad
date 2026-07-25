@@ -4,6 +4,9 @@ param(
     [string]$Source = (Join-Path $PSScriptRoot "..\target\release\rtk-wsl.exe"),
     [ValidateSet("rtk-wad", "rtk-wsl", "rtk-wsl1")]
     [string]$CommandName = "rtk-wad",
+    [string]$TokenizerRoot = (Join-Path $env:LOCALAPPDATA "rtk-wad\tokenizer\tiktoken-0.12.0"),
+    [string]$TokenizerPython,
+    [switch]$SkipTokenizer,
     [switch]$Force
 )
 
@@ -12,8 +15,13 @@ $source = (Resolve-Path -LiteralPath $source).Path
 $targetDirectory = [System.IO.Path]::GetFullPath($Destination)
 $target = Join-Path $targetDirectory "$CommandName.exe"
 $temporary = Join-Path $targetDirectory ".$CommandName.exe.$PID.new"
+$tokenizerInstaller = Join-Path $PSScriptRoot "install-tokenizer.ps1"
 
 New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
+if ($CommandName -eq "rtk-wad" -and -not $SkipTokenizer) {
+    & $tokenizerInstaller -Root $TokenizerRoot -Python $TokenizerPython
+    if ($LASTEXITCODE -ne 0) { throw "WAD tokenizer dependency installation failed." }
+}
 try {
     Copy-Item -LiteralPath $source -Destination $temporary -ErrorAction Stop
 

@@ -1,0 +1,3 @@
+# WAD-managed private tokenizer dependency. Keep this direct dependency pinned
+# so benchmark artifacts and installer diagnostics can name the exact version.
+tiktoken==0.12.0
