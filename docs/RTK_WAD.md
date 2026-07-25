@@ -142,6 +142,11 @@ P15 embeds the complete RTK `0.43.0` command manifest. `rtk-wad surface
 runtime contract compares that inventory with the live WSL RTK help output; see
 [`COMMAND_SURFACE_PARITY_P15.md`](COMMAND_SURFACE_PARITY_P15.md).
 
+P16 binds adaptive policy and local calibration to the current manifest plus
+an opaque Windows adapter-context signature. Use `rtk-wad policy context`
+before creating an importable benchmark policy; see
+[`ADAPTIVE_DECISION_HARDENING_P16.md`](ADAPTIVE_DECISION_HARDENING_P16.md).
+
 PD3 uses a complete verified Go provider for automatic execution only when
 Windows Go is unavailable. A missing safe provider exits `127` before a child
 starts; installation remains disabled. See

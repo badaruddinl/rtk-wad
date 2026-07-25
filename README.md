@@ -126,6 +126,10 @@ complete RTK command surface.
 full RTK `0.43.0` inventory and exposes `rtk-wad surface --json`; a process
 contract compares all 69 command families with the live WSL RTK help output.
 
+[P16 adaptive decision hardening](docs/ADAPTIVE_DECISION_HARDENING_P16.md)
+binds imported policy and local calibration to the current manifest and opaque
+adapter context, so stale latency/token evidence cannot silently choose a route.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture

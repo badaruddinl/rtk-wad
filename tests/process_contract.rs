@@ -241,7 +241,7 @@ fn wad_calibrates_safe_commands_across_natural_invocations() {
     let fifth = run();
     assert!(fifth.status.success());
 
-    let state_path = state.join("calibration-v1.json");
+    let state_path = state.join("calibration-v2.json");
     let recorded = std::fs::read_to_string(state_path).expect("calibration state is written");
     assert!(recorded.contains("\"raw_samples_ms\": ["));
     assert!(recorded.contains("\"native_samples_ms\": ["));
@@ -557,6 +557,73 @@ fn wad_surface_matches_the_live_wsl_rtk_command_inventory() {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(live_commands.len(), 69);
     assert_eq!(wad_commands, live_commands);
+    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+}
+
+#[test]
+fn wad_policy_requires_a_matching_local_adapter_context() {
+    let (launcher, directory) = wad_launcher();
+    let state = directory.join("state");
+    let context = Command::new(&launcher)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .args(["policy", "context"])
+        .output()
+        .expect("policy context starts");
+    assert!(context.status.success());
+    let context: serde_json::Value =
+        serde_json::from_slice(&context.stdout).expect("policy context is JSON");
+    let signature = context["context_signature"]
+        .as_str()
+        .expect("opaque context signature")
+        .to_owned();
+    assert_eq!(signature.len(), 16);
+    assert_eq!(context["manifest_version"], "0.43.0");
+
+    let policy = serde_json::json!({
+        "schema_version": 2,
+        "manifest_version": "0.43.0",
+        "context_signature": signature,
+        "evidence": [{
+            "key": "rg",
+            "raw_median_ms": 1.0,
+            "candidate_median_ms": 100.0,
+            "token_savings_percent": 0.0,
+            "sample_count": 5
+        }]
+    });
+    let source = directory.join("policy.json");
+    std::fs::write(
+        &source,
+        serde_json::to_vec_pretty(&policy).expect("policy JSON is encoded"),
+    )
+    .expect("policy fixture is written");
+    let imported = Command::new(&launcher)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .args(["policy", "import", source.to_str().expect("policy path")])
+        .output()
+        .expect("policy import starts");
+    assert!(imported.status.success());
+
+    let selected = Command::new(&launcher)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .args(["--explain-route", "rg", "needle"])
+        .output()
+        .expect("matching policy explanation starts");
+    assert!(selected.status.success());
+    assert!(String::from_utf8_lossy(&selected.stdout).contains("route=raw"));
+
+    let alternate_rtk = directory.join("other-rtk.cmd");
+    std::fs::write(&alternate_rtk, "@echo off\r\nexit /b 0\r\n")
+        .expect("alternate RTK fixture is written");
+    let invalidated = Command::new(&launcher)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .env("RTK_WAD_NATIVE_RTK_PATH", &alternate_rtk)
+        .args(["--explain-route", "rg", "needle"])
+        .output()
+        .expect("changed-context explanation starts");
+    assert!(invalidated.status.success());
+    assert!(String::from_utf8_lossy(&invalidated.stdout).contains("route=native-rtk"));
+
     std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
 }
 

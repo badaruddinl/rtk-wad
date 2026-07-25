@@ -28,7 +28,8 @@ const SURFACE_ARGUMENT: &str = "surface";
 const SETUP_ARGUMENT: &str = "setup";
 const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 2;
 const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
-const CALIBRATION_SCHEMA_VERSION: u32 = 1;
+const ROUTE_POLICY_SCHEMA_VERSION: u32 = 2;
+const CALIBRATION_SCHEMA_VERSION: u32 = 2;
 const CALIBRATION_MAX_SAMPLES: usize = 5;
 const COMMAND_MANIFEST: &str = include_str!("../benchmarks/command-manifest.json");
 const CANCEL_SCRIPT: &str = r#"
@@ -479,6 +480,10 @@ struct TokenTotals {
 #[derive(Debug, Serialize, Deserialize)]
 struct RoutePolicyFile {
     schema_version: u32,
+    #[serde(default)]
+    manifest_version: String,
+    #[serde(default)]
+    context_signature: String,
     evidence: Vec<RoutePolicyEvidence>,
 }
 
@@ -491,10 +496,29 @@ struct RoutePolicyEvidence {
     sample_count: u32,
 }
 
+#[derive(Serialize)]
+struct PolicyContextReport {
+    schema_version: u32,
+    manifest_version: String,
+    context_signature: String,
+}
+
+fn policy_context_report(config: &Config) -> PolicyContextReport {
+    PolicyContextReport {
+        schema_version: ROUTE_POLICY_SCHEMA_VERSION,
+        manifest_version: command_manifest().upstream_rtk_version.clone(),
+        context_signature: adaptive_context_signature(config),
+    }
+}
+
 impl RoutePolicyFile {
-    fn route_for(&self, key: &str) -> Option<Route> {
+    fn route_for(&self, key: &str, context_signature: &str) -> Option<Route> {
         let evidence = self.evidence.iter().find(|evidence| evidence.key == key)?;
-        if self.schema_version != 1 || evidence.sample_count < 5 {
+        if self.schema_version != ROUTE_POLICY_SCHEMA_VERSION
+            || self.manifest_version != command_manifest().upstream_rtk_version
+            || self.context_signature != context_signature
+            || evidence.sample_count < 5
+        {
             return None;
         }
         if evidence.token_savings_percent >= 25.0 {
@@ -517,6 +541,10 @@ struct CalibrationFile {
 struct CalibrationEntry {
     signature: String,
     key: String,
+    #[serde(default)]
+    manifest_version: String,
+    #[serde(default)]
+    context_signature: String,
     raw_samples_ms: Vec<f64>,
     native_samples_ms: Vec<f64>,
     native_input_tokens: i64,
@@ -527,6 +555,8 @@ struct CalibrationEntry {
 struct CalibrationPlan {
     signature: String,
     key: String,
+    manifest_version: String,
+    context_signature: String,
     route: Route,
     reason: &'static str,
 }
@@ -2040,7 +2070,7 @@ fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
 fn wad_policy_path() -> PathBuf {
     env::var_os("RTK_WAD_POLICY_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|| wad_data_root().join("route-policy-v1.json"))
+        .unwrap_or_else(|| wad_data_root().join("route-policy-v2.json"))
 }
 
 fn load_route_policy() -> Option<RoutePolicyFile> {
@@ -2052,8 +2082,12 @@ fn load_route_policy() -> Option<RoutePolicyFile> {
 }
 
 fn validate_route_policy(policy: &RoutePolicyFile) -> Result<(), String> {
-    if policy.schema_version != 1 || policy.evidence.is_empty() {
-        return Err("policy evidence must use schema_version 1 and contain evidence".to_owned());
+    if policy.schema_version != ROUTE_POLICY_SCHEMA_VERSION
+        || policy.manifest_version != command_manifest().upstream_rtk_version
+        || policy.context_signature.len() != 16
+        || policy.evidence.is_empty()
+    {
+        return Err("policy evidence must use the current schema, manifest, context, and non-empty evidence".to_owned());
     }
     let mut keys = HashSet::new();
     for evidence in &policy.evidence {
@@ -2081,8 +2115,14 @@ fn merge_route_policy(
     existing: Option<RoutePolicyFile>,
     incoming: RoutePolicyFile,
 ) -> RoutePolicyFile {
+    let RoutePolicyFile {
+        manifest_version,
+        context_signature,
+        evidence: incoming_evidence,
+        ..
+    } = incoming;
     let mut evidence = existing.map_or_else(Vec::new, |policy| policy.evidence);
-    for next in incoming.evidence {
+    for next in incoming_evidence {
         if let Some(index) = evidence.iter().position(|current| current.key == next.key) {
             evidence[index] = next;
         } else {
@@ -2091,17 +2131,23 @@ fn merge_route_policy(
     }
     evidence.sort_by(|left, right| left.key.cmp(&right.key));
     RoutePolicyFile {
-        schema_version: 1,
+        schema_version: ROUTE_POLICY_SCHEMA_VERSION,
+        manifest_version,
+        context_signature,
         evidence,
     }
 }
 
-fn import_route_policy(source: &Path) -> Result<(), String> {
+fn import_route_policy(source: &Path, config: &Config) -> Result<(), String> {
     let contents = fs::read_to_string(source)
         .map_err(|error| format!("unable to read policy evidence: {error}"))?;
     let incoming: RoutePolicyFile = serde_json::from_str(&contents)
         .map_err(|error| format!("invalid policy evidence: {error}"))?;
     validate_route_policy(&incoming)?;
+    let expected_context = adaptive_context_signature(config);
+    if incoming.context_signature != expected_context {
+        return Err("policy evidence was measured for a different local adapter context; run `rtk-wad policy context` and re-benchmark".to_owned());
+    }
     let destination = wad_policy_path();
     let existing = if destination.exists() {
         let contents = fs::read_to_string(&destination)
@@ -2110,6 +2156,9 @@ fn import_route_policy(source: &Path) -> Result<(), String> {
             .map_err(|error| format!("existing route policy is invalid: {error}"))?;
         validate_route_policy(&policy)
             .map_err(|error| format!("existing route policy is invalid: {error}"))?;
+        if policy.context_signature != incoming.context_signature {
+            return Err("existing policy belongs to a different local adapter context; remove or relocate it before importing new evidence".to_owned());
+        }
         Some(policy)
     } else {
         None
@@ -2129,7 +2178,7 @@ fn import_route_policy(source: &Path) -> Result<(), String> {
 }
 
 fn calibration_path() -> PathBuf {
-    wad_data_root().join("calibration-v1.json")
+    wad_data_root().join("calibration-v2.json")
 }
 
 fn validate_calibration(file: &CalibrationFile) -> Result<(), String> {
@@ -2140,6 +2189,8 @@ fn validate_calibration(file: &CalibrationFile) -> Result<(), String> {
     for entry in &file.entries {
         if entry.signature.len() != 16
             || entry.key.trim().is_empty()
+            || entry.manifest_version != command_manifest().upstream_rtk_version
+            || entry.context_signature.len() != 16
             || entry.native_input_tokens < 0
             || entry.native_saved_tokens < 0
             || !entry
@@ -2167,6 +2218,12 @@ fn load_calibration() -> Result<CalibrationFile, String> {
         .map_err(|error| format!("unable to read local calibration state: {error}"))?;
     let file: CalibrationFile = serde_json::from_str(&contents)
         .map_err(|error| format!("local calibration state is invalid: {error}"))?;
+    if file.schema_version == 1 {
+        return Ok(CalibrationFile {
+            schema_version: CALIBRATION_SCHEMA_VERSION,
+            entries: Vec::new(),
+        });
+    }
     validate_calibration(&file)?;
     Ok(file)
 }
@@ -2212,10 +2269,25 @@ fn calibration_signature(arguments: &[OsString], current_directory: &str) -> Str
     format!("{hash:016x}")
 }
 
+fn adaptive_context_signature(config: &Config) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    let mut append = |value: &str| {
+        for byte in value.as_bytes().iter().copied().chain(std::iter::once(0)) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    };
+    append(&command_manifest().upstream_rtk_version);
+    append(&config.native_rtk_path);
+    append(&env::var_os("PATH").unwrap_or_default().to_string_lossy());
+    format!("{hash:016x}")
+}
+
 fn calibration_plan(
     arguments: &[OsString],
     current_directory: Option<&str>,
     policy: Option<&RoutePolicyFile>,
+    context_signature: &str,
 ) -> Result<Option<CalibrationPlan>, String> {
     let Some(current_directory) = current_directory else {
         return Ok(None);
@@ -2229,7 +2301,9 @@ fn calibration_plan(
     let key = calibration_key(arguments).expect("calibration key was checked");
     if route_policy_key(arguments)
         .as_deref()
-        .and_then(|policy_key| policy.and_then(|policy| policy.route_for(policy_key)))
+        .and_then(|policy_key| {
+            policy.and_then(|policy| policy.route_for(policy_key, context_signature))
+        })
         .is_some()
     {
         return Ok(None);
@@ -2239,14 +2313,26 @@ fn calibration_plan(
     let entry = state
         .entries
         .iter()
-        .find(|entry| entry.signature == signature);
+        .find(|entry| calibration_entry_matches(entry, &signature, context_signature));
     let (route, reason) = calibration_route_for(entry);
     Ok(Some(CalibrationPlan {
         signature,
         key: key.to_owned(),
+        manifest_version: command_manifest().upstream_rtk_version.clone(),
+        context_signature: context_signature.to_owned(),
         route,
         reason,
     }))
+}
+
+fn calibration_entry_matches(
+    entry: &CalibrationEntry,
+    signature: &str,
+    context_signature: &str,
+) -> bool {
+    entry.signature == signature
+        && entry.manifest_version == command_manifest().upstream_rtk_version
+        && entry.context_signature == context_signature
 }
 
 fn calibration_route_for(entry: Option<&CalibrationEntry>) -> (Route, &'static str) {
@@ -2312,14 +2398,34 @@ fn record_calibration(
     let mut state = load_calibration()?;
     let entry = match state
         .entries
-        .iter_mut()
-        .find(|entry| entry.signature == plan.signature)
+        .iter()
+        .position(|entry| entry.signature == plan.signature)
     {
-        Some(entry) => entry,
+        Some(index)
+            if state.entries[index].manifest_version == plan.manifest_version
+                && state.entries[index].context_signature == plan.context_signature =>
+        {
+            &mut state.entries[index]
+        }
+        Some(index) => {
+            state.entries[index] = CalibrationEntry {
+                signature: plan.signature.clone(),
+                key: plan.key.clone(),
+                manifest_version: plan.manifest_version.clone(),
+                context_signature: plan.context_signature.clone(),
+                raw_samples_ms: Vec::new(),
+                native_samples_ms: Vec::new(),
+                native_input_tokens: 0,
+                native_saved_tokens: 0,
+            };
+            &mut state.entries[index]
+        }
         None => {
             state.entries.push(CalibrationEntry {
                 signature: plan.signature.clone(),
                 key: plan.key.clone(),
+                manifest_version: plan.manifest_version.clone(),
+                context_signature: plan.context_signature.clone(),
                 raw_samples_ms: Vec::new(),
                 native_samples_ms: Vec::new(),
                 native_input_tokens: 0,
@@ -3076,10 +3182,20 @@ fn route_policy_key(arguments: &[OsString]) -> Option<String> {
     }
 }
 
+#[cfg(test)]
 fn auto_wad_route(
     arguments: &[OsString],
     current_directory: Option<&str>,
     policy: Option<&RoutePolicyFile>,
+) -> (Route, &'static str) {
+    auto_wad_route_with_context(arguments, current_directory, policy, None)
+}
+
+fn auto_wad_route_with_context(
+    arguments: &[OsString],
+    current_directory: Option<&str>,
+    policy: Option<&RoutePolicyFile>,
+    context_signature: Option<&str>,
 ) -> (Route, &'static str) {
     if has_wsl_path(arguments)
         || current_directory.is_some_and(|directory| windows_path_to_wsl_path(directory).is_none())
@@ -3091,8 +3207,8 @@ fn auto_wad_route(
     }
     let policy_key = route_policy_key(arguments);
     if let Some((_key, route)) = policy_key.as_deref().and_then(|key| {
-        policy
-            .and_then(|policy| policy.route_for(key))
+        context_signature
+            .and_then(|context| policy.and_then(|policy| policy.route_for(key, context)))
             .map(|route| (key, route))
     }) {
         let permitted = match route {
@@ -3552,6 +3668,22 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         .first()
         .is_some_and(|argument| argument == POLICY_ARGUMENT)
     {
+        if arguments
+            .get(1)
+            .is_some_and(|argument| argument == "context")
+            && arguments.len() == 2
+        {
+            return match serde_json::to_string_pretty(&policy_context_report(config)) {
+                Ok(rendered) => {
+                    println!("{rendered}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("rtk-wad: unable to render policy context: {error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         if arguments.len() == 1 || arguments.get(1).is_some_and(|argument| argument == "show") {
             match load_route_policy() {
                 Some(policy) => match serde_json::to_string_pretty(&policy) {
@@ -3570,7 +3702,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
             .is_some_and(|argument| argument == "import")
             && arguments.len() == 3
         {
-            return match import_route_policy(Path::new(&arguments[2])) {
+            return match import_route_policy(Path::new(&arguments[2]), config) {
                 Ok(()) => {
                     println!("Imported local RTK-WAD route policy.");
                     ExitCode::SUCCESS
@@ -3581,7 +3713,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
                 }
             };
         }
-        eprintln!("rtk-wad: usage: rtk-wad policy [show] | policy import <evidence.json>");
+        eprintln!("rtk-wad: usage: rtk-wad policy [show|context] | policy import <evidence.json>");
         return ExitCode::FAILURE;
     }
     if arguments
@@ -3623,12 +3755,14 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     };
     let current_directory = env::current_dir().ok();
     let started = Instant::now();
+    let adaptive_context = adaptive_context_signature(config);
     let policy = load_route_policy();
     let (initial_route, initial_reason) = if requested_route == Route::Auto {
-        auto_wad_route(
+        auto_wad_route_with_context(
             &arguments,
             current_directory.as_deref().and_then(|path| path.to_str()),
             policy.as_ref(),
+            Some(&adaptive_context),
         )
     } else {
         (requested_route, "explicit route preference")
@@ -3640,6 +3774,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
             &arguments,
             current_directory.as_deref().and_then(|path| path.to_str()),
             policy.as_ref(),
+            &adaptive_context,
         ) {
             Ok(plan) => plan,
             Err(error) => {
@@ -4210,8 +4345,11 @@ mod tests {
 
     #[test]
     fn policy_uses_measured_savings_without_permitting_git_mutations() {
+        let context = adaptive_context_signature(&default_config());
         let policy = RoutePolicyFile {
-            schema_version: 1,
+            schema_version: ROUTE_POLICY_SCHEMA_VERSION,
+            manifest_version: command_manifest().upstream_rtk_version.clone(),
+            context_signature: context.clone(),
             evidence: vec![
                 RoutePolicyEvidence {
                     key: "git:status".to_owned(),
@@ -4251,50 +4389,55 @@ mod tests {
             ],
         };
         assert_eq!(
-            auto_wad_route(
+            auto_wad_route_with_context(
                 &[OsString::from("git"), OsString::from("status")],
                 Some(r"E:\work"),
-                Some(&policy)
+                Some(&policy),
+                Some(&context)
             )
             .0,
             Route::Raw
         );
         assert_eq!(
-            auto_wad_route(
+            auto_wad_route_with_context(
                 &[OsString::from("rg"), OsString::from("needle")],
                 Some(r"E:\work"),
-                Some(&policy)
+                Some(&policy),
+                Some(&context)
             )
             .0,
             Route::NativeRtk
         );
         assert_eq!(
-            auto_wad_route(
+            auto_wad_route_with_context(
                 &[OsString::from("cargo"), OsString::from("check")],
                 Some(r"E:\work"),
-                Some(&policy)
+                Some(&policy),
+                Some(&context)
             )
             .0,
             Route::Raw
         );
         assert_eq!(
-            auto_wad_route(
+            auto_wad_route_with_context(
                 &[OsString::from("npm"), OsString::from("run")],
                 Some(r"E:\work"),
-                Some(&policy)
+                Some(&policy),
+                Some(&context)
             )
             .0,
             Route::NativeRtk
         );
         assert_eq!(
-            auto_wad_route(
+            auto_wad_route_with_context(
                 &[
                     OsString::from("go"),
                     OsString::from("test"),
                     OsString::from("./...")
                 ],
                 Some(r"E:\work"),
-                Some(&policy)
+                Some(&policy),
+                Some(&context)
             )
             .0,
             Route::NativeRtk
@@ -4339,7 +4482,9 @@ mod tests {
     #[test]
     fn policy_import_merge_preserves_other_evidence_and_replaces_same_key() {
         let existing = RoutePolicyFile {
-            schema_version: 1,
+            schema_version: ROUTE_POLICY_SCHEMA_VERSION,
+            manifest_version: command_manifest().upstream_rtk_version.clone(),
+            context_signature: "0123456789abcdef".to_owned(),
             evidence: vec![
                 RoutePolicyEvidence {
                     key: "cargo:check".to_owned(),
@@ -4358,7 +4503,9 @@ mod tests {
             ],
         };
         let incoming = RoutePolicyFile {
-            schema_version: 1,
+            schema_version: ROUTE_POLICY_SCHEMA_VERSION,
+            manifest_version: command_manifest().upstream_rtk_version.clone(),
+            context_signature: "0123456789abcdef".to_owned(),
             evidence: vec![
                 RoutePolicyEvidence {
                     key: "npm:run-list".to_owned(),
@@ -4391,8 +4538,59 @@ mod tests {
             .find(|evidence| evidence.key == "rg")
             .expect("new measurement replaces rg");
         assert_eq!(rg.token_savings_percent, 90.0);
-        assert_eq!(merged.route_for("cargo:check"), Some(Route::Raw));
-        assert_eq!(merged.route_for("npm:run-list"), Some(Route::Raw));
+        assert_eq!(
+            merged.route_for("cargo:check", "0123456789abcdef"),
+            Some(Route::Raw)
+        );
+        assert_eq!(
+            merged.route_for("npm:run-list", "0123456789abcdef"),
+            Some(Route::Raw)
+        );
+    }
+
+    #[test]
+    fn adaptive_evidence_is_bound_to_manifest_and_local_adapter_context() {
+        let default = default_config();
+        let context = adaptive_context_signature(&default);
+        let mut different = default.clone();
+        different.native_rtk_path = r"C:\tools\other-rtk.exe".to_owned();
+        assert_ne!(context, adaptive_context_signature(&different));
+
+        let policy = RoutePolicyFile {
+            schema_version: ROUTE_POLICY_SCHEMA_VERSION,
+            manifest_version: command_manifest().upstream_rtk_version.clone(),
+            context_signature: context.clone(),
+            evidence: vec![RoutePolicyEvidence {
+                key: "rg".to_owned(),
+                raw_median_ms: 10.0,
+                candidate_median_ms: 20.0,
+                token_savings_percent: 0.0,
+                sample_count: 5,
+            }],
+        };
+        assert_eq!(policy.route_for("rg", &context), Some(Route::Raw));
+        assert_eq!(policy.route_for("rg", "0123456789abcdef"), None);
+
+        let entry = CalibrationEntry {
+            signature: "fedcba9876543210".to_owned(),
+            key: "rg".to_owned(),
+            manifest_version: command_manifest().upstream_rtk_version.clone(),
+            context_signature: context.clone(),
+            raw_samples_ms: vec![1.0],
+            native_samples_ms: vec![2.0],
+            native_input_tokens: 0,
+            native_saved_tokens: 0,
+        };
+        assert!(calibration_entry_matches(
+            &entry,
+            "fedcba9876543210",
+            &context
+        ));
+        assert!(!calibration_entry_matches(
+            &entry,
+            "fedcba9876543210",
+            "0123456789abcdef"
+        ));
     }
 
     #[test]
@@ -4894,6 +5092,8 @@ mod tests {
         let mut entry = CalibrationEntry {
             signature: "0123456789abcdef".to_owned(),
             key: "rg".to_owned(),
+            manifest_version: command_manifest().upstream_rtk_version.clone(),
+            context_signature: "0123456789abcdef".to_owned(),
             raw_samples_ms: Vec::new(),
             native_samples_ms: vec![30.0],
             native_input_tokens: 100,
@@ -4916,6 +5116,8 @@ mod tests {
         let entry = CalibrationEntry {
             signature: "0123456789abcdef".to_owned(),
             key: "rg".to_owned(),
+            manifest_version: command_manifest().upstream_rtk_version.clone(),
+            context_signature: "0123456789abcdef".to_owned(),
             raw_samples_ms: vec![10.0, 11.0],
             native_samples_ms: vec![30.0, 31.0],
             native_input_tokens: 100,

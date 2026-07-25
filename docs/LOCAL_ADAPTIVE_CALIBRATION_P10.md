@@ -73,8 +73,9 @@ ground truth.
 
 ## Local state and privacy
 
-The state is `%LOCALAPPDATA%\rtk-wad\calibration-v1.json`, or under the
-isolated `RTK_WAD_STATE_DIR` root. It is atomically replaced and contains:
+P16 supersedes the original v1 location with
+`%LOCALAPPDATA%\rtk-wad\calibration-v2.json`, or the matching isolated
+`RTK_WAD_STATE_DIR` root. It is atomically replaced and contains:
 
 - a deterministic 64-bit FNV-1a signature of project path plus arguments;
 - a safe command category;
