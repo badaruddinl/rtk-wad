@@ -5,7 +5,7 @@
 <h1 align="center">RTK-WAD</h1>
 
 <p align="center">
-  <strong>Windows Adaptive Dispatcher for RTK.</strong><br />
+  <strong>Windows-first adaptive command dispatcher.</strong><br />
   One safe command boundary that chooses raw Windows, native RTK, or a verified WSL route.
 </p>
 
@@ -16,11 +16,13 @@
   <a href="docs/RELEASE_GATE_P20.md"><img src="https://img.shields.io/badge/status-stable-success.svg" alt="Stable status" /></a>
 </p>
 
-RTK-WAD is a native Windows launcher for [RTK](https://github.com/rtk-ai/rtk).
-It preserves arguments as structured process arguments—never by rebuilding a
-shell command string—and chooses one auditable execution route for each command.
-It is designed for Windows developers who need RTK's compact output without
-blindly paying a WSL bridge cost or risking cross-shell quoting failures.
+RTK-WAD is a native Windows executable and a Windows-first adaptive command
+dispatcher. It complements [RTK](https://github.com/rtk-ai/rtk); it is not a
+replacement for RTK and it is not merely a WSL bridge. For each command, it
+selects one auditable route: raw Windows, native Windows RTK, or a verified WSL
+provider. It preserves arguments as structured process arguments—never by
+rebuilding a shell command string—and keeps a command native when RTK or WSL
+does not provide verified local value.
 
 > **Stable baseline.** The current release is `v0.2.1`. The canonical
 > repository, package, and executable are `rtk-wad`. `rtk-wsl` and `rtk-wsl1`
