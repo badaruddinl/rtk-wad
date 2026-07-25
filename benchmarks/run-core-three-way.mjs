@@ -24,6 +24,7 @@ const settings = {
   output: resolve(option("--output")),
   rounds: Number(process.argv.includes("--rounds") ? option("--rounds") : 10),
   installPolicy: process.argv.includes("--install-policy"),
+  workloads: process.argv.includes("--workloads") ? option("--workloads").split(",").map((value) => value.trim()).filter(Boolean) : null,
 };
 if (!Number.isInteger(settings.rounds) || settings.rounds < 1) {
     throw new Error("--rounds must be a positive integer");
@@ -73,6 +74,10 @@ const workloads = [
     rtk: ["rg", "-n", "function|const|class|require|module", ...searchRoots],
   },
 ];
+const selectedWorkloads = settings.workloads === null ? workloads : workloads.filter((workload) => settings.workloads.includes(workload.id));
+if (selectedWorkloads.length === 0 || (settings.workloads && selectedWorkloads.length !== settings.workloads.length)) {
+  throw new Error("--workloads must name one or more supported core workloads");
+}
 
 function execute(file, args, extraEnvironment = {}) {
   return new Promise((resolveExecution, reject) => {
@@ -166,7 +171,7 @@ const variants = (workload) => ({
 });
 
 const allSamples = [];
-for (const workload of workloads) {
+for (const workload of selectedWorkloads) {
   const entries = Object.entries(variants(workload));
   for (const [, variant] of entries) {
     requireSuccessful(
@@ -184,7 +189,7 @@ for (const workload of workloads) {
   }
 }
 
-const candidateSummaries = workloads.map((workload) => {
+const candidateSummaries = selectedWorkloads.map((workload) => {
   const perVariant = {};
   const rawSamples = allSamples.filter((sample) => sample.workload === workload.id && sample.variant === "raw");
   const rawTokens = exactTokens(Buffer.concat([rawSamples[0].stdout, rawSamples[0].stderr]));
@@ -251,7 +256,7 @@ const isolatedImport = await execute(settings.wad, ["policy", "import", policyOu
 });
 requireSuccessful(isolatedImport, "isolated policy import");
 
-for (const workload of workloads) {
+for (const workload of selectedWorkloads) {
   const auto = {
     file: settings.wad,
     args: workload.rtk,
@@ -276,7 +281,7 @@ for (const workload of workloads) {
   }
 }
 
-const summaries = workloads.map((workload) => {
+const summaries = selectedWorkloads.map((workload) => {
   const perVariant = {};
   const rawSamples = allSamples.filter((sample) => sample.workload === workload.id && sample.variant === "raw");
   const rawTokens = exactTokens(Buffer.concat([rawSamples[0].stdout, rawSamples[0].stderr]));
@@ -293,6 +298,7 @@ writeFileSync(settings.output, JSON.stringify({
   tokenizer: "o200k_base",
   tokenizer_package: `tiktoken==${tokenizerVersion()}`,
   rounds: settings.rounds,
+  workloads: selectedWorkloads.map((workload) => workload.id),
   corpus: settings.repo,
   search_roots: searchRoots,
   native_rtk: settings.nativeRtk,
