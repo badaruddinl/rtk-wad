@@ -26,3 +26,17 @@ same setup instructions without invoking a hook.
 
 Other agents continue to use their upstream RTK integrations until each has a
 separate protocol and process-contract proof.
+
+## Verification
+
+After the registration change, an isolated native-hook probe can verify the
+handoff without running a project command:
+
+```powershell
+'{"tool_name":"Bash","tool_input":{"command":"git status"}}' |
+  rtk-wad agent hook claude
+```
+
+With stock RTK v0.43.0, the successful response contains
+`updatedInput.command` with `rtk-wad git status`. A missing native RTK is an
+explicit failure; the adapter never substitutes WSL for an agent hook.
