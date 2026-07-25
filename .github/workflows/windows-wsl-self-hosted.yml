@@ -20,7 +20,7 @@ jobs:
       # through the machine's default WSL distro, which may be Docker Desktop
       # rather than the controlled Ubuntu provider used by this contract.
       - name: Require stable Windows Rust
-        shell: pwsh
+        shell: powershell
         run: |
           $rustup = Get-Command rustup.exe -ErrorAction Stop
           & $rustup.Source toolchain install stable --profile minimal
@@ -29,7 +29,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Unable to run the stable Cargo toolchain.' }
 
       - name: Require the controlled Ubuntu WSL provider
-        shell: pwsh
+        shell: powershell
         run: |
           # Windows PowerShell can decode this UTF-16 WSL output with NUL
           # characters, so normalize before comparing a distro name.
@@ -42,5 +42,5 @@ jobs:
           wsl.exe --distribution Ubuntu --exec /usr/bin/env true
 
       - name: Run Windows/WSL process contract
-        shell: pwsh
+        shell: powershell
         run: rustup.exe run stable cargo test --test process_contract -- --test-threads=1
