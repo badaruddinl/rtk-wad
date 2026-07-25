@@ -1,11 +1,14 @@
-# Three-way benchmark protocol
+# Benchmark protocol
 
 This directory owns reproducible benchmark inputs for the Windows adaptive
-dispatcher. Every published result compares exactly three variants:
+dispatcher. Core benchmarks compare four distinct variants:
 
 1. The raw Windows command, with no RTK.
 2. Stock native Windows RTK.
-3. `rtk-wad` in `auto` mode.
+3. `rtk-wad --route native-rtk`, including dispatcher and ledger overhead for
+   the native candidate.
+4. `rtk-wad` in auto mode after the generated policy is imported into an
+   isolated state.
 
 `command-manifest.json` is the authoritative v0.43.0 top-level command inventory
 for this repository. Its conservative WSL1 classification is intentional: a
@@ -55,9 +58,14 @@ performs one warm-up and ten rotating measured rounds per variant. The resulting
 JSON records each sample plus median and p95 latency, output bytes, exit codes,
 SHA-256 output hashes, and exact `o200k_base` counts.
 
-The runner requires Python with `tiktoken` and does not silently substitute a
+The runner requires the WAD-managed Python environment with `tiktoken` and does not silently substitute a
 different tokenizer. It intentionally reports output-equivalence evidence rather
 than asserting byte equality: RTK is expected to reduce output.
+
+The ripgrep corpus is discovered from existing `src`, `tests`, `test`, and
+`docs` directories. A missing conventional directory is never passed to a
+benchmark command; if none exists the run fails before measurement and records
+no evidence.
 
 ```powershell
 node .\benchmarks\run-core-three-way.mjs `
@@ -65,6 +73,7 @@ node .\benchmarks\run-core-three-way.mjs `
   --native-rtk C:\tools\rtk.exe `
   --wad C:\tools\rtk-wad.exe `
   --python C:\path\to\python.exe `
+  --preflight .\.flowpeek\cache\p18-benchmark-preflight.json `
   --output .\benchmarks\results\flowpeek.json `
   --install-policy
 ```
@@ -74,9 +83,35 @@ Windows executable is not discoverable on `PATH`. Benchmark output is an
 English, machine-readable artifact; the release report must include both wins
 and losses.
 
-`--install-policy` imports the policy generated from that same real-corpus run
-into the local WAD data directory. It never uses fixture output as performance
-evidence.
+The runner always imports the generated policy into an isolated benchmark state
+to measure the final auto decision. `--install-policy` separately imports the
+same validated policy into the caller's normal WAD state. It never uses fixture
+output as performance evidence.
+
+The core runner rejects every non-zero or signalled warm-up/sample and requires
+a P18 preflight that contains the exact native RTK path. It emits a P16 policy
+schema with the current manifest version and opaque local context signature;
+an outdated or mismatched policy is not written as importable evidence.
+
+## WSL bridge runner
+
+`run-wsl-bridge-core.mjs` measures the same safe Git and ripgrep corpus through
+explicit WAD WSL1 and WSL2 routes, alongside raw Windows execution. Both WSL
+providers must appear in the P18 preflight with exact command-manifest coverage.
+It never treats WSL output as a replacement for the native Windows RTK row.
+
+```powershell
+node .\benchmarks\run-wsl-bridge-core.mjs `
+  --repo E:\luthfi\project\rtk-wsl `
+  --wad C:\tools\rtk-wad.exe `
+  --python C:\tools\rtk-wad\tokenizer\Scripts\python.exe `
+  --preflight .\.flowpeek\cache\p18-benchmark-preflight.json `
+  --wsl1-distro Ubuntu-RTK-WSL1 `
+  --wsl1-rtk /home/rtk/.rtk-wad-benchmark/v0.43.0/rtk `
+  --wsl2-distro Ubuntu `
+  --wsl2-rtk /home/badaruddinl/.local/bin/rtk `
+  --output .\benchmarks\results\wsl-bridge-core.json
+```
 
 `run-cargo-three-way.mjs` measures `cargo check` on a real Windows worktree. It
 requires `--target-dir` on NTFS so build cache churn is isolated from a source

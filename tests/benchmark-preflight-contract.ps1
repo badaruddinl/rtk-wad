@@ -28,6 +28,9 @@ try {
     if ($null -eq $report.Manifest.WindowsCoverage) {
         throw "Native Windows RTK manifest evidence is missing."
     }
+    if ($null -eq $report.SearchScope.WslRtkOverride) {
+        throw "WSL RTK override audit evidence is missing."
+    }
     Write-Output "P18 benchmark preflight contract passed."
 }
 finally {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
@@ -20,16 +20,37 @@ const settings = {
   nativeRtk: resolve(option("--native-rtk")),
   wad: resolve(option("--wad")),
   python: resolve(option("--python")),
+  preflight: resolve(option("--preflight")),
   output: resolve(option("--output")),
   rounds: Number(process.argv.includes("--rounds") ? option("--rounds") : 10),
   installPolicy: process.argv.includes("--install-policy"),
 };
 if (!Number.isInteger(settings.rounds) || settings.rounds < 1) {
-  throw new Error("--rounds must be a positive integer");
+    throw new Error("--rounds must be a positive integer");
+}
+
+const preflight = JSON.parse(readFileSync(settings.preflight, "utf8"));
+if (preflight?.BenchmarkPreflight?.WindowsNativeRtkReady !== true) {
+  throw new Error("P18 preflight does not verify a native Windows RTK provider");
+}
+const configuredNativeRtk = settings.nativeRtk.toLowerCase();
+const matchingNativeRtk = (preflight?.Windows?.RtkEvidence || []).some((provider) =>
+  provider?.HelpExitCode === 0
+  && provider?.VersionExitCode === 0
+  && resolve(provider.Path).toLowerCase() === configuredNativeRtk,
+);
+if (!matchingNativeRtk) {
+  throw new Error("P18 preflight does not contain the selected native RTK path");
 }
 
 const rawGit = process.env.RTK_WAD_BENCH_GIT || "git.exe";
 const rawRg = process.env.RTK_WAD_BENCH_RG || "rg.exe";
+const isolatedWadState = resolve(dirname(settings.output), "wad-state");
+const searchRoots = ["src", "tests", "test", "docs"]
+  .filter((candidate) => existsSync(resolve(settings.repo, candidate)));
+if (searchRoots.length === 0) {
+  throw new Error("The benchmark corpus has no existing src, tests, test, or docs directory for ripgrep workloads");
+}
 const workloads = [
   {
     id: "git-status",
@@ -43,13 +64,13 @@ const workloads = [
   },
   {
     id: "rg-focused",
-    raw: [rawRg, ["-n", "graphVersion", "src", "test", "docs"]],
-    rtk: ["rg", "-n", "graphVersion", "src", "test", "docs"],
+    raw: [rawRg, ["-n", "graphVersion", ...searchRoots]],
+    rtk: ["rg", "-n", "graphVersion", ...searchRoots],
   },
   {
     id: "rg-broad",
-    raw: [rawRg, ["-n", "function|const|class|require|module", "src", "test", "docs"]],
-    rtk: ["rg", "-n", "function|const|class|require|module", "src", "test", "docs"],
+    raw: [rawRg, ["-n", "function|const|class|require|module", ...searchRoots]],
+    rtk: ["rg", "-n", "function|const|class|require|module", ...searchRoots],
   },
 ];
 
@@ -79,6 +100,12 @@ function execute(file, args, extraEnvironment = {}) {
   });
 }
 
+function requireSuccessful(sample, label) {
+  if (sample.exit_code !== 0 || sample.signal !== null) {
+    throw new Error(`${label} failed: exit=${sample.exit_code}; signal=${sample.signal}`);
+  }
+}
+
 function exactTokens(buffer) {
   const result = spawnSync(settings.python, [resolve(here, "token-count.py")], {
     input: buffer,
@@ -89,6 +116,16 @@ function exactTokens(buffer) {
     throw new Error(`o200k_base counter failed: ${result.stderr}`);
   }
   return Number(result.stdout.trim());
+}
+
+function tokenizerVersion() {
+  const result = spawnSync(settings.python, ["-c", "import tiktoken; print(tiktoken.__version__)"], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    throw new Error(`tiktoken version probe failed: ${result.stderr}`);
+  }
+  return result.stdout.trim();
 }
 
 function percentile(sorted, fraction) {
@@ -118,12 +155,12 @@ function summarize(samples, rawTokens) {
 const variants = (workload) => ({
   raw: { file: workload.raw[0], args: workload.raw[1], environment: {} },
   native_rtk: { file: settings.nativeRtk, args: workload.rtk, environment: {} },
-  rtk_wad_auto: {
+  rtk_wad_native_candidate: {
     file: settings.wad,
-    args: workload.rtk,
+    args: ["--route", "native-rtk", ...workload.rtk],
     environment: {
       RTK_WAD_NATIVE_RTK_PATH: settings.nativeRtk,
-      LOCALAPPDATA: resolve(dirname(settings.output), "wad-local-app-data"),
+      RTK_WAD_STATE_DIR: isolatedWadState,
     },
   },
 });
@@ -132,17 +169,22 @@ const allSamples = [];
 for (const workload of workloads) {
   const entries = Object.entries(variants(workload));
   for (const [, variant] of entries) {
-    await execute(variant.file, variant.args, variant.environment);
+    requireSuccessful(
+      await execute(variant.file, variant.args, variant.environment),
+      `${workload.id} warm-up`,
+    );
   }
   for (let round = 0; round < settings.rounds; round += 1) {
     const rotated = entries.slice(round % entries.length).concat(entries.slice(0, round % entries.length));
     for (const [name, variant] of rotated) {
-      allSamples.push({ workload: workload.id, variant: name, round: round + 1, ...(await execute(variant.file, variant.args, variant.environment)) });
+      const sample = await execute(variant.file, variant.args, variant.environment);
+      requireSuccessful(sample, `${workload.id} ${name} round ${round + 1}`);
+      allSamples.push({ workload: workload.id, variant: name, round: round + 1, ...sample });
     }
   }
 }
 
-const summaries = workloads.map((workload) => {
+const candidateSummaries = workloads.map((workload) => {
   const perVariant = {};
   const rawSamples = allSamples.filter((sample) => sample.workload === workload.id && sample.variant === "raw");
   const rawTokens = exactTokens(Buffer.concat([rawSamples[0].stdout, rawSamples[0].stderr]));
@@ -160,12 +202,12 @@ const policyKey = {
   "rg-focused": "rg",
   "rg-broad": "rg",
 };
-const policyEvidence = Object.values(summaries.reduce((grouped, { workload, variants }) => {
+const policyEvidence = Object.values(candidateSummaries.reduce((grouped, { workload, variants }) => {
   const key = policyKey[workload];
   const evidence = {
     key,
     raw_median_ms: variants.raw.median_ms,
-    candidate_median_ms: variants.rtk_wad_auto.median_ms,
+    candidate_median_ms: variants.rtk_wad_native_candidate.median_ms,
     token_savings_percent: variants.native_rtk.token_savings_percent,
     sample_count: variants.raw.runs,
   };
@@ -183,14 +225,79 @@ const policyEvidence = Object.values(summaries.reduce((grouped, { workload, vari
     },
   };
 }, {}));
+const policyContext = await execute(settings.wad, ["policy", "context"], {
+  RTK_WAD_NATIVE_RTK_PATH: settings.nativeRtk,
+  RTK_WAD_STATE_DIR: isolatedWadState,
+});
+requireSuccessful(policyContext, "policy context");
+const parsedPolicyContext = JSON.parse(policyContext.stdout.toString("utf8"));
+if (parsedPolicyContext?.schema_version !== 2
+  || parsedPolicyContext?.manifest_version !== "0.43.0"
+  || typeof parsedPolicyContext?.context_signature !== "string"
+  || parsedPolicyContext.context_signature.length !== 16) {
+  throw new Error("WAD policy context is not compatible with the P16 policy contract");
+}
+const policyOutput = settings.output.replace(/\.json$/i, ".route-policy.json");
+writeFileSync(policyOutput, JSON.stringify({
+  schema_version: 2,
+  manifest_version: parsedPolicyContext.manifest_version,
+  context_signature: parsedPolicyContext.context_signature,
+  evidence: policyEvidence,
+}, null, 2));
+
+const isolatedImport = await execute(settings.wad, ["policy", "import", policyOutput], {
+  RTK_WAD_NATIVE_RTK_PATH: settings.nativeRtk,
+  RTK_WAD_STATE_DIR: isolatedWadState,
+});
+requireSuccessful(isolatedImport, "isolated policy import");
+
+for (const workload of workloads) {
+  const auto = {
+    file: settings.wad,
+    args: workload.rtk,
+    environment: {
+      RTK_WAD_NATIVE_RTK_PATH: settings.nativeRtk,
+      RTK_WAD_STATE_DIR: isolatedWadState,
+    },
+  };
+  requireSuccessful(
+    await execute(auto.file, auto.args, auto.environment),
+    `${workload.id} auto-policy warm-up`,
+  );
+  for (let round = 0; round < settings.rounds; round += 1) {
+    const sample = await execute(auto.file, auto.args, auto.environment);
+    requireSuccessful(sample, `${workload.id} auto-policy round ${round + 1}`);
+    allSamples.push({
+      workload: workload.id,
+      variant: "rtk_wad_auto_after_policy",
+      round: round + 1,
+      ...sample,
+    });
+  }
+}
+
+const summaries = workloads.map((workload) => {
+  const perVariant = {};
+  const rawSamples = allSamples.filter((sample) => sample.workload === workload.id && sample.variant === "raw");
+  const rawTokens = exactTokens(Buffer.concat([rawSamples[0].stdout, rawSamples[0].stderr]));
+  for (const name of [...Object.keys(variants(workload)), "rtk_wad_auto_after_policy"]) {
+    const samples = allSamples.filter((sample) => sample.workload === workload.id && sample.variant === name);
+    perVariant[name] = summarize(samples, rawTokens);
+  }
+  return { workload: workload.id, variants: perVariant };
+});
+
 writeFileSync(settings.output, JSON.stringify({
   schema_version: 1,
-  protocol: "three-way-core-v1",
+  protocol: "four-way-core-v2",
   tokenizer: "o200k_base",
+  tokenizer_package: `tiktoken==${tokenizerVersion()}`,
   rounds: settings.rounds,
   corpus: settings.repo,
+  search_roots: searchRoots,
   native_rtk: settings.nativeRtk,
   rtk_wad: settings.wad,
+  isolated_wad_state: isolatedWadState,
   summaries,
   samples: allSamples.map(({ stdout, stderr, ...sample }) => ({
     ...sample,
@@ -200,13 +307,13 @@ writeFileSync(settings.output, JSON.stringify({
     stderr_bytes: stderr.length,
   })),
 }, null, 2));
-const policyOutput = settings.output.replace(/\.json$/i, ".route-policy.json");
-writeFileSync(policyOutput, JSON.stringify({ schema_version: 1, evidence: policyEvidence }, null, 2));
 
 console.log(`Wrote ${settings.output}`);
 console.log(`Wrote ${policyOutput}`);
 if (settings.installPolicy) {
-  const imported = await execute(settings.wad, ["policy", "import", policyOutput]);
+  const imported = await execute(settings.wad, ["policy", "import", policyOutput], {
+    RTK_WAD_NATIVE_RTK_PATH: settings.nativeRtk,
+  });
   if (imported.exit_code !== 0) throw new Error(`Policy import failed: ${imported.stderr}`);
   console.log("Installed the generated local route policy.");
 }

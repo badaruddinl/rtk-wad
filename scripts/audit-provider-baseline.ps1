@@ -11,6 +11,7 @@ param(
     [switch]$ProbeToolMetadata,
     [ValidateRange(1, 300)]
     [int]$MetadataBudgetSeconds = 3,
+    [string[]]$WslRtkOverride = @(),
     [string]$ManifestPath = (Join-Path $PSScriptRoot "..\\benchmarks\\command-manifest.json"),
     [string]$OutputPath
 )
@@ -86,6 +87,28 @@ function Get-WslCommandPaths {
         }
     }
     return $paths
+}
+
+function Get-WslRtkOverrides {
+    param([string[]]$Entries = @())
+
+    $overrides = @{}
+    foreach ($entry in $Entries) {
+        $separator = $entry.IndexOf("=")
+        if ($separator -le 0 -or $separator -eq ($entry.Length - 1)) {
+            throw "WSL RTK overrides must use 'Distro=/absolute/linux/path'."
+        }
+        $distro = $entry.Substring(0, $separator)
+        $path = $entry.Substring($separator + 1)
+        if ($distro -match "[\r\n]" -or $path -notmatch "^/[^\r\n]+$") {
+            throw "WSL RTK overrides require a single distro name and an absolute Linux path."
+        }
+        if ($overrides.ContainsKey($distro)) {
+            throw "WSL RTK override repeats distro '$distro'."
+        }
+        $overrides[$distro] = $path
+    }
+    return $overrides
 }
 
 function Get-WslVersion {
@@ -255,13 +278,18 @@ function Get-DeepWindowsRtkCandidates {
 
 $wslVerbose = @(& wsl.exe --list --verbose 2>&1 | ForEach-Object { ("$_" -replace "`0", "") })
 $wslQuiet = @(& wsl.exe --list --quiet 2>$null | ForEach-Object { ("$_" -replace "`0", "").Trim() } | Where-Object { $_ })
+$wslRtkOverrides = Get-WslRtkOverrides -Entries $WslRtkOverride
+$unknownOverrideDistros = @($wslRtkOverrides.Keys | Where-Object { $_ -notin $wslQuiet })
+if ($unknownOverrideDistros.Count -gt 0) {
+    throw "WSL RTK overrides name undiscovered distributions: $($unknownOverrideDistros -join ', ')."
+}
 $wslProviders = [System.Collections.Generic.List[object]]::new()
 $auditTools = @("rtk") + $Tools
 foreach ($distro in $wslQuiet) {
     $versionLine = $wslVerbose | Where-Object { $_ -match "\b$([regex]::Escape($distro))\s+\S+\s+([12])\s*$" } | Select-Object -First 1
     $wslVersion = if ($versionLine -match "\s([12])\s*$") { [int]$Matches[1] } else { $null }
     $toolPaths = Get-WslCommandPaths -Distro $distro -Tool $auditTools
-    $rtkPath = $toolPaths["rtk"]
+    $rtkPath = if ($wslRtkOverrides.ContainsKey($distro)) { $wslRtkOverrides[$distro] } else { $toolPaths["rtk"] }
     $toolProviders = [System.Collections.Generic.List[object]]::new()
     $metadataDeadline = [DateTime]::UtcNow.AddSeconds($MetadataBudgetSeconds)
     foreach ($tool in $Tools) {
@@ -399,6 +427,7 @@ $report = [pscustomobject]@{
     SearchScope = [pscustomobject]@{
         SearchRoots = $SearchRoots
         DeepSearch = [bool]$DeepSearch
+        WslRtkOverride = @($WslRtkOverride)
         Limitation = "Windows discovery covers PATH, configured command resolution, and the declared search roots. It is not an unrestricted whole-disk crawl unless explicit roots are supplied with -DeepSearch."
     }
     Windows = [pscustomobject]@{

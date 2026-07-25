@@ -12,6 +12,20 @@ Run the local-only audit before a benchmark session:
 .\tests\benchmark-preflight-contract.ps1
 ```
 
+An isolated provider is intentionally not added to PATH. Supply it explicitly
+when auditing that provider:
+
+```powershell
+.\scripts\audit-provider-baseline.ps1 `
+  -SearchRoots "$env:LOCALAPPDATA\rtk-wad\benchmark-providers\v0.43.0\windows" `
+  -WslRtkOverride "Ubuntu-RTK-WSL1=/home/rtk/.rtk-wad-benchmark/v0.43.0/rtk" `
+  -OutputPath .\.flowpeek\cache\p18-benchmark-preflight.json
+```
+
+The override format is `Distro=/absolute/linux/path`. It is validated against
+the registered WSL distributions and never changes PATH, a distro default, or
+the normal WAD configuration.
+
 The ignored JSON report records the complete 69-command manifest, each
 discoverable Windows RTK candidate, every WSL RTK candidate, their version and
 help exit codes, command-set equality, and readiness for native Windows, WSL1,
@@ -45,3 +59,8 @@ internal commands retain separate evidence tiers in
 [`benchmarks/README.md`](../benchmarks/README.md). Missing prerequisites remain
 visible in the generated report and are release blockers for the affected
 backend claim.
+
+Each machine-readable benchmark artifact records the exact pinned `tiktoken`
+package version alongside `o200k_base`. The WAD installer owns that private
+tokenizer dependency from P19 onward; benchmark scripts must not silently use a
+different tokenizer or a bytes-per-token approximation.

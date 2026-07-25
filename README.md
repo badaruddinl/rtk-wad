@@ -139,6 +139,10 @@ explicit Go transaction remains the only installation boundary.
 actual Windows, WSL1, and WSL2 RTK providers against the complete command
 manifest before any latency or token-saving claim is published.
 
+[The P18 core matrix](docs/BENCHMARK_CORE_MATRIX_P18_2026-07-25.md) records
+the first verified native Windows and WSL1/WSL2 measurements, including raw
+latency, RTK token savings, WAD overhead, and the final automatic decision.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture
