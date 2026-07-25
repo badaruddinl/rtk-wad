@@ -168,6 +168,12 @@ PD6 adds the local-only readiness gate
 the [operational freeze](SETUP_OPERATIONAL_FREEZE_PD6.md). The gate never calls
 `winget` and is intended to run before an alpha release decision.
 
+P17 makes `doctor <tool>` and `setup <tool>` available for every safe provider
+name. Generic setup is diagnostic-only: it returns `ready` for an existing
+verified provider or `blocked` with no proposed installer. It rejects apply,
+confirmation, status, and recovery flags, and never creates the Go setup
+journal. See [`GENERIC_SETUP_DIAGNOSIS_P17.md`](GENERIC_SETUP_DIAGNOSIS_P17.md).
+
 ## Cache-aware adaptive routing (P7)
 
 Automatic Windows Go execution uses a lightweight local provider cache. A fresh

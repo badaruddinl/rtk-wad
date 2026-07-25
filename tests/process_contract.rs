@@ -628,6 +628,68 @@ fn wad_policy_requires_a_matching_local_adapter_context() {
 }
 
 #[test]
+fn wad_generic_setup_is_diagnostic_only_and_never_creates_an_install_transaction() {
+    let (launcher, directory) = wad_launcher();
+    let state = directory.join("state");
+
+    let ready = Command::new(&launcher)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .args(["setup", "git", "--json", "--refresh"])
+        .output()
+        .expect("generic ready setup diagnosis starts");
+    assert!(ready.status.success());
+    let ready: serde_json::Value =
+        serde_json::from_slice(&ready.stdout).expect("generic ready setup is JSON");
+    assert_eq!(ready["tool"], "git");
+    assert_eq!(ready["mode"], "diagnostic-only");
+    assert_eq!(ready["status"], "ready");
+    assert!(ready["proposed_command"].is_null());
+    assert_eq!(ready["apply"], "not_needed");
+
+    let missing_tool = "p17-tool-that-is-not-installed";
+    let blocked = Command::new(&launcher)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .args(["setup", missing_tool, "--json", "--refresh"])
+        .output()
+        .expect("generic blocked setup diagnosis starts");
+    assert!(blocked.status.success());
+    let blocked: serde_json::Value =
+        serde_json::from_slice(&blocked.stdout).expect("generic blocked setup is JSON");
+    assert_eq!(blocked["mode"], "diagnostic-only");
+    assert_eq!(blocked["status"], "blocked");
+    assert!(blocked["proposed_command"].is_null());
+    assert_eq!(blocked["apply"], "unavailable_for_generic_tool");
+    assert!(
+        blocked["reason"]
+            .as_str()
+            .expect("blocked reason is text")
+            .contains("will not guess an installer")
+    );
+
+    let doctor = Command::new(&launcher)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .args(["doctor", missing_tool, "--refresh"])
+        .output()
+        .expect("generic missing-provider doctor starts");
+    assert!(!doctor.status.success());
+    let doctor_stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(doctor_stdout.contains("recommended=none"));
+    assert!(doctor_stdout.contains("diagnosis=no verified provider is available"));
+    assert!(doctor_stdout.contains("setup p17-tool-that-is-not-installed"));
+
+    let forced = Command::new(&launcher)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .args(["setup", missing_tool, "--apply", "--confirm"])
+        .output()
+        .expect("generic forced setup starts");
+    assert!(!forced.status.success());
+    assert!(String::from_utf8_lossy(&forced.stderr).contains("diagnostic-only"));
+    assert!(!state.join("setup-transaction-v1.json").exists());
+
+    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+}
+
+#[test]
 fn provisioned_wsl1_bridge_preserves_the_process_contract_when_requested() {
     let Ok(distro) = std::env::var("RTK_WSL1_TEST_DISTRO") else {
         return;

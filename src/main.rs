@@ -891,6 +891,7 @@ struct ProviderResolution {
     availability: ProviderCacheEntry,
     candidates: Vec<ProviderCandidate>,
     recommended: Option<usize>,
+    diagnosis: String,
     install: &'static str,
 }
 
@@ -1429,6 +1430,15 @@ fn resolve_tool_provider_from_discovery_with_user(
         }
     }
     let recommended = candidates.iter().position(|candidate| candidate.usable);
+    let diagnosis = recommended.map_or_else(
+        || format!(
+            "no verified provider is available for {}; run `rtk-wad setup {tool}` for a non-installing setup diagnosis",
+            tool
+        ),
+        |index| format!(
+            "candidate {index} is verified; run `rtk-wad provider exec {tool} -- <args...>` to execute it explicitly"
+        ),
+    );
     ProviderResolution {
         schema_version: PROVIDER_CACHE_SCHEMA_VERSION,
         tool: tool.to_owned(),
@@ -1437,6 +1447,7 @@ fn resolve_tool_provider_from_discovery_with_user(
         availability,
         candidates,
         recommended,
+        diagnosis,
         install: "disabled_in_p12",
     }
 }
@@ -1617,6 +1628,9 @@ fn print_provider_resolution(
     }
     if resolution.candidates.is_empty() {
         println!("recommended=none");
+        if doctor {
+            println!("diagnosis={}", resolution.diagnosis);
+        }
         println!("install={}", resolution.install);
         return if doctor {
             ExitCode::FAILURE
@@ -1643,6 +1657,9 @@ fn print_provider_resolution(
             .recommended
             .map_or_else(|| "none".to_owned(), |index| index.to_string())
     );
+    if doctor {
+        println!("diagnosis={}", resolution.diagnosis);
+    }
     println!("install={}", resolution.install);
     if doctor && resolution.recommended.is_none() {
         ExitCode::FAILURE
@@ -1793,6 +1810,43 @@ fn setup_go_plan_from_resolution(
         proposed_command: None,
         verification_command,
         apply: "unavailable_in_pd4",
+    }
+}
+
+fn setup_generic_plan_from_resolution(resolution: &ProviderResolution) -> SetupPlan {
+    let verification_command = vec![
+        "rtk-wad".to_owned(),
+        "doctor".to_owned(),
+        resolution.tool.clone(),
+        "--refresh".to_owned(),
+    ];
+    if resolution.recommended.is_some() {
+        return SetupPlan {
+            schema_version: 1,
+            tool: resolution.tool.clone(),
+            mode: "diagnostic-only",
+            status: "ready",
+            reason: "a verified existing provider is available; no setup action is needed"
+                .to_owned(),
+            proposed_provider: None,
+            proposed_command: None,
+            verification_command,
+            apply: "not_needed",
+        };
+    }
+    SetupPlan {
+        schema_version: 1,
+        tool: resolution.tool.clone(),
+        mode: "diagnostic-only",
+        status: "blocked",
+        reason: format!(
+            "{}; WAD will not guess an installer, package manager, or dependency chain for a generic tool",
+            resolution.diagnosis
+        ),
+        proposed_provider: None,
+        proposed_command: None,
+        verification_command,
+        apply: "unavailable_for_generic_tool",
     }
 }
 
@@ -1989,12 +2043,12 @@ fn apply_setup_plan(plan: &SetupPlan, config: &Config, json: bool) -> ExitCode {
 fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
     let Some(tool) = arguments.get(1).and_then(|argument| argument.to_str()) else {
         eprintln!(
-            "rtk-wad: usage: setup go [--json] [--refresh] [--status|--recover|--apply --confirm]"
+            "rtk-wad: usage: setup <tool> [--json] [--refresh]; setup go also supports [--status|--recover|--apply --confirm]"
         );
         return ExitCode::FAILURE;
     };
-    if tool != "go" {
-        eprintln!("rtk-wad: setup currently supports only the exact tool name `go`");
+    if !is_safe_provider_tool_name(tool) {
+        eprintln!("rtk-wad: tool names must contain only ASCII letters, digits, '.', '_', or '-'");
         return ExitCode::FAILURE;
     }
     let flags: Vec<&str> = match arguments
@@ -2019,7 +2073,7 @@ fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
     ];
     if flags.iter().any(|flag| !valid.contains(flag)) {
         eprintln!(
-            "rtk-wad: usage: setup go [--json] [--refresh] [--status|--recover|--apply --confirm]"
+            "rtk-wad: usage: setup <tool> [--json] [--refresh]; setup go also supports [--status|--recover|--apply --confirm]"
         );
         return ExitCode::FAILURE;
     }
@@ -2029,6 +2083,16 @@ fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
     let recover = flags.contains(&"--recover");
     let apply = flags.contains(&"--apply");
     let confirm = flags.contains(&"--confirm");
+    if tool != "go" {
+        if status || recover || apply || confirm {
+            eprintln!(
+                "rtk-wad: generic setup is diagnostic-only; `--apply`, `--confirm`, `--status`, and `--recover` are available only for the explicit Go transaction"
+            );
+            return ExitCode::FAILURE;
+        }
+        let resolution = resolve_tool_provider(tool, config, refresh);
+        return print_setup_plan(&setup_generic_plan_from_resolution(&resolution), json);
+    }
     if [status, recover, apply]
         .into_iter()
         .filter(|selected| *selected)
@@ -4896,6 +4960,7 @@ mod tests {
                 reason: "fixture".to_owned(),
             }],
             recommended: Some(0),
+            diagnosis: "fixture: a verified WSL provider is available".to_owned(),
             install: "disabled_in_pd1",
         };
         match go_provider_decision_from_resolution(&config, Route::Raw, resolution) {
@@ -4939,6 +5004,7 @@ mod tests {
             },
             candidates: Vec::new(),
             recommended: None,
+            diagnosis: "fixture: no provider is available".to_owned(),
             install: "disabled_in_pd1",
         };
         match go_provider_decision_from_resolution(&default_config(), Route::Raw, resolution) {
@@ -4975,6 +5041,7 @@ mod tests {
             },
             candidates: Vec::new(),
             recommended: None,
+            diagnosis: "fixture: no provider is available".to_owned(),
             install: "disabled_in_pd1",
         };
         let plan = setup_go_plan_from_resolution(&resolution, true);
@@ -5022,6 +5089,7 @@ mod tests {
             },
             candidates: Vec::new(),
             recommended: None,
+            diagnosis: "fixture: Windows Go is available".to_owned(),
             install: "disabled_in_pd1",
         };
         let ready_plan = setup_go_plan_from_resolution(&ready, false);

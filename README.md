@@ -130,6 +130,11 @@ contract compares all 69 command families with the live WSL RTK help output.
 binds imported policy and local calibration to the current manifest and opaque
 adapter context, so stale latency/token evidence cannot silently choose a route.
 
+[P17 generic setup diagnosis](docs/GENERIC_SETUP_DIAGNOSIS_P17.md) provides
+on-demand `doctor` and `setup <tool>` guidance for any safe provider name
+without guessing an installer or installing dependencies. The separate,
+explicit Go transaction remains the only installation boundary.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture
