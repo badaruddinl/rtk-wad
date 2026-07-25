@@ -4,13 +4,20 @@ use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Mutex, MutexGuard,
+    atomic::{AtomicU64, Ordering},
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 const CTRL_BREAK_EVENT: u32 = 1;
 static WAD_LAUNCHER_NONCE: AtomicU64 = AtomicU64::new(0);
+// Every contract test probes and controls the same WSL host. Serializing the
+// external boundary keeps `cargo test` deterministic without changing the
+// application's own process-concurrency behavior.
+static PROCESS_CONTRACT_LOCK: Mutex<()> = Mutex::new(());
 
 unsafe extern "system" {
     fn GenerateConsoleCtrlEvent(ctrl_type: u32, process_group_id: u32) -> i32;
@@ -43,8 +50,15 @@ fn wad_launcher() -> (PathBuf, PathBuf) {
     (wad, directory)
 }
 
+fn process_contract_guard() -> MutexGuard<'static, ()> {
+    PROCESS_CONTRACT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[test]
 fn preserves_stdout_stderr_exit_codes_and_literal_arguments() {
+    let _guard = process_contract_guard();
     let literal = "space path/漢字;and&dollar$HOME\\tail";
     let output = command("/usr/bin/printf")
         .args(["%s", literal])
@@ -69,6 +83,7 @@ fn preserves_stdout_stderr_exit_codes_and_literal_arguments() {
 
 #[test]
 fn supports_stdin_for_a_simple_interactive_command() {
+    let _guard = process_contract_guard();
     let mut child = command("/bin/sh")
         .args(["-c", "read line; printf 'received:%s' \"$line\""])
         .stdin(Stdio::piped())
@@ -89,6 +104,7 @@ fn supports_stdin_for_a_simple_interactive_command() {
 
 #[test]
 fn maps_a_temp_windows_worktree_to_the_wsl_current_directory() {
+    let _guard = process_contract_guard();
     let directory = std::env::temp_dir().join(format!(
         "rtk-wsl-windows-cwd-contract-{}",
         std::process::id()
@@ -125,6 +141,7 @@ fn maps_a_temp_windows_worktree_to_the_wsl_current_directory() {
 
 #[test]
 fn routes_git_from_a_windows_worktree_to_native_git_with_structured_arguments() {
+    let _guard = process_contract_guard();
     let output = Command::new(launcher())
         .env("RTK_WSL_DISTRO", "missing-test-distro")
         .args(["git", "--version"])
@@ -142,6 +159,7 @@ fn routes_git_from_a_windows_worktree_to_native_git_with_structured_arguments() 
 
 #[test]
 fn bridge_info_reports_the_selected_default_distribution() {
+    let _guard = process_contract_guard();
     let output = Command::new(launcher())
         .arg("--bridge-info")
         .output()
@@ -161,6 +179,7 @@ fn bridge_info_reports_the_selected_default_distribution() {
 
 #[test]
 fn wad_profile_selects_one_route_and_uses_a_local_gain_ledger() {
+    let _guard = process_contract_guard();
     let (launcher, directory) = wad_launcher();
     let local_app_data = directory.join("local-app-data");
 
@@ -209,6 +228,7 @@ fn wad_profile_selects_one_route_and_uses_a_local_gain_ledger() {
 
 #[test]
 fn wad_calibrates_safe_commands_across_natural_invocations() {
+    let _guard = process_contract_guard();
     let (launcher, directory) = wad_launcher();
     let state = directory.join("state");
     let fake_rtk = directory.join("fake-rtk.cmd");
@@ -260,6 +280,7 @@ fn wad_calibrates_safe_commands_across_natural_invocations() {
 
 #[test]
 fn wad_rejects_unsafe_generic_provider_names_before_discovery() {
+    let _guard = process_contract_guard();
     let (launcher, directory) = wad_launcher();
     let output = Command::new(&launcher)
         .args(["resolve", "tool;not-run"])
@@ -294,6 +315,7 @@ fn resolved_windows_candidate(output: &std::process::Output) -> serde_json::Valu
 
 #[test]
 fn wad_resolve_verifies_wsl_project_paths_for_windows_providers() {
+    let _guard = process_contract_guard();
     let (launcher, directory) = wad_launcher();
     let state = directory.join("state");
     let project_directory = std::env::current_dir().expect("test project directory is available");
@@ -398,6 +420,7 @@ fn provider_candidate_index(
 
 #[test]
 fn wad_provider_exec_runs_each_verified_provider_without_replay() {
+    let _guard = process_contract_guard();
     let (launcher, directory) = wad_launcher();
     let state = directory.join("state");
     let native_state = directory.join("native-state");
@@ -521,6 +544,7 @@ fn wad_provider_exec_runs_each_verified_provider_without_replay() {
 
 #[test]
 fn wad_surface_matches_the_live_wsl_rtk_command_inventory() {
+    let _guard = process_contract_guard();
     let (launcher, directory) = wad_launcher();
     let surface = Command::new(&launcher)
         .args(["surface", "--json"])
@@ -573,6 +597,7 @@ fn wad_surface_matches_the_live_wsl_rtk_command_inventory() {
 
 #[test]
 fn wad_policy_requires_a_matching_local_adapter_context() {
+    let _guard = process_contract_guard();
     let (launcher, directory) = wad_launcher();
     let state = directory.join("state");
     let context = Command::new(&launcher)
@@ -640,6 +665,7 @@ fn wad_policy_requires_a_matching_local_adapter_context() {
 
 #[test]
 fn wad_generic_setup_is_diagnostic_only_and_never_creates_an_install_transaction() {
+    let _guard = process_contract_guard();
     let (launcher, directory) = wad_launcher();
     let state = directory.join("state");
 
@@ -702,6 +728,7 @@ fn wad_generic_setup_is_diagnostic_only_and_never_creates_an_install_transaction
 
 #[test]
 fn provisioned_wsl1_bridge_preserves_the_process_contract_when_requested() {
+    let _guard = process_contract_guard();
     let Ok(distro) = std::env::var("RTK_WSL1_TEST_DISTRO") else {
         return;
     };
@@ -724,6 +751,7 @@ fn provisioned_wsl1_bridge_preserves_the_process_contract_when_requested() {
 
 #[test]
 fn ctrl_break_releases_the_global_lock_for_waiting_children() {
+    let _guard = process_contract_guard();
     let ready_file = std::env::temp_dir().join(format!("rtk-wsl-ready-{}", std::process::id()));
     let _ = std::fs::remove_file(&ready_file);
     let mut first = command("/bin/sh")
@@ -832,6 +860,7 @@ fn ctrl_break_releases_the_global_lock_for_waiting_children() {
 
 #[test]
 fn ctrl_break_cancels_from_a_temp_windows_worktree() {
+    let _guard = process_contract_guard();
     let directory = std::env::temp_dir().join(format!(
         "rtk-wsl-windows-cancel-contract-{}",
         std::process::id()
