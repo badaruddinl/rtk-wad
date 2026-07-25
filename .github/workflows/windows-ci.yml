@@ -85,6 +85,10 @@ jobs:
           .\tests\tokenizer-bootstrap-contract.ps1
           .\tests\tokenizer-install-contract.ps1
 
+      - name: Run public corpus provision contract
+        shell: pwsh
+        run: .\tests\public-corpus-provision-contract.ps1
+
       - name: Run isolated install and recovery contract
         shell: pwsh
         run: .\tests\packaging-contract.ps1

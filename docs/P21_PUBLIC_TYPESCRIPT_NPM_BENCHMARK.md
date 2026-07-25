@@ -8,8 +8,10 @@ RTK-WAD repository and it does not run project scripts or install Node packages.
 ## Corpus and inputs
 
 - Corpus: a blob-filtered sparse checkout containing only the pinned root
-  `package.json`. This is sufficient for `npm run`, avoids project dependency
-  installation, and retains the Git origin and exact commit verification.
+  `package.json`, provisioned with `provision-public-benchmark-corpus.ps1
+  -Corpus typescript-5.9.3 -SparsePath package.json`. This is sufficient for
+  `npm run`, avoids project dependency installation, and retains the Git origin
+  and exact commit verification.
 - Stock native RTK: official `v0.43.0` Windows binary, SHA-256
   `a715e989bcebfc208f388cf5adaaa9953cbf1127b081bc09c4ef02e7d7fea39f`.
 - Counter: explicitly installed `tiktoken==0.12.0`, `o200k_base` over combined

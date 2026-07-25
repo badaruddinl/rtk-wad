@@ -3,7 +3,8 @@ param(
     [ValidateSet("pytest-8.4.0", "typescript-5.9.3", "ripgrep-14.1.1", "all")]
     [string]$Corpus = "all",
     [string]$Destination = (Join-Path $env:LOCALAPPDATA "rtk-wad\benchmark-corpora"),
-    [string]$Manifest = (Join-Path $PSScriptRoot "..\benchmarks\public-corpora.json")
+    [string]$Manifest = (Join-Path $PSScriptRoot "..\benchmarks\public-corpora.json"),
+    [string[]]$SparsePath = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +33,11 @@ function Assert-ExistingCorpus([pscustomobject]$Entry, [string]$Path) {
     if ($origin -ne $Entry.repository) {
         throw "Existing corpus '$($Entry.id)' has origin '$origin', not '$($Entry.repository)'."
     }
+    foreach ($sparseEntry in $SparsePath) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Path $sparseEntry) -PathType Leaf)) {
+            throw "Existing corpus '$($Entry.id)' does not contain requested sparse path '$sparseEntry'. Use a new destination; this script never overwrites a corpus."
+        }
+    }
 }
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -57,10 +63,20 @@ $result = foreach ($entry in $entries) {
 
     $staging = "$target.staging-$PID"
     try {
-        Invoke-GitChecked @("clone", "--depth", "1", "--branch", $entry.tag, "--single-branch", $entry.repository, $staging) | Out-Null
+        $cloneArguments = @("clone", "--depth", "1", "--branch", $entry.tag, "--single-branch")
+        if ($SparsePath.Count -gt 0) {
+            $cloneArguments += @("--filter=blob:none", "--no-checkout")
+        }
+        $cloneArguments += @($entry.repository, $staging)
+        Invoke-GitChecked $cloneArguments | Out-Null
+        if ($SparsePath.Count -gt 0) {
+            Invoke-GitChecked @("-C", $staging, "sparse-checkout", "init", "--no-cone") | Out-Null
+            Invoke-GitChecked (@("-C", $staging, "sparse-checkout", "set", "--no-cone") + $SparsePath) | Out-Null
+            Invoke-GitChecked @("-C", $staging, "checkout", "--detach", $entry.commit) | Out-Null
+        }
         Assert-ExistingCorpus -Entry $entry -Path $staging
         Move-Item -LiteralPath $staging -Destination $target
-        [pscustomobject]@{ id = $entry.id; path = $target; commit = $entry.commit; status = "cloned" }
+        [pscustomobject]@{ id = $entry.id; path = $target; commit = $entry.commit; status = "cloned"; sparse_paths = @($SparsePath) }
     } finally {
         if (Test-Path -LiteralPath $staging) {
             Remove-Item -LiteralPath $staging -Recurse -Force

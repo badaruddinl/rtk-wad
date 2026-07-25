@@ -45,6 +45,20 @@ clone, and never overwrites a corpus:
 .\scripts\provision-public-benchmark-corpus.ps1 -Corpus ripgrep-14.1.1
 ```
 
+For a read-only workload that needs only selected repository files, use an
+explicit sparse checkout. It is still pinned to the manifest's exact Git commit
+and origin, but avoids downloading unrelated blobs. For example, the TypeScript
+`npm run` benchmark needs only its root package manifest:
+
+```powershell
+.\scripts\provision-public-benchmark-corpus.ps1 `
+  -Corpus typescript-5.9.3 `
+  -SparsePath package.json
+```
+
+Sparse mode is opt-in. The default corpus provisioner continues to create a
+complete checkout for source-search and toolchain workloads.
+
 The optional `tiktoken` Python environment is required only by a benchmark
 runner. Install it explicitly with `scripts/install.ps1 -InstallTokenizer`.
 Command families are classified before a run as follows:
