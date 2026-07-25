@@ -1,6 +1,6 @@
 [package]
 name = "rtk-wad"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 description = "Safe adaptive Windows execution policy for raw commands, native RTK, and verified WSL providers"
 license = "Apache-2.0"
@@ -12,10 +12,6 @@ publish = false
 [[bin]]
 name = "rtk-wad"
 path = "src/main.rs"
-
-[[bin]]
-name = "rtk-wsl"
-path = "src/bin/rtk-wsl.rs"
 
 [dependencies]
 rusqlite = { version = "0.31", features = ["bundled"] }

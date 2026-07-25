@@ -343,8 +343,6 @@ $windowsRtk = @(
 $windowsRtkEvidence = @($windowsRtk | ForEach-Object { Get-WindowsRtkEvidence -Candidate $_ })
 $windowsLaunchers = @(
     Get-WindowsCandidate -Tool "rtk-wad"
-    Get-WindowsCandidate -Tool "rtk-wsl"
-    Get-WindowsCandidate -Tool "rtk-wsl1"
 ) | Sort-Object Path -Unique
 $windowsTools = foreach ($tool in $Tools) { Get-WindowsCandidate -Tool $tool }
 
@@ -408,7 +406,7 @@ $benchmarkPreflight = [pscustomobject]@{
 
 $processes = @(
     Get-CimInstance Win32_Process |
-        Where-Object { $_.Name -in @("rtk.exe", "rtk-wad.exe", "rtk-wsl.exe", "wsl.exe") } |
+        Where-Object { $_.Name -in @("rtk.exe", "rtk-wad.exe", "wsl.exe") } |
         ForEach-Object {
             $process = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue
             [pscustomobject]@{

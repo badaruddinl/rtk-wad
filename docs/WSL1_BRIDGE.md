@@ -4,14 +4,15 @@
 
 The WSL1 profile provides a lower-overhead Linux execution candidate for RTK
 without converting, unregistering, or otherwise modifying an existing WSL2
-distribution. It is opt-in and does not change the stable `rtk-wsl` defaults.
+distribution. It is opt-in and selected through the canonical `rtk-wad`
+command.
 
 The profile has two parts:
 
 1. `Ubuntu-RTK-WSL1`, a dedicated Ubuntu 22.04 WSL1 distribution containing a
    non-root `rtk` user and RTK under `$HOME/.local/bin/rtk`.
-2. `rtk-wsl1.exe`, an alias of the same Rust bridge binary. Its executable name
-   selects the `wsl1` backend and the isolated distro without runtime discovery.
+2. `rtk-wad --route wsl1`, an explicit route through the same canonical
+   executable.
 
 ## Prerequisites
 
@@ -52,7 +53,7 @@ The provisioner:
 - restarts only the new distro and runs an RTK smoke test.
 
 The downloaded images remain under `E:\luthfi\wsl\images`, but the default runtime
-location is `%LOCALAPPDATA%\rtk-wsl\Ubuntu-RTK-WSL1` on NTFS. WSL1 expands its
+location is `%LOCALAPPDATA%\rtk-wad\Ubuntu-RTK-WSL1` on NTFS. WSL1 expands its
 root filesystem into ordinary host files and must not be installed on exFAT.
 Existing WSL2 distros are never converted or terminated.
 
@@ -66,60 +67,50 @@ The source checkout may remain on exFAT, but Rust build artifacts should use an
 NTFS `CARGO_TARGET_DIR`. Cargo incremental hard-link behavior is not reliable on
 the validated exFAT volume and can leave a stale executable timestamp.
 
-## Bridge Installation
+## Installation and selection
 
-Build once and install the normal command or either alias independently:
+Build and install the one supported command:
 
 ```powershell
 cargo build --release
 .\scripts\install.ps1
-.\scripts\install.ps1 -CommandName rtk-wsl1
 ```
 
-The installer retains the same atomic staging, refusal, backup, rollback, and
-recovery behavior for both command names. Remove only the WSL1 alias with:
-
-```powershell
-.\scripts\uninstall.ps1 -CommandName rtk-wsl1
-```
+The installer retains atomic staging, refusal, backup, rollback, and recovery
+behavior for `rtk-wad.exe` only.
 
 ## Selection Contract
 
-| Command or configuration | Backend | Default distro |
+| RTK-WAD route or configuration | Backend | Default distro |
 |---|---|---|
-| `rtk-wsl.exe` | `auto` | `Ubuntu` |
-| `rtk-wsl1.exe` | `wsl1` | `Ubuntu-RTK-WSL1` |
+| `rtk-wad` | `auto` | `Ubuntu` |
+| `rtk-wad --route wsl1` | `wsl1` | `Ubuntu-RTK-WSL1` |
 | `RTK_WSL_BACKEND=wsl1` | `wsl1` | `Ubuntu-RTK-WSL1` |
 | `RTK_WSL_BACKEND=wsl2` | `wsl2` | `Ubuntu` |
 
 `RTK_WSL_DISTRO` overrides the default distro. `RTK_WSL_BACKEND` explicitly
-overrides the executable-name profile.
+selects the WSL provider for the canonical command.
 
 The Git router remains orthogonal to the WSL backend. Git launched from a native
-Windows worktree still uses `git.exe` under `RTK_WSL_GIT_MODE=auto`, including
-through `rtk-wsl1.exe`.
+Windows worktree still uses `git.exe` under `RTK_WSL_GIT_MODE=auto`.
 
 ## Diagnostics
 
 Use the explicit diagnostic path before dogfooding or after distro maintenance:
 
 ```powershell
-rtk-wsl1 --bridge-info
+rtk-wad --route wsl1 --explain-route git --version
 ```
 
 Expected output includes:
 
 ```text
-bridge=rtk-wsl
-backend=wsl1
-distro=Ubuntu-RTK-WSL1
-detected_wsl_version=1
-git_mode=auto
+route=wsl1
+command_family=git
 ```
 
-Diagnostics return failure when the distro is missing or its registered WSL
-version conflicts with an explicit backend. Normal commands skip this discovery
-to avoid adding a `wsl.exe --list --verbose` call to every invocation.
+The explicit route reports a failure when the configured provider is unavailable.
+Normal auto-routed commands avoid a full WSL-distribution scan on every call.
 
 ## Verification Gate
 
