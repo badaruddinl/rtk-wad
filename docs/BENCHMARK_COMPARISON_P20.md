@@ -23,18 +23,32 @@ flowchart LR
 
 ## Native Windows measurements
 
-| Workload | Raw Windows | Stock RTK | RTK-WAD native candidate | RTK-WAD auto | Token result | Honest automatic decision |
-| --- | ---: | ---: | ---: | ---: | --- | --- |
-| `git status --short --branch` | 127.613 ms | 393.760 ms | 518.466 ms | 266.283 ms | 37 → 37 (0.0%) | Raw: lower latency; no reduction. |
-| `git log --oneline -100` | 126.856 ms | 209.866 ms | 346.381 ms | 309.754 ms | 864 → 864 (0.0%) | Raw: lower latency; no reduction. |
-| Focused `rg` | 71.723 ms | 158.591 ms | 291.880 ms | 138.457 ms | 94 → 94 (0.0%) | Raw: lower latency; no reduction. |
-| Broad `rg` | 69.994 ms | 157.517 ms | 288.386 ms | 293.102 ms | 3,164 → 2,082 (34.2%) | Native RTK: token threshold met; slower. |
+| Workload | Raw Windows | Stock RTK | RTK-WAD native candidate | RTK-WAD auto | Raw → auto tokens | Tokens saved | Saving | Honest automatic decision |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `git status --short --branch` | 127.613 ms | 393.760 ms | 518.466 ms | 266.283 ms | 37 → 37 | 0 | 0.0% | Raw: lower latency; no reduction. |
+| `git log --oneline -100` | 126.856 ms | 209.866 ms | 346.381 ms | 309.754 ms | 864 → 864 | 0 | 0.0% | Raw: lower latency; no reduction. |
+| Focused `rg` | 71.723 ms | 158.591 ms | 291.880 ms | 138.457 ms | 94 → 94 | 0 | 0.0% | Raw: lower latency; no reduction. |
+| Broad `rg` | 69.994 ms | 157.517 ms | 288.386 ms | 293.102 ms | 3,164 → 2,082 | 1,082 | 34.2% | Native RTK: token threshold met; slower. |
 
 The table is intentionally not a marketing aggregate. Three of four listed
-workloads are faster raw Windows operations with zero token benefit, so WAD
+workloads are faster raw Windows operations with **zero tokens saved**, so WAD
 keeps them raw. The broad search is slower through RTK-WAD auto on this host,
-but it removes 1,082 measured output tokens and therefore meets the documented
-token-first policy threshold.
+but it saves **1,082 measured output tokens (34.2%)** and therefore meets the
+documented token-first policy threshold.
+
+```mermaid
+flowchart LR
+    A[Four measured workloads] --> B[git status, git log, focused rg]
+    B --> C[RTK-WAD selects raw\n0 tokens saved]
+    A --> D[Broad rg]
+    D --> E[RTK-WAD selects native RTK\n3,164 → 2,082 tokens\n1,082 saved / 34.2%]
+```
+
+`Tokens saved` is always calculated against the raw Windows token count for
+the same workload: `raw_tokens - rtk_wad_auto_tokens`. The machine-readable
+evidence also retains the equivalent stock-RTK saving field so downstream
+reporting can compare the dispatcher and stock RTK without inventing a token
+estimate for an unmeasured route.
 
 ## Reading `rtk-wad gain` honestly
 
