@@ -39,3 +39,23 @@ The machine-readable local artifact retains absolute paths and isolated state
 paths, so it is deliberately not committed. The checked-in manifest, provision
 script, exact command forms, pins, and table above are sufficient to reproduce
 the measurement without exposing workstation paths.
+
+## Cargo toolchain extension
+
+The same corpus also ran five warmed rotating rounds of `cargo check` with the
+generic four-variant toolchain protocol and the documented duration-only output
+normalizer. Raw and final WAD output were semantically equivalent, so the row
+is valid for adaptive policy evidence.
+
+| Variant | Median | Tokens | Saving versus raw | Selected by auto policy |
+| --- | ---: | ---: | ---: | --- |
+| Raw Windows | 271.009 ms | 208 | 0.0% | Yes |
+| Stock native RTK | 379.751 ms | 165 | 20.7% | No |
+| Forced WAD native candidate | 507.789 ms | 165 | 20.7% | No |
+| WAD auto after policy | 546.780 ms | 208 | 0.0% | Raw |
+
+Native RTK reduced the measured command output by 43 tokens, but the result
+did not reach WAD's 25% token-first threshold and incurred additional latency.
+The generated policy therefore selected raw Windows. This is a positive
+coverage result and a negative promotion result: the command is measured, but
+is not claimed as an automatic native-RTK win on this host.
