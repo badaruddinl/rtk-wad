@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, ExitStatus};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -23,11 +24,13 @@ const CALIBRATION_ARGUMENT: &str = "calibration";
 const RESOLVE_ARGUMENT: &str = "resolve";
 const DOCTOR_ARGUMENT: &str = "doctor";
 const PROVIDER_ARGUMENT: &str = "provider";
+const SURFACE_ARGUMENT: &str = "surface";
 const SETUP_ARGUMENT: &str = "setup";
 const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 2;
 const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
 const CALIBRATION_SCHEMA_VERSION: u32 = 1;
 const CALIBRATION_MAX_SAMPLES: usize = 5;
+const COMMAND_MANIFEST: &str = include_str!("../benchmarks/command-manifest.json");
 const CANCEL_SCRIPT: &str = r#"
 if [ -r "$1" ]; then
     worker=$(cat "$1")
@@ -611,6 +614,165 @@ struct ProjectLocation {
     kind: ProjectLocationKind,
     path: String,
     distro: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CommandManifest {
+    schema_version: u32,
+    upstream_rtk_version: String,
+    native_structured: Vec<String>,
+    raw_native: Vec<String>,
+    wsl1_conservative: Vec<String>,
+    wad_internal: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CommandSurface {
+    NativeStructured,
+    RawNative,
+    Wsl1Conservative,
+    WadInternal,
+    Unknown,
+}
+
+impl CommandSurface {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NativeStructured => "native-structured",
+            Self::RawNative => "raw-native",
+            Self::Wsl1Conservative => "wsl1-conservative",
+            Self::WadInternal => "wad-internal",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn default_route(self) -> &'static str {
+        match self {
+            Self::NativeStructured => "native-rtk",
+            Self::RawNative => "raw",
+            Self::Wsl1Conservative | Self::Unknown => "wsl1",
+            Self::WadInternal => "internal",
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct CommandSurfaceRow {
+    command: String,
+    classification: CommandSurface,
+    default_route: &'static str,
+}
+
+#[derive(Serialize)]
+struct CommandSurfaceReport {
+    schema_version: u32,
+    upstream_rtk_version: String,
+    upstream_command_count: usize,
+    commands: Vec<CommandSurfaceRow>,
+}
+
+fn command_manifest() -> &'static CommandManifest {
+    static PARSED: OnceLock<CommandManifest> = OnceLock::new();
+    PARSED.get_or_init(|| {
+        serde_json::from_str(COMMAND_MANIFEST)
+            .expect("embedded command manifest must be valid JSON")
+    })
+}
+
+fn command_surface(command: &str) -> CommandSurface {
+    let manifest = command_manifest();
+    if manifest
+        .native_structured
+        .iter()
+        .any(|item| item == command)
+    {
+        CommandSurface::NativeStructured
+    } else if manifest.raw_native.iter().any(|item| item == command) {
+        CommandSurface::RawNative
+    } else if manifest
+        .wsl1_conservative
+        .iter()
+        .any(|item| item == command)
+    {
+        CommandSurface::Wsl1Conservative
+    } else if manifest.wad_internal.iter().any(|item| item == command) {
+        CommandSurface::WadInternal
+    } else {
+        CommandSurface::Unknown
+    }
+}
+
+fn command_surface_report() -> CommandSurfaceReport {
+    let manifest = command_manifest();
+    let mut commands = manifest
+        .native_structured
+        .iter()
+        .chain(&manifest.raw_native)
+        .chain(&manifest.wsl1_conservative)
+        .chain(&manifest.wad_internal)
+        .filter(|command| !command.starts_with('-') && command.as_str() != "stats")
+        .cloned()
+        .collect::<Vec<_>>();
+    commands.sort();
+    commands.dedup();
+    let rows = commands
+        .into_iter()
+        .map(|command| {
+            let classification = command_surface(&command);
+            CommandSurfaceRow {
+                default_route: classification.default_route(),
+                command,
+                classification,
+            }
+        })
+        .collect::<Vec<_>>();
+    CommandSurfaceReport {
+        schema_version: manifest.schema_version,
+        upstream_rtk_version: manifest.upstream_rtk_version.clone(),
+        upstream_command_count: rows.len(),
+        commands: rows,
+    }
+}
+
+fn print_command_surface(arguments: &[OsString]) -> ExitCode {
+    if arguments.len() > 2
+        || arguments
+            .get(1)
+            .is_some_and(|argument| argument != "--json")
+    {
+        eprintln!("rtk-wad: usage: surface [--json]");
+        return ExitCode::FAILURE;
+    }
+    let report = command_surface_report();
+    if arguments
+        .get(1)
+        .is_some_and(|argument| argument == "--json")
+    {
+        return match serde_json::to_string_pretty(&report) {
+            Ok(rendered) => {
+                println!("{rendered}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("rtk-wad: unable to render command surface: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    println!(
+        "RTK {} command surface: {} upstream command families",
+        report.upstream_rtk_version, report.upstream_command_count
+    );
+    for row in report.commands {
+        println!(
+            "{}\t{}\t{}",
+            row.command,
+            row.classification.as_str(),
+            row.default_route
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -2961,27 +3123,46 @@ fn auto_wad_route(
             );
         }
     }
-    match wad_command_family(arguments) {
-        "npm" | "npx" | "pnpm" | "go" | "dotnet" | "dart" | "flutter" => (
+    match command_surface(wad_command_family(arguments)) {
+        CommandSurface::RawNative => (
             Route::Raw,
-            "validated Windows toolchain fallback avoids an unavailable WSL toolchain",
+            "command manifest selects the validated Windows raw provider",
         ),
-        "git" if is_verified_read_only_git(arguments) => (
+        CommandSurface::NativeStructured if wad_command_family(arguments) == "git" => {
+            if is_verified_read_only_git(arguments) {
+                (
+                    Route::NativeRtk,
+                    "command manifest permits structured native RTK for read-only Git",
+                )
+            } else {
+                (
+                    Route::Raw,
+                    "Git mutation is excluded from native RTK auto-routing and executes once with native Git",
+                )
+            }
+        }
+        CommandSurface::NativeStructured => (
             Route::NativeRtk,
-            "structured native RTK Git adapter is safe for read-only Git",
+            "command manifest selects the structured native RTK adapter",
         ),
-        "git" => (
-            Route::Raw,
-            "Git command is not in the verified read-only allowlist; execute once with native Git",
-        ),
-        "rg" | "grep" | "find" | "ls" | "tree" | "read" | "files" | "diff" | "cargo" => (
-            Route::NativeRtk,
-            "structured native RTK adapter avoids the Windows shell parser",
-        ),
-        _ => (
+        CommandSurface::Wsl1Conservative => (
             Route::Wsl1,
-            "no verified native adapter contract; use isolated Linux RTK",
+            "command manifest retains the conservative isolated Linux RTK contract",
         ),
+        CommandSurface::WadInternal => (
+            Route::Wsl1,
+            "RTK command is internal to WAD only when invoked through its dedicated interface",
+        ),
+        CommandSurface::Unknown => match wad_command_family(arguments) {
+            "dart" | "flutter" => (
+                Route::Raw,
+                "WAD-owned Windows SDK shim executes once without an RTK adapter",
+            ),
+            _ => (
+                Route::Wsl1,
+                "unknown command has no manifest contract; use isolated Linux RTK",
+            ),
+        },
     }
 }
 
@@ -3333,6 +3514,12 @@ fn parse_wad_options(
 }
 
 fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == SURFACE_ARGUMENT)
+    {
+        return print_command_surface(&arguments);
+    }
     if arguments
         .first()
         .is_some_and(|argument| argument == PROVIDER_ARGUMENT)
@@ -3916,6 +4103,30 @@ mod tests {
         let legacy = Config::from_lookup_with_executable(|_| None, Some("rtk-wsl.exe"))
             .expect("legacy configuration is valid");
         assert_eq!(legacy.profile, ExecutableProfile::Legacy);
+    }
+
+    #[test]
+    fn embedded_command_surface_is_complete_and_non_overlapping() {
+        let report = command_surface_report();
+        assert_eq!(report.schema_version, 1);
+        assert_eq!(report.upstream_rtk_version, "0.43.0");
+        assert_eq!(report.upstream_command_count, 69);
+        let names = report
+            .commands
+            .iter()
+            .map(|row| row.command.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(names.len(), report.upstream_command_count);
+        assert!(
+            report
+                .commands
+                .iter()
+                .all(|row| row.classification != CommandSurface::Unknown)
+        );
+        assert_eq!(command_surface("git"), CommandSurface::NativeStructured);
+        assert_eq!(command_surface("go"), CommandSurface::RawNative);
+        assert_eq!(command_surface("proxy"), CommandSurface::Wsl1Conservative);
+        assert_eq!(command_surface("gain"), CommandSurface::WadInternal);
     }
 
     #[test]

@@ -122,6 +122,10 @@ adds the explicit `provider exec` boundary for verified Windows and WSL
 providers. Automatic command routing remains deferred until P15 classifies the
 complete RTK command surface.
 
+[P15 command-surface parity](docs/COMMAND_SURFACE_PARITY_P15.md) embeds the
+full RTK `0.43.0` inventory and exposes `rtk-wad surface --json`; a process
+contract compares all 69 command families with the live WSL RTK help output.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture

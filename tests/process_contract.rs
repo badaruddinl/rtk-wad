@@ -509,6 +509,58 @@ fn wad_provider_exec_runs_each_verified_provider_without_replay() {
 }
 
 #[test]
+fn wad_surface_matches_the_live_wsl_rtk_command_inventory() {
+    let (launcher, directory) = wad_launcher();
+    let surface = Command::new(&launcher)
+        .args(["surface", "--json"])
+        .output()
+        .expect("surface report starts");
+    assert!(surface.status.success());
+    let surface: serde_json::Value =
+        serde_json::from_slice(&surface.stdout).expect("surface report is JSON");
+    assert_eq!(surface["upstream_rtk_version"], "0.43.0");
+    assert_eq!(surface["upstream_command_count"], 69);
+    let wad_commands = surface["commands"]
+        .as_array()
+        .expect("surface report contains commands")
+        .iter()
+        .map(|row| {
+            assert_ne!(row["classification"], "unknown");
+            row["command"]
+                .as_str()
+                .expect("surface command name")
+                .to_owned()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let help = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "/usr/local/bin/rtk", "--help"])
+        .output()
+        .expect("live WSL RTK help starts");
+    assert!(help.status.success());
+    let live_commands = String::from_utf8_lossy(&help.stdout)
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            let command = trimmed.split_whitespace().next()?;
+            (line.starts_with("  ")
+                && command != "help"
+                && command
+                    .bytes()
+                    .next()
+                    .is_some_and(|byte| byte.is_ascii_lowercase())
+                && command
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'))
+            .then(|| command.to_owned())
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(live_commands.len(), 69);
+    assert_eq!(wad_commands, live_commands);
+    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+}
+
+#[test]
 fn provisioned_wsl1_bridge_preserves_the_process_contract_when_requested() {
     let Ok(distro) = std::env::var("RTK_WSL1_TEST_DISTRO") else {
         return;

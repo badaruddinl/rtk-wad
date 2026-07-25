@@ -137,6 +137,11 @@ one verified provider execution without shell reconstruction or post-start
 fallback. It remains explicit while P15 classifies the command surface; see
 [`PROVIDER_EXECUTION_ENGINE_P14.md`](PROVIDER_EXECUTION_ENGINE_P14.md).
 
+P15 embeds the complete RTK `0.43.0` command manifest. `rtk-wad surface
+--json` reports all 69 families and their conservative route classes, while a
+runtime contract compares that inventory with the live WSL RTK help output; see
+[`COMMAND_SURFACE_PARITY_P15.md`](COMMAND_SURFACE_PARITY_P15.md).
+
 PD3 uses a complete verified Go provider for automatic execution only when
 Windows Go is unavailable. A missing safe provider exits `127` before a child
 starts; installation remains disabled. See
