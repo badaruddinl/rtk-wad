@@ -174,6 +174,12 @@ verified provider or `blocked` with no proposed installer. It rejects apply,
 confirmation, status, and recovery flags, and never creates the Go setup
 journal. See [`GENERIC_SETUP_DIAGNOSIS_P17.md`](GENERIC_SETUP_DIAGNOSIS_P17.md).
 
+P18 adds a local benchmark-matrix preflight. It validates the native Windows,
+WSL1, and WSL2 RTK providers against the embedded command manifest before a
+benchmark may claim latency or token evidence. An absent provider blocks that
+backend's evidence; WAD never installs or substitutes it. See
+[`BENCHMARK_MATRIX_P18.md`](BENCHMARK_MATRIX_P18.md).
+
 ## Cache-aware adaptive routing (P7)
 
 Automatic Windows Go execution uses a lightweight local provider cache. A fresh

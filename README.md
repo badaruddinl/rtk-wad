@@ -135,6 +135,10 @@ on-demand `doctor` and `setup <tool>` guidance for any safe provider name
 without guessing an installer or installing dependencies. The separate,
 explicit Go transaction remains the only installation boundary.
 
+[P18 benchmark-matrix preflight](docs/BENCHMARK_MATRIX_P18.md) verifies the
+actual Windows, WSL1, and WSL2 RTK providers against the complete command
+manifest before any latency or token-saving claim is published.
+
 The external CLI adapters have a separate deterministic, network-free
 [three-way fixture validation](docs/BENCHMARK_EXTERNAL_FIXTURES_2026-07-24.md).
 It proves raw argv and native/WSL RTK equivalence without treating fixture

@@ -12,6 +12,21 @@ for this repository. Its conservative WSL1 classification is intentional: a
 command moves to native RTK only after its structured-argv and no-replay
 contracts are proven on Windows.
 
+Before collecting any P18 performance row, run the provider and manifest
+preflight. It records whether the actual Windows, WSL1, and WSL2 RTK binaries
+match the complete 69-command inventory; it never installs or substitutes a
+missing provider:
+
+```powershell
+.\scripts\audit-provider-baseline.ps1 `
+  -OutputPath .\.flowpeek\cache\p18-benchmark-preflight.json
+.\tests\benchmark-preflight-contract.ps1
+```
+
+See [`BENCHMARK_MATRIX_P18.md`](../docs/BENCHMARK_MATRIX_P18.md). A missing
+native Windows RTK or WSL RTK is a blocked evidence row, not permission to use
+another backend as a stand-in.
+
 ```powershell
 .\benchmarks\verify-command-manifest.ps1 -NativeRtk C:\tools\rtk.exe
 ```

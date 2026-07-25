@@ -138,6 +138,74 @@ function Get-RtkCommands {
     )
 }
 
+function Invoke-WindowsCapture {
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string[]]$Arguments
+    )
+
+    $previousErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $lines = @(
+            & $Path @Arguments 2>&1 |
+                ForEach-Object { "$_" -split "`r?`n" } |
+                Where-Object { $_ -ne "" }
+        )
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Lines = $lines
+    }
+}
+
+function Get-WindowsRtkEvidence {
+    param([Parameter(Mandatory)] [object]$Candidate)
+
+    $version = Invoke-WindowsCapture -Path $Candidate.Path -Arguments @("--version")
+    $help = Invoke-WindowsCapture -Path $Candidate.Path -Arguments @("--help")
+    $commands = if ($help.ExitCode -eq 0) {
+        @(
+            $help.Lines |
+                ForEach-Object {
+                    if ($_ -match "^\s{2}([a-z][a-z0-9-]*)\s{2,}") { $Matches[1] }
+                } |
+                Where-Object { $_ -and $_ -ne "help" } |
+                Sort-Object -Unique
+        )
+    } else {
+        @()
+    }
+    return [pscustomobject]@{
+        Path = $Candidate.Path
+        CommandType = $Candidate.CommandType
+        Sha256 = $Candidate.Sha256
+        Version = Get-FirstLine -Lines $version.Lines
+        VersionExitCode = $version.ExitCode
+        HelpExitCode = $help.ExitCode
+        Commands = $commands
+    }
+}
+
+function Get-ManifestCoverage {
+    param(
+        [Parameter(Mandatory)] [string[]]$ManifestCommands,
+        [Parameter(Mandatory)] [string[]]$ObservedCommands
+    )
+
+    $observed = @($ObservedCommands | Sort-Object -Unique)
+    return [pscustomobject]@{
+        ObservedCount = $observed.Count
+        ObservedOnly = @($observed | Where-Object { $_ -notin $ManifestCommands })
+        ManifestOnly = @($ManifestCommands | Where-Object { $_ -notin $observed })
+        ExactMatch = (@($observed | Where-Object { $_ -notin $ManifestCommands }).Count -eq 0) -and
+            (@($ManifestCommands | Where-Object { $_ -notin $observed }).Count -eq 0)
+    }
+}
+
 function Get-WindowsCandidate {
     param([Parameter(Mandatory)] [string]$Tool)
 
@@ -244,6 +312,7 @@ $windowsRtk = @(
     Get-WindowsCandidate -Tool "rtk"
     Get-DeepWindowsRtkCandidates -Roots $SearchRoots
 ) | Sort-Object Path -Unique
+$windowsRtkEvidence = @($windowsRtk | ForEach-Object { Get-WindowsRtkEvidence -Candidate $_ })
 $windowsLaunchers = @(
     Get-WindowsCandidate -Tool "rtk-wad"
     Get-WindowsCandidate -Tool "rtk-wsl"
@@ -267,15 +336,46 @@ $manifestCommands = if ($manifest) {
     @()
 }
 $rtkCommandCoverage = foreach ($provider in $wslProviders | Where-Object { $_.Rtk }) {
-    $observed = @($provider.Rtk.Commands)
+    $coverage = Get-ManifestCoverage -ManifestCommands $manifestCommands -ObservedCommands @($provider.Rtk.Commands)
     [pscustomobject]@{
         Distro = $provider.Distro
         WslVersion = $provider.WslVersion
-        ObservedOnly = @($observed | Where-Object { $_ -notin $manifestCommands })
-        ManifestOnly = @($manifestCommands | Where-Object { $_ -notin $observed })
-        ExactMatch = (@($observed | Where-Object { $_ -notin $manifestCommands }).Count -eq 0) -and
-            (@($manifestCommands | Where-Object { $_ -notin $observed }).Count -eq 0)
+        ObservedCount = $coverage.ObservedCount
+        ObservedOnly = $coverage.ObservedOnly
+        ManifestOnly = $coverage.ManifestOnly
+        ExactMatch = $coverage.ExactMatch
     }
+}
+$windowsRtkCoverage = foreach ($provider in $windowsRtkEvidence) {
+    $coverage = Get-ManifestCoverage -ManifestCommands $manifestCommands -ObservedCommands @($provider.Commands)
+    [pscustomobject]@{
+        Path = $provider.Path
+        Version = $provider.Version
+        VersionExitCode = $provider.VersionExitCode
+        HelpExitCode = $provider.HelpExitCode
+        ObservedCount = $coverage.ObservedCount
+        ObservedOnly = $coverage.ObservedOnly
+        ManifestOnly = $coverage.ManifestOnly
+        ExactMatch = $coverage.ExactMatch
+    }
+}
+$benchmarkPreflight = [pscustomobject]@{
+    Protocol = "benchmark-matrix-preflight-v1"
+    ManifestCommandCount = $manifestCommands.Count
+    WindowsNativeRtkReady = @($windowsRtkCoverage | Where-Object { $_.ExactMatch -and $_.VersionExitCode -eq 0 -and $_.HelpExitCode -eq 0 }).Count -gt 0
+    Wsl1RtkReady = @($rtkCommandCoverage | Where-Object { $_.WslVersion -eq 1 -and $_.ExactMatch }).Count -gt 0
+    Wsl2RtkReady = @($rtkCommandCoverage | Where-Object { $_.WslVersion -eq 2 -and $_.ExactMatch }).Count -gt 0
+    BlockingReasons = @(
+        if (@($windowsRtkCoverage | Where-Object { $_.ExactMatch -and $_.VersionExitCode -eq 0 -and $_.HelpExitCode -eq 0 }).Count -eq 0) {
+            "No verified stock Windows RTK matches the embedded command manifest. Native three-way benchmark claims are blocked."
+        }
+        if (@($rtkCommandCoverage | Where-Object { $_.WslVersion -eq 1 -and $_.ExactMatch }).Count -eq 0) {
+            "No verified WSL1 RTK matches the embedded command manifest. WSL1 RTK benchmark claims are blocked."
+        }
+        if (@($rtkCommandCoverage | Where-Object { $_.WslVersion -eq 2 -and $_.ExactMatch }).Count -eq 0) {
+            "No verified WSL2 RTK matches the embedded command manifest. WSL2 RTK benchmark claims are blocked."
+        }
+    )
 }
 
 $processes = @(
@@ -303,6 +403,7 @@ $report = [pscustomobject]@{
     }
     Windows = [pscustomobject]@{
         RtkCandidates = @($windowsRtk)
+        RtkEvidence = @($windowsRtkEvidence)
         Launchers = @($windowsLaunchers)
         ToolProviders = @($windowsTools)
     }
@@ -311,7 +412,9 @@ $report = [pscustomobject]@{
         Path = if ($manifest) { (Resolve-Path -LiteralPath $ManifestPath).Path } else { $null }
         UpstreamVersion = if ($manifest) { $manifest.upstream_rtk_version } else { $null }
         Coverage = @($rtkCommandCoverage)
+        WindowsCoverage = @($windowsRtkCoverage)
     }
+    BenchmarkPreflight = $benchmarkPreflight
     Processes = $processes
 }
 
