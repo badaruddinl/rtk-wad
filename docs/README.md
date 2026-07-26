@@ -11,6 +11,7 @@ the evidence, contracts, and milestone records behind it.
 | Compare raw Windows, stock RTK, and RTK-WAD honestly | [P20 benchmark comparison](BENCHMARK_COMPARISON_P20.md) |
 | Inspect exact native Windows, WSL1, and WSL2 figures | [P18 core matrix](BENCHMARK_CORE_MATRIX_P18_2026-07-25.md) |
 | Verify a source checkout before release | [P20 release gate](RELEASE_GATE_P20.md) |
+| Inspect the v0.3.0 baseline and P7 dispatcher boundary | [P7 dispatcher foundation](P7_DISPATCHER_FOUNDATION.md) |
 | Install the private tokenizer dependency | [Dependencies](DEPENDENCIES.md) |
 
 ## Cross-host providers and setup

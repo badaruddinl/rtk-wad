@@ -203,6 +203,19 @@ system, conversation, output, and model pricing all affect an eventual bill.
 - Existing Windows and WSL tool installations can be diagnosed on demand.
   Installation is always separately planned and confirmed.
 
+When invoking the Windows dispatcher from a WSL shell, use the provided shim so
+the originating distro, physical CWD, Windows-mounted CWD when available, and
+structured argv are retained:
+
+```sh
+export RTK_WAD_WINDOWS_EXE=/mnt/c/tools/rtk-wad.exe
+sh /mnt/c/tools/rtk-wad-wsl.sh go version
+```
+
+Set `RTK_WSL_EXTRA_PATH` only when a WSL-only tool lives outside that distro's
+normal `PATH`. The shim is required because WSL does not forward arbitrary
+Linux environment variables to Windows `.exe` processes.
+
 ## Documentation
 
 | Topic | Reference |

@@ -160,6 +160,958 @@ fn routes_git_from_a_windows_worktree_to_native_git_with_structured_arguments() 
 }
 
 #[test]
+fn dispatches_wsl_only_go_raw_from_a_windows_shell() {
+    let _guard = process_contract_guard();
+    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let fixture = format!("/tmp/rtk-wad-p7-go-{}-{nonce}", std::process::id());
+    assert!(
+        fixture.starts_with("/tmp/rtk-wad-p7-go-"),
+        "fixture cleanup target is constrained to the test namespace"
+    );
+    let setup = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "sh",
+            "-c",
+            r###"mkdir -p "$1"; printf '#!/bin/sh\nprintf "go version go-fixture linux/amd64\n"\n' > "$1/go"; chmod 755 "$1/go""###,
+            "rtk-wad-p7-go-fixture",
+            &fixture,
+        ])
+        .output()
+        .expect("temporary WSL Go fixture setup starts");
+    assert!(
+        setup.status.success(),
+        "fixture setup stderr: {}",
+        String::from_utf8_lossy(&setup.stderr)
+    );
+
+    let system32 = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .expect("Windows system root is available")
+        .join("System32");
+    let state = std::env::temp_dir().join(format!("rtk-wad-p7-go-state-{nonce}"));
+    let output = Command::new(launcher())
+        .env("PATH", system32)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .env("RTK_WSL_DISTRO", "Ubuntu")
+        .env("RTK_WSL_EXTRA_PATH", &fixture)
+        .args(["go", "version"])
+        .output()
+        .expect("Go dispatcher starts");
+    let cleanup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "rm", "-rf", "--", &fixture])
+        .status()
+        .expect("temporary WSL Go fixture cleanup starts");
+    assert!(cleanup.success(), "temporary WSL Go fixture is removed");
+    let _ = std::fs::remove_dir_all(&state);
+
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "go version go-fixture linux/amd64\n"
+    );
+}
+
+#[test]
+fn dispatches_wsl_only_go_from_powershell_cmd_and_git_bash() {
+    let _guard = process_contract_guard();
+    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let fixture = format!(
+        "/tmp/rtk-wad-p7-go-shell-matrix-{}-{nonce}",
+        std::process::id()
+    );
+    assert!(fixture.starts_with("/tmp/rtk-wad-p7-go-shell-matrix-"));
+    let setup = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "sh",
+            "-c",
+            r###"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'if [ "$1" = "run" ]; then printf "arg:%s\n" "$2"; else printf "go version shell-matrix-fixture linux/amd64\n"; fi' > "$1/go"; chmod 755 "$1/go""###,
+            "rtk-wad-p7-go-shell-matrix-fixture",
+            &fixture,
+        ])
+        .output()
+        .expect("temporary WSL shell-matrix Go fixture setup starts");
+    assert!(setup.status.success());
+
+    let system32 = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .expect("Windows system root is available")
+        .join("System32");
+    let state = std::env::temp_dir().join(format!("rtk-wad-p7-go-shell-matrix-state-{nonce}"));
+    let configure = |command: &mut Command| {
+        command
+            .env("PATH", &system32)
+            .env("RTK_WAD_STATE_DIR", &state)
+            .env("RTK_WSL_DISTRO", "Ubuntu")
+            .env("RTK_WSL_EXTRA_PATH", &fixture)
+            .env("RTK_WAD_OUTPUT_ADAPTER", "raw")
+            .env("RTK_WAD_TEST_LAUNCHER", launcher());
+    };
+    let literal = "space & $dollar\\漢字";
+
+    let mut powershell = Command::new("powershell.exe");
+    configure(&mut powershell);
+    let powershell = powershell
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "& $env:RTK_WAD_TEST_LAUNCHER go version",
+        ])
+        .output()
+        .expect("PowerShell Go dispatch starts");
+    let mut powershell_literal = Command::new("powershell.exe");
+    configure(&mut powershell_literal);
+    let powershell_literal = powershell_literal
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "& $env:RTK_WAD_TEST_LAUNCHER go run 'space & $dollar\\漢字'",
+        ])
+        .output()
+        .expect("PowerShell literal Go dispatch starts");
+
+    let mut cmd = Command::new("cmd.exe");
+    configure(&mut cmd);
+    let cmd = cmd
+        .args(["/d", "/s", "/c", &format!("{} go version", launcher())])
+        .output()
+        .expect("CMD Go dispatch starts");
+    let cmd_wrapper = state.join("invoke-go-literal.cmd");
+    std::fs::write(
+        &cmd_wrapper,
+        "@echo off\r\n\"%RTK_WAD_TEST_LAUNCHER%\" go run \"%RTK_WAD_TEST_LITERAL%\"\r\n",
+    )
+    .expect("CMD literal wrapper is written");
+    let mut cmd_literal = Command::new("cmd.exe");
+    configure(&mut cmd_literal);
+    cmd_literal.env("RTK_WAD_TEST_LITERAL", literal);
+    let cmd_literal = cmd_literal
+        .args([
+            "/d",
+            "/s",
+            "/c",
+            cmd_wrapper.to_str().expect("CMD wrapper path"),
+        ])
+        .output()
+        .expect("CMD literal Go dispatch starts");
+
+    let git_bash = [
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+    ]
+    .into_iter()
+    .find(|path| PathBuf::from(path).is_file())
+    .expect("Git Bash is installed for the Windows shell contract");
+    let mut bash = Command::new(git_bash);
+    configure(&mut bash);
+    bash.env("MSYS_NO_PATHCONV", "1");
+    let bash = bash
+        .args([
+            "--noprofile",
+            "--norc",
+            "-c",
+            "exec \"$RTK_WAD_TEST_LAUNCHER\" go version",
+        ])
+        .output()
+        .expect("Git Bash Go dispatch starts");
+    let mut bash_literal = Command::new(git_bash);
+    configure(&mut bash_literal);
+    bash_literal.env("MSYS_NO_PATHCONV", "1");
+    let bash_literal = bash_literal
+        .args([
+            "--noprofile",
+            "--norc",
+            "-c",
+            "exec \"$RTK_WAD_TEST_LAUNCHER\" go run 'space & $dollar\\漢字'",
+        ])
+        .output()
+        .expect("Git Bash literal Go dispatch starts");
+
+    let cleanup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "rm", "-rf", "--", &fixture])
+        .status()
+        .expect("temporary WSL shell-matrix Go fixture cleanup starts");
+    assert!(cleanup.success());
+    let _ = std::fs::remove_dir_all(&state);
+
+    for (shell, output) in [("PowerShell", powershell), ("CMD", cmd), ("Git Bash", bash)] {
+        assert!(
+            output.status.success(),
+            "{shell} stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "go version shell-matrix-fixture linux/amd64\n",
+            "{shell} must reach the WSL-only Go binary"
+        );
+    }
+    for (shell, output) in [
+        ("PowerShell", powershell_literal),
+        ("CMD", cmd_literal),
+        ("Git Bash", bash_literal),
+    ] {
+        assert!(
+            output.status.success(),
+            "{shell} literal stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("arg:{literal}\n"),
+            "{shell} must preserve a literal shell argument"
+        );
+    }
+}
+
+#[test]
+fn wsl_shim_preserves_same_distro_context_and_literal_argv() {
+    let _guard = process_contract_guard();
+    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let fixture = format!("/tmp/rtk-wad-p7-wsl-shim-{}-{nonce}", std::process::id());
+    assert!(fixture.starts_with("/tmp/rtk-wad-p7-wsl-shim-"));
+    let setup = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "sh",
+            "-c",
+            r###"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'printf "cwd:%s\n" "$PWD"' 'printf "args:%s|%s\n" "$1" "$2"' > "$1/go"; chmod 755 "$1/go""###,
+            "rtk-wad-p7-wsl-shim-fixture",
+            &fixture,
+        ])
+        .output()
+        .expect("temporary WSL shim Go fixture setup starts");
+    assert!(setup.status.success());
+
+    let map_path = |path: &str| {
+        let output = Command::new("wsl.exe")
+            .args(["-d", "Ubuntu", "--exec", "wslpath", "-a", path])
+            .output()
+            .expect("Windows path maps into WSL");
+        assert!(
+            output.status.success(),
+            "path mapping stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let launcher_path = map_path(launcher());
+    let shim_windows_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("scripts")
+        .join("rtk-wad-wsl.sh");
+    let shim_path = map_path(&shim_windows_path.to_string_lossy());
+    let literal = "space & $dollar\\\u{6f22}\u{5b57}";
+    let output = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "sh",
+            "-c",
+            r###"cd /tmp; export RTK_WAD_WINDOWS_EXE="$1" RTK_WSL_EXTRA_PATH="$2" RTK_WAD_OUTPUT_ADAPTER=raw; exec sh "$3" go run "$4""###,
+            "rtk-wad-p7-wsl-shim-run",
+            &launcher_path,
+            &fixture,
+            &shim_path,
+            literal,
+        ])
+        .output()
+        .expect("WSL shim starts the dispatcher");
+    let cleanup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "rm", "-rf", "--", &fixture])
+        .status()
+        .expect("temporary WSL shim Go fixture cleanup starts");
+    assert!(cleanup.success());
+
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("cwd:/tmp"));
+    assert!(stdout.contains(&format!("args:run|{literal}")));
+}
+
+#[test]
+fn wsl_shim_maps_a_windows_backed_project_to_another_distro() {
+    let _guard = process_contract_guard();
+    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let fixture = format!(
+        "/tmp/rtk-wad-p7-cross-distro-shim-{}-{nonce}",
+        std::process::id()
+    );
+    let setup = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "sh",
+            "-c",
+            r###"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'printf "cwd:%s\n" "$PWD"' 'printf "args:%s|%s\n" "$1" "$2"' > "$1/go"; chmod 755 "$1/go""###,
+            "rtk-wad-p7-cross-distro-fixture",
+            &fixture,
+        ])
+        .output()
+        .expect("temporary cross-distro Go fixture setup starts");
+    assert!(setup.status.success());
+
+    let map_path = |path: &str| {
+        let output = Command::new("wsl.exe")
+            .args(["-d", "docker-desktop", "--exec", "wslpath", "-a", path])
+            .output()
+            .expect("Windows path maps into the source distro");
+        assert!(
+            output.status.success(),
+            "source mapping stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let launcher_path = map_path(launcher());
+    let shim_windows_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("scripts")
+        .join("rtk-wad-wsl.sh");
+    let shim_path = map_path(&shim_windows_path.to_string_lossy());
+    let project_path = map_path(env!("CARGO_MANIFEST_DIR"));
+    let literal = "cross distro & $dollar\\\u{6f22}\u{5b57}";
+    let output = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "docker-desktop",
+            "--exec",
+            "sh",
+            "-c",
+            r###"cd "$4"; export RTK_WAD_WINDOWS_EXE="$1" RTK_WSL_EXTRA_PATH="$2" RTK_WAD_OUTPUT_ADAPTER=raw; exec sh "$3" go run "$5""###,
+            "rtk-wad-p7-cross-distro-run",
+            &launcher_path,
+            &fixture,
+            &shim_path,
+            &project_path,
+            literal,
+        ])
+        .output()
+        .expect("cross-distro WSL shim starts the dispatcher");
+    let cleanup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "rm", "-rf", "--", &fixture])
+        .status()
+        .expect("temporary cross-distro Go fixture cleanup starts");
+    assert!(cleanup.success());
+
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected_cwd = env!("CARGO_MANIFEST_DIR").replace('\\', "/");
+    let (drive, remainder) = expected_cwd
+        .split_once(':')
+        .expect("manifest directory has a Windows drive prefix");
+    assert!(stdout.contains(&format!(
+        "cwd:/mnt/{}{}",
+        drive.to_ascii_lowercase(),
+        remainder
+    )));
+    assert!(stdout.contains(&format!("args:run|{literal}")));
+}
+
+#[test]
+fn wsl_shim_uses_a_compatible_windows_go_from_a_windows_backed_project() {
+    let _guard = process_contract_guard();
+    let map_path = |path: &str| {
+        let output = Command::new("wsl.exe")
+            .args(["-d", "Ubuntu", "--exec", "wslpath", "-a", path])
+            .output()
+            .expect("Windows path maps into Ubuntu");
+        assert!(
+            output.status.success(),
+            "path mapping stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let launcher_path = map_path(launcher());
+    let shim_windows_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("scripts")
+        .join("rtk-wad-wsl.sh");
+    let shim_path = map_path(&shim_windows_path.to_string_lossy());
+    let project_path = map_path(env!("CARGO_MANIFEST_DIR"));
+    let output = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "sh",
+            "-c",
+            r###"cd "$3"; export RTK_WAD_WINDOWS_EXE="$1" RTK_WAD_OUTPUT_ADAPTER=raw; exec sh "$2" go version"###,
+            "rtk-wad-p7-windows-go-run",
+            &launcher_path,
+            &shim_path,
+            &project_path,
+        ])
+        .output()
+        .expect("WSL shim starts compatible Windows Go");
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(" windows/amd64"),
+        "the selected compatible provider must be the Windows Go binary"
+    );
+
+    let explained = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "sh",
+            "-c",
+            r###"cd "$3"; export RTK_WAD_WINDOWS_EXE="$1" RTK_WAD_OUTPUT_ADAPTER=raw; exec sh "$2" --explain-route go version"###,
+            "rtk-wad-p7-windows-go-explain",
+            &launcher_path,
+            &shim_path,
+            &project_path,
+        ])
+        .output()
+        .expect("WSL shim explains compatible Windows Go");
+    assert!(explained.status.success());
+    assert!(
+        String::from_utf8_lossy(&explained.stdout).contains("selected windows-raw"),
+        "explanation: {}",
+        String::from_utf8_lossy(&explained.stdout)
+    );
+}
+
+#[test]
+fn invalidates_wsl_provider_cache_when_version_changes_without_identity_change() {
+    let _guard = process_contract_guard();
+    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let fixture = format!(
+        "/tmp/rtk-wad-p7-go-version-cache-{}-{nonce}",
+        std::process::id()
+    );
+    assert!(fixture.starts_with("/tmp/rtk-wad-p7-go-version-cache-"));
+    let setup = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "sh",
+            "-c",
+            r###"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'if [ "$1" = "--version" ]; then printf "go version fixture-v1\n"; else printf "fixture command\n"; fi' > "$1/go"; chmod 755 "$1/go""###,
+            "rtk-wad-p7-go-version-cache-fixture",
+            &fixture,
+        ])
+        .output()
+        .expect("temporary WSL version-cache Go fixture setup starts");
+    assert!(setup.status.success());
+
+    let system32 = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .expect("Windows system root is available")
+        .join("System32");
+    let state = std::env::temp_dir().join(format!("rtk-wad-p7-go-version-cache-state-{nonce}"));
+    let configure = |command: &mut Command| {
+        command
+            .env("PATH", &system32)
+            .env("RTK_WAD_STATE_DIR", &state)
+            .env("RTK_WSL_DISTRO", "Ubuntu")
+            .env("RTK_WSL_EXTRA_PATH", &fixture)
+            .env("RTK_WAD_OUTPUT_ADAPTER", "raw");
+    };
+    let mut initial = Command::new(launcher());
+    configure(&mut initial);
+    let initial = initial
+        .args(["which", "go"])
+        .output()
+        .expect("initial Go lookup starts");
+    assert!(initial.status.success());
+    assert!(
+        String::from_utf8_lossy(&initial.stdout).contains("cache=miss"),
+        "initial lookup must populate the isolated cache"
+    );
+
+    let mutate = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "sh",
+            "-c",
+            r###"before=$(stat -Lc '%s:%Y' -- "$1/go") || exit 1; timestamp=$(printf '%s' "$before" | cut -d: -f2); printf '%s\n' '#!/bin/sh' 'if [ "$1" = "--version" ]; then printf "go version fixture-v2\n"; else printf "fixture command\n"; fi' > "$1/go"; touch -d "@$timestamp" "$1/go"; after=$(stat -Lc '%s:%Y' -- "$1/go") || exit 1; test "$before" = "$after""###,
+            "rtk-wad-p7-go-version-cache-mutate",
+            &fixture,
+        ])
+        .output()
+        .expect("temporary WSL version-cache Go fixture mutation starts");
+    assert!(
+        mutate.status.success(),
+        "fixture mutation stderr: {}",
+        String::from_utf8_lossy(&mutate.stderr)
+    );
+
+    let mut after_version_change = Command::new(launcher());
+    configure(&mut after_version_change);
+    let after_version_change = after_version_change
+        .args(["which", "go"])
+        .output()
+        .expect("version-changed Go lookup starts");
+    let cleanup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "rm", "-rf", "--", &fixture])
+        .status()
+        .expect("temporary WSL version-cache Go fixture cleanup starts");
+    assert!(cleanup.success());
+    let _ = std::fs::remove_dir_all(&state);
+
+    assert!(after_version_change.status.success());
+    assert!(
+        String::from_utf8_lossy(&after_version_change.stdout).contains("cache=miss"),
+        "a changed tool version must invalidate a same-identity cache entry: {}",
+        String::from_utf8_lossy(&after_version_change.stdout)
+    );
+}
+
+#[test]
+fn invalidates_provider_cache_when_the_project_git_revision_changes() {
+    let _guard = process_contract_guard();
+    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "rtk-wad-p7-git-revision-cache-{}-{nonce}",
+        std::process::id()
+    ));
+    let state = directory.join("state");
+    std::fs::create_dir_all(&directory).expect("temporary Git project is created");
+    let git = |arguments: &[&str]| {
+        let output = Command::new("git")
+            .args(arguments)
+            .current_dir(&directory)
+            .output()
+            .expect("Git fixture command starts");
+        assert!(
+            output.status.success(),
+            "git {arguments:?} stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init"]);
+    git(&[
+        "-c",
+        "user.name=RTK-WAD P7",
+        "-c",
+        "user.email=p7@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "first",
+    ]);
+
+    let which = || {
+        Command::new(launcher())
+            .env("RTK_WAD_STATE_DIR", &state)
+            .current_dir(&directory)
+            .args(["which", "go"])
+            .output()
+            .expect("provider lookup starts")
+    };
+    let first = which();
+    let second = which();
+    git(&[
+        "-c",
+        "user.name=RTK-WAD P7",
+        "-c",
+        "user.email=p7@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "second",
+    ]);
+    let after_revision_change = which();
+    std::fs::remove_dir_all(&directory).expect("temporary Git project is removed");
+
+    assert!(first.status.success());
+    assert!(
+        String::from_utf8_lossy(&first.stdout).contains("cache=miss"),
+        "first lookup: {}",
+        String::from_utf8_lossy(&first.stdout)
+    );
+    assert!(second.status.success());
+    assert!(
+        String::from_utf8_lossy(&second.stdout).contains("cache=hit"),
+        "second lookup: {}",
+        String::from_utf8_lossy(&second.stdout)
+    );
+    assert!(after_revision_change.status.success());
+    assert!(
+        String::from_utf8_lossy(&after_revision_change.stdout).contains("cache=miss"),
+        "a changed Git revision must invalidate provider discovery: {}",
+        String::from_utf8_lossy(&after_revision_change.stdout)
+    );
+}
+
+#[test]
+fn invalidates_provider_cache_when_path_or_configured_distro_changes() {
+    let _guard = process_contract_guard();
+    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "rtk-wad-p7-path-distro-cache-{}-{nonce}",
+        std::process::id()
+    ));
+    let first_path = directory.join("first");
+    let second_path = directory.join("second");
+    let state = directory.join("state");
+    std::fs::create_dir_all(&first_path).expect("first fixture path is created");
+    std::fs::create_dir_all(&second_path).expect("second fixture path is created");
+    std::fs::write(
+        first_path.join("npm.cmd"),
+        "@echo off\r\necho 11.0.0-first-fixture\r\n",
+    )
+    .expect("first npm fixture is written");
+    std::fs::write(
+        second_path.join("npm.cmd"),
+        "@echo off\r\necho 11.0.0-second-fixture\r\n",
+    )
+    .expect("second npm fixture is written");
+    let system32 =
+        PathBuf::from(std::env::var_os("SystemRoot").expect("Windows system root is available"))
+            .join("System32");
+    let lookup = |fixture_path: &PathBuf, distro: &str| {
+        let path = std::env::join_paths([fixture_path.as_os_str(), system32.as_os_str()])
+            .expect("fixture PATH is valid");
+        Command::new(launcher())
+            .env("PATH", path)
+            .env("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+            .env("RTK_WAD_STATE_DIR", &state)
+            .env("RTK_WSL_DISTRO", distro)
+            .current_dir(&directory)
+            .args(["which", "npm"])
+            .output()
+            .expect("provider lookup starts")
+    };
+    let first = lookup(&first_path, "Ubuntu");
+    let second = lookup(&first_path, "Ubuntu");
+    let after_path_change = lookup(&second_path, "Ubuntu");
+    let after_distro_change = lookup(&second_path, "docker-desktop");
+    std::fs::remove_dir_all(&directory).expect("temporary path fixture is removed");
+
+    for output in [&first, &second, &after_path_change, &after_distro_change] {
+        assert!(
+            output.status.success(),
+            "stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(String::from_utf8_lossy(&first.stdout).contains("cache=miss"));
+    assert!(String::from_utf8_lossy(&second.stdout).contains("cache=hit"));
+    assert!(
+        String::from_utf8_lossy(&after_path_change.stdout).contains("cache=miss"),
+        "a changed PATH must invalidate provider discovery: {}",
+        String::from_utf8_lossy(&after_path_change.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&after_distro_change.stdout).contains("cache=miss"),
+        "a changed configured distro must invalidate provider discovery: {}",
+        String::from_utf8_lossy(&after_distro_change.stdout)
+    );
+}
+
+#[test]
+fn dispatches_wsl_only_cargo_raw_from_a_windows_shell() {
+    let _guard = process_contract_guard();
+    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let fixture = format!("/tmp/rtk-wad-p7-cargo-{}-{nonce}", std::process::id());
+    assert!(
+        fixture.starts_with("/tmp/rtk-wad-p7-cargo-"),
+        "fixture cleanup target is constrained to the test namespace"
+    );
+    let setup = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "sh",
+            "-c",
+            r###"mkdir -p "$1"; printf '#!/bin/sh\nprintf "cargo 1.99.0-wsl-fixture\\n"\n' > "$1/cargo"; chmod 755 "$1/cargo""###,
+            "rtk-wad-p7-cargo-fixture",
+            &fixture,
+        ])
+        .output()
+        .expect("temporary WSL Cargo fixture setup starts");
+    assert!(
+        setup.status.success(),
+        "fixture setup stderr: {}",
+        String::from_utf8_lossy(&setup.stderr)
+    );
+
+    let system32 = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .expect("Windows system root is available")
+        .join("System32");
+    let state = std::env::temp_dir().join(format!("rtk-wad-p7-cargo-state-{nonce}"));
+    let output = Command::new(launcher())
+        .env("PATH", system32)
+        .env("RTK_WAD_STATE_DIR", &state)
+        .env("RTK_WSL_DISTRO", "Ubuntu")
+        .env("RTK_WSL_EXTRA_PATH", &fixture)
+        .env("RTK_WAD_OUTPUT_ADAPTER", "raw")
+        .args(["cargo", "--version"])
+        .output()
+        .expect("Cargo dispatcher starts");
+    let cleanup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "rm", "-rf", "--", &fixture])
+        .status()
+        .expect("temporary WSL Cargo fixture cleanup starts");
+    assert!(cleanup.success(), "temporary WSL Cargo fixture is removed");
+    let _ = std::fs::remove_dir_all(&state);
+
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "cargo 1.99.0-wsl-fixture\n"
+    );
+}
+
+#[test]
+fn dispatches_each_remaining_supported_wsl_only_toolchain_raw() {
+    let _guard = process_contract_guard();
+    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let fixture = format!(
+        "/tmp/rtk-wad-p7-generic-toolchain-{}-{nonce}",
+        std::process::id()
+    );
+    assert!(fixture.starts_with("/tmp/rtk-wad-p7-generic-toolchain-"));
+    let setup = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "sh",
+            "-c",
+            r###"mkdir -p "$1"; for tool in node npm pnpm python python3 pytest java gradle mvn dotnet git; do printf '#!/bin/sh\nprintf "fixture-tool:%%s\\n" "$0"\n' > "$1/$tool"; chmod 755 "$1/$tool"; done"###,
+            "rtk-wad-p7-generic-toolchain-fixture",
+            &fixture,
+        ])
+        .output()
+        .expect("temporary generic WSL toolchain fixture setup starts");
+    assert!(
+        setup.status.success(),
+        "fixture setup stderr: {}",
+        String::from_utf8_lossy(&setup.stderr)
+    );
+
+    let system32 = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .expect("Windows system root is available")
+        .join("System32");
+    let state = std::env::temp_dir().join(format!("rtk-wad-p7-generic-toolchain-state-{nonce}"));
+    for tool in [
+        "node", "npm", "pnpm", "python", "python3", "pytest", "java", "gradle", "mvn", "dotnet",
+        "git",
+    ] {
+        let output = Command::new(launcher())
+            .env("PATH", &system32)
+            .env("RTK_WAD_STATE_DIR", &state)
+            .env("RTK_WSL_DISTRO", "Ubuntu")
+            .env("RTK_WSL_EXTRA_PATH", &fixture)
+            .env("RTK_WAD_OUTPUT_ADAPTER", "raw")
+            .args([tool, "--version"])
+            .output()
+            .unwrap_or_else(|error| panic!("{tool} dispatcher starts: {error}"));
+        assert!(
+            output.status.success(),
+            "{tool} stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("fixture-tool:{fixture}/{tool}\n"),
+            "{tool} must execute the discovered WSL-only binary"
+        );
+    }
+
+    let cleanup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "rm", "-rf", "--", &fixture])
+        .status()
+        .expect("temporary generic WSL toolchain fixture cleanup starts");
+    assert!(
+        cleanup.success(),
+        "temporary generic WSL fixture is removed"
+    );
+    let _ = std::fs::remove_dir_all(&state);
+}
+
+#[test]
+fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
+    let _guard = process_contract_guard();
+    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let fixture = format!("/tmp/rtk-wad-p7-go-contract-{}-{nonce}", std::process::id());
+    assert!(fixture.starts_with("/tmp/rtk-wad-p7-go-contract-"));
+    let setup = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "sh",
+            "-c",
+            r###"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'printf "cwd:%s\n" "$PWD"' 'printf "args:%s|%s\n" "$1" "$2"' 'exit 42' > "$1/go"; chmod 755 "$1/go""###,
+            "rtk-wad-p7-go-contract",
+            &fixture,
+        ])
+        .output()
+        .expect("temporary WSL Go contract fixture setup starts");
+    assert!(setup.status.success());
+
+    let directory = std::env::temp_dir().join(format!(
+        "rtk-wad p7 go cwd {} \u{6f22}\u{5b57}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).expect("temporary Windows worktree is created");
+    let windows_path = directory.to_string_lossy().replace('\\', "/");
+    let (drive, remainder) = windows_path
+        .split_once(':')
+        .expect("temporary worktree has a Windows drive prefix");
+    let expected_cwd = format!("/mnt/{}{}", drive.to_lowercase(), remainder);
+    let system32 = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .expect("Windows system root is available")
+        .join("System32");
+    let state = std::env::temp_dir().join(format!("rtk-wad-p7-go-contract-state-{nonce}"));
+    let literal = "space;and&dollar$HOME\\\u{6f22}\u{5b57}";
+    let configure = |command: &mut Command| {
+        command
+            .env("PATH", &system32)
+            .env("RTK_WAD_STATE_DIR", &state)
+            .env("RTK_WSL_DISTRO", "Ubuntu")
+            .env("RTK_WSL_EXTRA_PATH", &fixture)
+            .env("RTK_WAD_OUTPUT_ADAPTER", "raw")
+            .env_remove("RTK_WAD_NATIVE_RTK_PATH")
+            .env_remove("RTK_WSL_RTK_PATH")
+            .current_dir(&directory);
+    };
+    let mut explain = Command::new(launcher());
+    configure(&mut explain);
+    let explain = explain
+        .args(["--explain-route", "go", "run", literal])
+        .output()
+        .expect("Go route explanation starts");
+    let mut which = Command::new(launcher());
+    configure(&mut which);
+    let which = which
+        .args(["which", "go"])
+        .output()
+        .expect("Go lookup starts");
+    let mut doctor = Command::new(launcher());
+    configure(&mut doctor);
+    let doctor = doctor
+        .args(["doctor", "go"])
+        .output()
+        .expect("Go provider diagnosis starts");
+    let mut execution = Command::new(launcher());
+    configure(&mut execution);
+    let execution = execution
+        .args(["go", "run", literal])
+        .output()
+        .expect("Go dispatcher starts");
+    let mutate = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "sh",
+            "-c",
+            r###"printf '%s\n' '#!/bin/sh' 'printf "go fixture identity changed substantially\\n"' 'exit 42' > "$1/go"; chmod 755 "$1/go""###,
+            "rtk-wad-p7-go-contract-mutate",
+            &fixture,
+        ])
+        .output()
+        .expect("temporary WSL Go fixture mutation starts");
+    assert!(mutate.status.success());
+    let mut which_after_mutation = Command::new(launcher());
+    configure(&mut which_after_mutation);
+    let which_after_mutation = which_after_mutation
+        .args(["which", "go"])
+        .output()
+        .expect("Go lookup after fixture mutation starts");
+    let cleanup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "rm", "-rf", "--", &fixture])
+        .status()
+        .expect("temporary WSL Go contract fixture cleanup starts");
+    assert!(cleanup.success());
+    std::fs::remove_dir_all(&directory).expect("temporary Windows worktree is removed");
+    let _ = std::fs::remove_dir_all(&state);
+
+    assert!(explain.status.success());
+    let explain_stdout = String::from_utf8_lossy(&explain.stdout);
+    assert!(explain_stdout.contains("route=wsl2"));
+    assert!(explain_stdout.contains("output_adapter=raw"));
+    let which_stdout = String::from_utf8_lossy(&which.stdout);
+    assert!(
+        which.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&which.stderr)
+    );
+    assert!(which_stdout.contains("cache=hit"));
+    assert!(which_stdout.contains(&format!("go_path={fixture}/go")));
+    assert!(
+        doctor.status.success(),
+        "doctor stderr: {}",
+        String::from_utf8_lossy(&doctor.stderr)
+    );
+    let doctor_stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(doctor_stdout.contains("tool=go"));
+    assert!(doctor_stdout.contains("inspected_distro=Ubuntu;wsl_version=2"));
+    assert!(doctor_stdout.contains(&format!("go_path={fixture}/go")));
+    assert!(doctor_stdout.contains("candidate_0=WslRaw;distro=Ubuntu;usable=true"));
+    assert!(doctor_stdout.contains(&format!("candidate_0_project_path={expected_cwd}")));
+    assert!(doctor_stdout.contains("diagnosis=candidate 0 is verified"));
+    assert!(which_after_mutation.status.success());
+    assert!(
+        String::from_utf8_lossy(&which_after_mutation.stdout).contains("cache=miss"),
+        "changed WSL binary identity must invalidate the cached discovery: {}",
+        String::from_utf8_lossy(&which_after_mutation.stdout)
+    );
+    assert_eq!(execution.status.code(), Some(42));
+    let execution_stdout = String::from_utf8_lossy(&execution.stdout);
+    assert!(
+        execution_stdout.contains(&format!("cwd:{expected_cwd}")),
+        "expected CWD {expected_cwd}; stdout: {execution_stdout}; stderr: {}",
+        String::from_utf8_lossy(&execution.stderr)
+    );
+    assert!(execution_stdout.contains(&format!("args:run|{literal}")));
+}
+
+#[test]
 fn wad_profile_selects_one_route_and_uses_a_local_gain_ledger() {
     let _guard = process_contract_guard();
     let (launcher, directory) = wad_launcher();
@@ -383,11 +1335,11 @@ fn wad_resolve_verifies_wsl_project_paths_for_windows_providers() {
     std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
 }
 
-fn provider_candidate_index(
+fn available_provider_candidate_index(
     resolution: &serde_json::Value,
     kind: &str,
     distro: Option<&str>,
-) -> usize {
+) -> Option<usize> {
     resolution["candidates"]
         .as_array()
         .expect("provider resolution lists candidates")
@@ -397,11 +1349,10 @@ fn provider_candidate_index(
                 && distro.is_none_or(|distro| candidate["distro"] == distro)
                 && candidate["usable"] == true
         })
-        .expect("requested verified provider candidate is present")
 }
 
 #[test]
-fn wad_provider_exec_runs_each_verified_provider_without_replay() {
+fn wad_provider_exec_runs_each_available_verified_provider_without_replay() {
     let _guard = process_contract_guard();
     let (launcher, directory) = wad_launcher();
     let state = directory.join("state");
@@ -464,68 +1415,77 @@ fn wad_provider_exec_runs_each_verified_provider_without_replay() {
     assert!(resolution.status.success());
     let resolution: serde_json::Value =
         serde_json::from_slice(&resolution.stdout).expect("Git provider resolution is JSON");
-    let wsl_rtk_index = provider_candidate_index(&resolution, "wsl_rtk", Some("Ubuntu"));
-    let wsl_raw_index = provider_candidate_index(&resolution, "wsl_raw", Some("Ubuntu-RTK-WSL1"));
-
-    let wsl_rtk = Command::new(&launcher)
-        .env("RTK_WAD_STATE_DIR", &state)
-        .env("RTK_WSL_DISTRO", "Ubuntu")
-        .args([
-            "provider",
-            "exec",
-            "git",
-            "--candidate",
-            &wsl_rtk_index.to_string(),
-            "--",
-            "--version",
-        ])
-        .output()
-        .expect("WSL RTK provider starts");
-    assert!(wsl_rtk.status.success());
-    assert!(String::from_utf8_lossy(&wsl_rtk.stdout).starts_with("git version "));
-
-    let wsl_raw = Command::new(&launcher)
-        .env("RTK_WAD_STATE_DIR", &state)
-        .env("RTK_WSL_DISTRO", "Ubuntu")
-        .args([
-            "provider",
-            "exec",
-            "git",
-            "--candidate",
-            &wsl_raw_index.to_string(),
-            "--",
-            "--version",
-        ])
-        .output()
-        .expect("WSL raw provider starts");
-    assert!(wsl_raw.status.success());
-    assert!(String::from_utf8_lossy(&wsl_raw.stdout).starts_with("git version "));
-
-    let rejected = Command::new(&launcher)
-        .env("RTK_WAD_STATE_DIR", &state)
-        .env("RTK_WSL_DISTRO", "Ubuntu")
-        .args([
-            "provider",
-            "exec",
-            "git",
-            "--candidate",
-            &wsl_raw_index.to_string(),
-            "--",
-            r"E:\foreign\path",
-        ])
-        .output()
-        .expect("foreign-path rejection starts");
-    assert!(!rejected.status.success());
     assert!(
-        String::from_utf8_lossy(&rejected.stderr)
-            .contains("does not translate foreign absolute arguments")
+        available_provider_candidate_index(&resolution, "windows_raw", None).is_some(),
+        "a missing WSL/RTK fixture must leave the verified Windows raw provider usable"
     );
+    if let Some(wsl_rtk_index) =
+        available_provider_candidate_index(&resolution, "wsl_rtk", Some("Ubuntu"))
+    {
+        let wsl_rtk = Command::new(&launcher)
+            .env("RTK_WAD_STATE_DIR", &state)
+            .env("RTK_WSL_DISTRO", "Ubuntu")
+            .args([
+                "provider",
+                "exec",
+                "git",
+                "--candidate",
+                &wsl_rtk_index.to_string(),
+                "--",
+                "--version",
+            ])
+            .output()
+            .expect("WSL RTK provider starts");
+        assert!(wsl_rtk.status.success());
+        assert!(String::from_utf8_lossy(&wsl_rtk.stdout).starts_with("git version "));
+    }
+
+    if let Some(wsl_raw_index) =
+        available_provider_candidate_index(&resolution, "wsl_raw", Some("Ubuntu-RTK-WSL1"))
+    {
+        let wsl_raw = Command::new(&launcher)
+            .env("RTK_WAD_STATE_DIR", &state)
+            .env("RTK_WSL_DISTRO", "Ubuntu")
+            .args([
+                "provider",
+                "exec",
+                "git",
+                "--candidate",
+                &wsl_raw_index.to_string(),
+                "--",
+                "--version",
+            ])
+            .output()
+            .expect("WSL raw provider starts");
+        assert!(wsl_raw.status.success());
+        assert!(String::from_utf8_lossy(&wsl_raw.stdout).starts_with("git version "));
+
+        let rejected = Command::new(&launcher)
+            .env("RTK_WAD_STATE_DIR", &state)
+            .env("RTK_WSL_DISTRO", "Ubuntu")
+            .args([
+                "provider",
+                "exec",
+                "git",
+                "--candidate",
+                &wsl_raw_index.to_string(),
+                "--",
+                r"E:\foreign\path",
+            ])
+            .output()
+            .expect("foreign-path rejection starts");
+        assert!(!rejected.status.success());
+        assert!(
+            String::from_utf8_lossy(&rejected.stderr)
+                .contains("does not translate foreign absolute arguments")
+        );
+    }
 
     std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
 }
 
 #[test]
-fn wad_surface_matches_the_live_wsl_rtk_command_inventory() {
+fn wad_surface_matches_the_live_wsl_rtk_command_inventory_when_provider_is_available() {
     let _guard = process_contract_guard();
     let (launcher, directory) = wad_launcher();
     let surface = Command::new(&launcher)
@@ -554,7 +1514,10 @@ fn wad_surface_matches_the_live_wsl_rtk_command_inventory() {
         .args(["-d", "Ubuntu", "--exec", "/usr/local/bin/rtk", "--help"])
         .output()
         .expect("live WSL RTK help starts");
-    assert!(help.status.success());
+    if !help.status.success() {
+        std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+        return;
+    }
     let live_commands = String::from_utf8_lossy(&help.stdout)
         .lines()
         .filter_map(|line| {
@@ -895,4 +1858,52 @@ fn ctrl_break_cancels_from_a_temp_windows_worktree() {
             Err(error) => panic!("temporary Windows worktree remains locked: {error}"),
         }
     }
+}
+
+#[test]
+fn ctrl_break_cancels_a_raw_windows_node_child() {
+    let _guard = process_contract_guard();
+    let ready_file = std::env::temp_dir().join(format!(
+        "rtk-wad-p7-raw-node-ready-{}-{}",
+        std::process::id(),
+        WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let node_program =
+        "require('fs').writeFileSync(process.env.P7_READY, 'ready'); setInterval(() => {}, 1000)";
+    let mut child = Command::new(launcher())
+        .env("RTK_WAD_OUTPUT_ADAPTER", "raw")
+        .env("P7_READY", &ready_file)
+        .args(["node", "-e", node_program])
+        .creation_flags(CREATE_NEW_PROCESS_GROUP)
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("raw Windows Node launcher starts");
+    let ready_deadline = Instant::now() + Duration::from_secs(20);
+    while !ready_file.exists() {
+        assert!(
+            Instant::now() < ready_deadline,
+            "raw Windows Node child did not become ready"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
+    assert_ne!(sent, 0, "failed to send CTRL_BREAK_EVENT to raw launcher");
+    let cancelled = Instant::now();
+    let status = child.wait().expect("interrupted raw launcher exits");
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("raw launcher stderr is piped")
+        .read_to_string(&mut stderr)
+        .expect("raw launcher stderr reads");
+    assert!(
+        cancelled.elapsed() < Duration::from_secs(5),
+        "raw launcher exceeded the cancellation deadline: stderr={stderr}"
+    );
+    assert!(
+        !status.success(),
+        "raw launcher unexpectedly succeeded after Ctrl+Break: stderr={stderr}"
+    );
+    std::fs::remove_file(&ready_file).expect("temporary raw Node readiness file is removed");
 }
