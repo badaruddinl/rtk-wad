@@ -2,8 +2,6 @@
 param(
     [string]$Destination = (Join-Path $env:USERPROFILE ".local\bin"),
     [string]$Source = (Join-Path $PSScriptRoot "..\target\release\rtk-wad.exe"),
-    [ValidateSet("rtk-wad", "rtk-wsl", "rtk-wsl1")]
-    [string]$CommandName = "rtk-wad",
     [string]$TokenizerRoot,
     [string]$TokenizerPython,
     [switch]$InstallTokenizer,
@@ -16,15 +14,12 @@ param(
 $ErrorActionPreference = "Stop"
 $source = (Resolve-Path -LiteralPath $source).Path
 $targetDirectory = [System.IO.Path]::GetFullPath($Destination)
-$target = Join-Path $targetDirectory "$CommandName.exe"
-$temporary = Join-Path $targetDirectory ".$CommandName.exe.$PID.new"
+$target = Join-Path $targetDirectory "rtk-wad.exe"
+$temporary = Join-Path $targetDirectory ".rtk-wad.exe.$PID.new"
 $tokenizerInstaller = Join-Path $PSScriptRoot "install-tokenizer.ps1"
 
 if ($InstallTokenizer -and $SkipTokenizer) {
     throw "Choose either -InstallTokenizer or the legacy -SkipTokenizer switch, not both."
-}
-if ($CommandName -ne "rtk-wad" -and $InstallTokenizer) {
-    throw "The optional benchmark tokenizer is supported only by the canonical rtk-wad install."
 }
 if (-not $InstallTokenizer -and ($TokenizerRoot -or $TokenizerPython -or $InstallPython -or $ConfirmPythonInstall)) {
     throw "Tokenizer options require -InstallTokenizer. The core WAD launcher has no Python or tokenizer dependency."
@@ -34,7 +29,7 @@ if ($SkipTokenizer) {
 }
 
 New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
-if ($CommandName -eq "rtk-wad" -and $InstallTokenizer) {
+if ($InstallTokenizer) {
     $tokenizerArguments = @{
         Python = $TokenizerPython
         InstallPython = $InstallPython

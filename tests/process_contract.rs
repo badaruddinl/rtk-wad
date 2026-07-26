@@ -24,12 +24,13 @@ unsafe extern "system" {
 }
 
 fn launcher() -> &'static str {
-    env!("CARGO_BIN_EXE_rtk-wsl")
+    env!("CARGO_BIN_EXE_rtk-wad")
 }
 
 fn command(program: &str) -> Command {
     let mut command = Command::new(launcher());
     command.env("RTK_WSL_RTK_PATH", program);
+    command.env("RTK_WAD_ROUTE", "wsl2");
     if let Ok(distro) = std::env::var("RTK_WSL1_TEST_DISTRO") {
         command
             .env("RTK_WSL_BACKEND", "wsl1")
@@ -106,7 +107,7 @@ fn supports_stdin_for_a_simple_interactive_command() {
 fn maps_a_temp_windows_worktree_to_the_wsl_current_directory() {
     let _guard = process_contract_guard();
     let directory = std::env::temp_dir().join(format!(
-        "rtk-wsl-windows-cwd-contract-{}",
+        "rtk-wad-windows-cwd-contract-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&directory).expect("temporary Windows worktree is created");
@@ -115,7 +116,8 @@ fn maps_a_temp_windows_worktree_to_the_wsl_current_directory() {
         .split_once(':')
         .expect("temporary worktree has a Windows drive prefix");
     let expected = format!("/mnt/{}{}", drive.to_lowercase(), remainder);
-    let output = command("/bin/pwd")
+    let output = command("/bin/sh")
+        .args(["-c", "pwd"])
         .current_dir(&directory)
         .output()
         .expect("launcher starts from the temporary Windows worktree");
@@ -155,26 +157,6 @@ fn routes_git_from_a_windows_worktree_to_native_git_with_structured_arguments() 
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).starts_with("git version "));
-}
-
-#[test]
-fn bridge_info_reports_the_selected_default_distribution() {
-    let _guard = process_contract_guard();
-    let output = Command::new(launcher())
-        .arg("--bridge-info")
-        .output()
-        .expect("bridge diagnostics start");
-    assert!(
-        output.status.success(),
-        "stdout: {}; stderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("bridge=rtk-wsl"));
-    assert!(stdout.contains("backend=auto"));
-    assert!(stdout.contains("distro=Ubuntu"));
-    assert!(stdout.contains("detected_wsl_version=2"));
 }
 
 #[test]
@@ -752,7 +734,7 @@ fn provisioned_wsl1_bridge_preserves_the_process_contract_when_requested() {
 #[test]
 fn ctrl_break_releases_the_global_lock_for_waiting_children() {
     let _guard = process_contract_guard();
-    let ready_file = std::env::temp_dir().join(format!("rtk-wsl-ready-{}", std::process::id()));
+    let ready_file = std::env::temp_dir().join(format!("rtk-wad-ready-{}", std::process::id()));
     let _ = std::fs::remove_file(&ready_file);
     let mut first = command("/bin/sh")
         .args(["-c", "sleep 30"])
@@ -862,7 +844,7 @@ fn ctrl_break_releases_the_global_lock_for_waiting_children() {
 fn ctrl_break_cancels_from_a_temp_windows_worktree() {
     let _guard = process_contract_guard();
     let directory = std::env::temp_dir().join(format!(
-        "rtk-wsl-windows-cancel-contract-{}",
+        "rtk-wad-windows-cancel-contract-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&directory).expect("temporary Windows worktree is created");

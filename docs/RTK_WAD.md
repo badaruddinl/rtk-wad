@@ -4,16 +4,11 @@
 dispatcher; it is not a shell wrapper and does not stringify or re-parse the
 arguments it receives.
 
-## Profiles
+## Canonical command
 
-| Command | Contract |
-| --- | --- |
-| `rtk-wad` | Adaptive Windows dispatcher. |
-| `rtk-wsl` | Compatibility launcher that keeps the original WSL-oriented behavior. |
-| `rtk-wsl1` | Explicit isolated WSL1 launcher. |
-
-The executable name chooses a profile. Environment variables still override the
-explicit WSL profile configuration where documented.
+`rtk-wad` is the only executable, installer target, and supported command
+surface. WSL1 and WSL2 remain explicit routes of that command; they are not
+separate binaries or compatibility aliases.
 
 ## Route selection
 

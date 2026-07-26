@@ -24,9 +24,8 @@ provider. It preserves arguments as structured process arguments—never by
 rebuilding a shell command string—and keeps a command native when RTK or WSL
 does not provide verified local value.
 
-> **Stable baseline.** The current release is `v0.2.1`. The canonical
-> repository, package, and executable are `rtk-wad`. `rtk-wsl` and `rtk-wsl1`
-> remain compatibility aliases for existing local integrations.
+> **Stable baseline.** The current release is `v0.3.0`. The repository,
+> package, installer, and executable are all `rtk-wad`.
 
 ## Why RTK-WAD
 
@@ -54,21 +53,21 @@ install a language runtime or tool automatically.
 
 ## Download the verified Windows binary
 
-The stable Windows x86_64 archive contains both `rtk-wad.exe` and the
-`rtk-wsl.exe` compatibility alias. It is built from the immutable `v0.2.1` tag,
+The stable Windows x86_64 archive contains `rtk-wad.exe`. It is built from the
+immutable `v0.3.0` tag,
 published with a SHA-256 sidecar, and accompanied by a GitHub build-provenance
 attestation. It is not Authenticode-signed; see [release
 provenance](docs/RELEASE_PROVENANCE.md) for the explicit trust boundary.
 
-- [Download the v0.2.1 Windows archive](https://github.com/badaruddinl/rtk-wad/releases/download/v0.2.1/rtk-wad-v0.2.1-windows-x86_64.zip)
-- [Download its SHA-256 sidecar](https://github.com/badaruddinl/rtk-wad/releases/download/v0.2.1/rtk-wad-v0.2.1-windows-x86_64.zip.sha256)
-- [Open the v0.2.1 release record](https://github.com/badaruddinl/rtk-wad/releases/tag/v0.2.1)
+- [Download the v0.3.0 Windows archive](https://github.com/badaruddinl/rtk-wad/releases/download/v0.3.0/rtk-wad-v0.3.0-windows-x86_64.zip)
+- [Download its SHA-256 sidecar](https://github.com/badaruddinl/rtk-wad/releases/download/v0.3.0/rtk-wad-v0.3.0-windows-x86_64.zip.sha256)
+- [Open the v0.3.0 release record](https://github.com/badaruddinl/rtk-wad/releases/tag/v0.3.0)
 
 Verify the archive after downloading it:
 
 ```powershell
-Get-FileHash .\rtk-wad-v0.2.1-windows-x86_64.zip -Algorithm SHA256
-Get-Content .\rtk-wad-v0.2.1-windows-x86_64.zip.sha256
+Get-FileHash .\rtk-wad-v0.3.0-windows-x86_64.zip -Algorithm SHA256
+Get-Content .\rtk-wad-v0.3.0-windows-x86_64.zip.sha256
 ```
 
 Every stable release also requires successful hosted quality gates and a

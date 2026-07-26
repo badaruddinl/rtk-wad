@@ -38,8 +38,7 @@ jobs:
           $dist = 'dist'
           New-Item -ItemType Directory -Path $dist -Force | Out-Null
           Copy-Item target\release\rtk-wad.exe $dist\rtk-wad.exe
-          Copy-Item target\release\rtk-wsl.exe $dist\rtk-wsl.exe
-          Compress-Archive -Path $dist\rtk-wad.exe,$dist\rtk-wsl.exe -DestinationPath "$dist\rtk-wad-${{ inputs.tag }}-windows-x86_64.zip" -Force
+          Compress-Archive -Path $dist\rtk-wad.exe -DestinationPath "$dist\rtk-wad-${{ inputs.tag }}-windows-x86_64.zip" -Force
           Get-FileHash "$dist\rtk-wad-${{ inputs.tag }}-windows-x86_64.zip" -Algorithm SHA256 | ForEach-Object { $_.Hash + '  ' + $_.Path } | Set-Content "$dist\rtk-wad-${{ inputs.tag }}-windows-x86_64.zip.sha256"
 
       - name: Attest release archive provenance

@@ -6,9 +6,9 @@ SHA-256 sidecar, publishes the assets, and creates a GitHub build provenance
 attestation for the archive. It is manual so an ordinary branch build can never
 publish an artifact.
 
-For `v0.2.1`, the published archive is named
-`rtk-wad-v0.2.1-windows-x86_64.zip`; it contains `rtk-wad.exe` and the
-`rtk-wsl.exe` compatibility alias. The release page, SHA-256 sidecar, and
+For `v0.3.0`, the published archive is named
+`rtk-wad-v0.3.0-windows-x86_64.zip`; it contains only `rtk-wad.exe`. The
+release page, SHA-256 sidecar, and
 attestation are the authoritative distribution record. A source branch or an
 untagged workflow artifact is not a stable binary release.
 

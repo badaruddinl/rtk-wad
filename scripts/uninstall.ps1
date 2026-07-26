@@ -1,14 +1,12 @@
 [CmdletBinding()]
 param(
     [string]$Destination = (Join-Path $env:USERPROFILE ".local\bin"),
-    [ValidateSet("rtk-wad", "rtk-wsl", "rtk-wsl1")]
-    [string]$CommandName = "rtk-wad",
     [switch]$RestorePrevious
 )
 
 $ErrorActionPreference = "Stop"
 $targetDirectory = [System.IO.Path]::GetFullPath($Destination)
-$target = Join-Path $targetDirectory "$CommandName.exe"
+$target = Join-Path $targetDirectory "rtk-wad.exe"
 $backup = "$target.previous.exe"
 
 if (-not (Test-Path -LiteralPath $target)) {
@@ -24,9 +22,5 @@ if ($RestorePrevious) {
     Write-Output "Restored $target from $backup"
 } else {
     Remove-Item -LiteralPath $target
-    if ($CommandName -eq "rtk-wsl") {
-        Write-Output "Removed $target. The retained rtk-wsl.cmd wrapper is now the fallback command."
-    } else {
-        Write-Output "Removed $target."
-    }
+    Write-Output "Removed $target."
 }

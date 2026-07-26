@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$DistroName = "Ubuntu-RTK-WSL1",
-    [string]$InstallLocation = (Join-Path $env:LOCALAPPDATA "rtk-wsl\Ubuntu-RTK-WSL1"),
+    [string]$InstallLocation = (Join-Path $env:LOCALAPPDATA "rtk-wad\Ubuntu-RTK-WSL1"),
     [string]$ImageDirectory = "E:\luthfi\wsl\images",
     [string]$LinuxUser = "rtk",
     [string]$RtkVersion = "0.43.0",
@@ -147,7 +147,7 @@ home_dir=$(/usr/bin/getent passwd "$user_name" | /usr/bin/cut -d: -f6)
 printf '[automount]\nenabled=true\nroot=/mnt/\noptions=metadata,umask=22,fmask=11\n\n[user]\ndefault=%s\n' "$user_name" > /etc/wsl.conf
 '@
 
-& wsl.exe -d $DistroName -u root --exec /bin/sh -c $provisionScript "rtk-wsl1-provision" $LinuxUser $rtkArchiveWsl $ripgrepArchiveWsl $ripgrepEntry
+& wsl.exe -d $DistroName -u root --exec /bin/sh -c $provisionScript "rtk-wad-wsl1-provision" $LinuxUser $rtkArchiveWsl $ripgrepArchiveWsl $ripgrepEntry
 if ($LASTEXITCODE -ne 0) {
     throw "WSL 1 distro provisioning failed with exit code $LASTEXITCODE."
 }
@@ -182,4 +182,4 @@ Write-Output "user=$actualUser"
 Write-Output "home=/home/$LinuxUser"
 Write-Output $rtkVersionOutput
 Write-Output $ripgrepVersionOutput
-Write-Output "Install the bridge alias with: .\scripts\install.ps1 -CommandName rtk-wsl1"
+Write-Output "Use the provisioned route with: rtk-wad --route wsl1 <command>"

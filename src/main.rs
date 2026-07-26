@@ -18,10 +18,9 @@ use metrics::{TokenTotals, WadMetrics, wad_data_root};
 
 const DEFAULT_DISTRO: &str = "Ubuntu";
 const DEFAULT_WSL1_DISTRO: &str = "Ubuntu-RTK-WSL1";
-const DEFAULT_LOCK_PATH: &str = "/tmp/rtk-wsl.lock";
+const DEFAULT_LOCK_PATH: &str = "/tmp/rtk-wad.lock";
 const DEFAULT_LOCK_WAIT_SECONDS: &str = "120";
 const DEFAULT_GIT_MODE: &str = "auto";
-const BRIDGE_INFO_ARGUMENT: &str = "--bridge-info";
 const ADAPTER_INFO_ARGUMENT: &str = "--adapter-info";
 const EXPLAIN_ROUTE_ARGUMENT: &str = "--explain-route";
 const POLICY_ARGUMENT: &str = "policy";
@@ -74,7 +73,7 @@ exec 9>"$lock_path"
 remaining=$((lock_wait * 10))
 while ! /usr/bin/flock -n 9; do
     if [ "$remaining" -le 0 ]; then
-        printf 'rtk-wsl: timed out waiting for lock %s\n' "$lock_path" >&2
+        printf 'rtk-wad: timed out waiting for lock %s\n' "$lock_path" >&2
         exit 1
     fi
     remaining=$((remaining - 1))
@@ -136,16 +135,12 @@ enum WslBackend {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecutableProfile {
-    Legacy,
-    Wsl1,
     Wad,
 }
 
 impl ExecutableProfile {
     fn as_str(self) -> &'static str {
         match self {
-            Self::Legacy => "rtk-wsl",
-            Self::Wsl1 => "rtk-wsl1",
             Self::Wad => "rtk-wad",
         }
     }
@@ -235,44 +230,13 @@ struct Config {
 
 impl Config {
     fn from_env() -> Result<Self, String> {
-        let executable = env::current_exe().ok().and_then(|path| {
-            path.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        });
-        Self::from_lookup_with_executable(|name| env::var(name).ok(), executable.as_deref())
+        Self::from_lookup(|name| env::var(name).ok())
     }
 
-    #[cfg(test)]
     fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
-        Self::from_lookup_with_executable(lookup, None)
-    }
-
-    fn from_lookup_with_executable(
-        lookup: impl Fn(&str) -> Option<String>,
-        executable: Option<&str>,
-    ) -> Result<Self, String> {
-        let profile = match executable {
-            Some(name)
-                if name.eq_ignore_ascii_case("rtk-wsl1")
-                    || name.eq_ignore_ascii_case("rtk-wsl1.exe") =>
-            {
-                ExecutableProfile::Wsl1
-            }
-            Some(name)
-                if name.eq_ignore_ascii_case("rtk-wad")
-                    || name.eq_ignore_ascii_case("rtk-wad.exe") =>
-            {
-                ExecutableProfile::Wad
-            }
-            _ => ExecutableProfile::Legacy,
-        };
-        let executable_backend = if profile == ExecutableProfile::Wsl1 {
-            WslBackend::Wsl1
-        } else {
-            WslBackend::Auto
-        };
+        let profile = ExecutableProfile::Wad;
         let backend = match lookup("RTK_WSL_BACKEND")
-            .unwrap_or_else(|| executable_backend.as_str().to_owned())
+            .unwrap_or_else(|| WslBackend::Auto.as_str().to_owned())
             .as_str()
         {
             "auto" => WslBackend::Auto,
@@ -364,6 +328,7 @@ fn decode_wsl_output(bytes: &[u8]) -> String {
     }
 }
 
+#[cfg(test)]
 fn distro_version_from_list(output: &str, distro: &str) -> Option<u8> {
     output.lines().find_map(|line| {
         let trimmed = line.trim().trim_start_matches('*').trim_start();
@@ -375,72 +340,9 @@ fn distro_version_from_list(output: &str, distro: &str) -> Option<u8> {
     })
 }
 
-fn bridge_info(config: &Config) -> ExitCode {
-    let output = match Command::new("wsl.exe")
-        .args(["--list", "--verbose"])
-        .output()
-    {
-        Ok(output) if output.status.success() => output,
-        Ok(output) => {
-            eprintln!(
-                "rtk-wsl: unable to inspect WSL distributions: {}",
-                decode_wsl_output(&output.stderr).trim()
-            );
-            return ExitCode::FAILURE;
-        }
-        Err(error) => {
-            eprintln!("rtk-wsl: unable to start wsl.exe for bridge diagnostics: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let list = decode_wsl_output(&output.stdout);
-    let version = distro_version_from_list(&list, &config.distro);
-    println!("bridge=rtk-wsl");
-    println!("backend={}", config.backend.as_str());
-    println!("distro={}", config.distro);
-    println!(
-        "detected_wsl_version={}",
-        version.map_or_else(|| "missing".to_owned(), |value| value.to_string())
-    );
-    println!(
-        "git_mode={}",
-        match config.git_mode {
-            GitMode::Auto => "auto",
-            GitMode::Wsl => "wsl",
-            GitMode::Native => "native",
-        }
-    );
-
-    let expected = match config.backend {
-        WslBackend::Auto => return version.map_or(ExitCode::FAILURE, |_| ExitCode::SUCCESS),
-        WslBackend::Wsl1 => 1,
-        WslBackend::Wsl2 => 2,
-    };
-    match version {
-        Some(actual) if actual == expected => ExitCode::SUCCESS,
-        Some(actual) => {
-            eprintln!(
-                "rtk-wsl: configured {} backend requires WSL {}, but {} is WSL {}",
-                config.backend.as_str(),
-                expected,
-                config.distro,
-                actual
-            );
-            ExitCode::FAILURE
-        }
-        None => {
-            eprintln!(
-                "rtk-wsl: configured distro {} is not registered",
-                config.distro
-            );
-            ExitCode::FAILURE
-        }
-    }
-}
-
 fn trace(message: impl AsRef<str>) {
     if env::var("RTK_WSL_TRACE").as_deref() == Ok("1") {
-        eprintln!("rtk-wsl: trace: {}", message.as_ref());
+        eprintln!("rtk-wad: trace: {}", message.as_ref());
     }
 }
 
@@ -2463,6 +2365,7 @@ fn is_wsl_path(value: &OsString) -> bool {
     value.to_string_lossy().starts_with('/')
 }
 
+#[cfg(test)]
 fn git_uses_wsl_directory(arguments: &[OsString]) -> bool {
     arguments.windows(2).any(|pair| {
         (pair[0] == "-C" || pair[0] == "--git-dir" || pair[0] == "--work-tree")
@@ -2470,6 +2373,7 @@ fn git_uses_wsl_directory(arguments: &[OsString]) -> bool {
     })
 }
 
+#[cfg(test)]
 fn should_use_native_git(
     arguments: &[OsString],
     config: &Config,
@@ -2525,6 +2429,7 @@ fn test_ready_wsl_path() -> Option<String> {
         .and_then(|path| windows_path_to_wsl_path(&path))
 }
 
+#[cfg(test)]
 fn rtk_arguments(arguments: Vec<OsString>, config: &Config, cancel_token: &str) -> Vec<OsString> {
     rtk_arguments_with_metrics(arguments, config, cancel_token, None)
 }
@@ -2544,7 +2449,7 @@ fn rtk_arguments_with_metrics(
         OsString::from("/bin/sh"),
         OsString::from("-c"),
         OsString::from(LAUNCH_SCRIPT),
-        OsString::from("rtk-wsl"),
+        OsString::from("rtk-wad"),
         OsString::from(&config.lock_wait),
         OsString::from(&config.lock_path),
         OsString::from(config.rtk_path.as_deref().unwrap_or("")),
@@ -2557,6 +2462,7 @@ fn rtk_arguments_with_metrics(
     command
 }
 
+#[cfg(test)]
 fn wsl1_rtk_arguments(arguments: Vec<OsString>, config: &Config) -> Vec<OsString> {
     wsl1_rtk_arguments_with_metrics(arguments, config, None)
 }
@@ -2573,7 +2479,7 @@ fn wsl1_rtk_arguments_with_metrics(
         OsString::from("/bin/sh"),
         OsString::from("-c"),
         OsString::from(WSL1_LAUNCH_SCRIPT),
-        OsString::from("rtk-wsl1"),
+        OsString::from("rtk-wad-wsl1"),
         OsString::from(config.rtk_path.as_deref().unwrap_or("")),
         OsString::from(metrics_db_path.unwrap_or("")),
         OsString::from(config.extra_path.as_deref().unwrap_or("")),
@@ -2584,7 +2490,7 @@ fn wsl1_rtk_arguments_with_metrics(
 }
 
 fn cancel_token() -> String {
-    format!("/tmp/rtk-wsl-{}.cancel", std::process::id())
+    format!("/tmp/rtk-wad-{}.cancel", std::process::id())
 }
 
 fn cancel_arguments(config: &Config, token: &str) -> Vec<OsString> {
@@ -2597,7 +2503,7 @@ fn cancel_arguments(config: &Config, token: &str) -> Vec<OsString> {
         OsString::from("/bin/sh"),
         OsString::from("-c"),
         OsString::from(CANCEL_SCRIPT),
-        OsString::from("rtk-wsl-cancel"),
+        OsString::from("rtk-wad-cancel"),
         OsString::from(token),
     ]);
     command
@@ -2658,7 +2564,7 @@ mod windows_lock {
     const WAIT_OBJECT_0: u32 = 0;
     const WAIT_ABANDONED: u32 = 0x0000_0080;
     const WAIT_TIMEOUT: u32 = 0x0000_0102;
-    const MUTEX_NAME: &str = r"Local\rtk-wsl-wsl1-global-lock";
+    const MUTEX_NAME: &str = r"Local\rtk-wad-wsl1-global-lock";
 
     unsafe extern "system" {
         fn CreateMutexW(
@@ -3105,7 +3011,7 @@ fn print_adapter_info(config: &Config) {
     println!("environment={}", config.environment.as_str());
     println!("native_rtk_path={}", config.native_rtk_path);
     println!("metrics=local-aggregate-only");
-    println!("compatibility_aliases=rtk-wsl,rtk-wsl1");
+    println!("command=rtk-wad");
 }
 
 fn run_native_rtk(
@@ -3753,73 +3659,11 @@ fn main() -> ExitCode {
     let config = match Config::from_env() {
         Ok(config) => config,
         Err(error) => {
-            eprintln!("rtk-wsl: invalid configuration: {error}");
+            eprintln!("rtk-wad: invalid configuration: {error}");
             return ExitCode::FAILURE;
         }
     };
-    if config.profile == ExecutableProfile::Wad {
-        return wad_main(arguments, &config);
-    }
-    if arguments.len() == 1 && arguments[0] == BRIDGE_INFO_ARGUMENT {
-        return bridge_info(&config);
-    }
-    let current_directory = env::current_dir().ok();
-    let use_native_git = should_use_native_git(
-        &arguments,
-        &config,
-        current_directory.as_deref().and_then(|path| path.to_str()),
-    );
-    let use_native_wsl1_bridge = !use_native_git && config.backend == WslBackend::Wsl1;
-    if !use_native_git && !console::install() {
-        eprintln!("rtk-wsl: unable to register the Windows console cancellation handler");
-        return ExitCode::FAILURE;
-    }
-    let _wsl1_lock = if use_native_wsl1_bridge {
-        trace("waiting for the Windows WSL1 mutex");
-        match windows_lock::acquire(&config.lock_wait) {
-            Ok(guard) => {
-                trace("acquired the Windows WSL1 mutex");
-                Some(guard)
-            }
-            Err(error) => {
-                eprintln!("rtk-wsl: {error}");
-                return ExitCode::FAILURE;
-            }
-        }
-    } else {
-        None
-    };
-    let token = cancel_token();
-    let result = if use_native_git {
-        Command::new("git.exe")
-            .args(arguments.iter().skip(1))
-            .spawn()
-            .and_then(|mut child| child.wait())
-    } else if use_native_wsl1_bridge {
-        wsl1_process(wsl1_rtk_arguments(arguments, &config))
-            .spawn()
-            .and_then(|child| {
-                trace(format!("started WSL1 wsl.exe process {}", child.id()));
-                let status = wait_for_wsl1_child(child, &config);
-                trace("WSL1 wsl.exe process exited");
-                status
-            })
-    } else {
-        wsl_process(rtk_arguments(arguments, &config, &token))
-            .spawn()
-            .and_then(|child| wait_for_wsl_child(child, &config, &token))
-    };
-    if !use_native_git {
-        console::uninstall();
-    }
-    match result {
-        Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
-        Err(error) => {
-            eprintln!("rtk-wsl: unable to start wsl.exe: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    wad_main(arguments, &config)
 }
 
 #[cfg(test)]
@@ -3849,8 +3693,12 @@ mod tests {
     }
 
     #[test]
-    fn wsl1_launch_uses_the_windows_mutex_without_redundant_linux_locking() {
-        let config = Config::from_lookup_with_executable(|_| None, Some("rtk-wsl1.exe")).unwrap();
+    fn explicit_wsl1_route_uses_the_windows_mutex_without_redundant_linux_locking() {
+        let config = Config::from_lookup(|name| match name {
+            "RTK_WSL_BACKEND" => Some("wsl1".to_owned()),
+            _ => None,
+        })
+        .expect("explicit WSL1 configuration is valid");
         let command = wsl1_rtk_arguments(
             vec![
                 OsString::from("proxy"),
@@ -4016,27 +3864,27 @@ mod tests {
     }
 
     #[test]
-    fn wsl1_alias_selects_the_isolated_distro_without_affecting_the_default_bridge() {
+    fn explicit_wsl1_backend_selects_the_isolated_distro_without_affecting_default_wad() {
         let default = default_config();
         assert_eq!(default.backend, WslBackend::Auto);
         assert_eq!(default.distro, DEFAULT_DISTRO);
 
-        let wsl1 = Config::from_lookup_with_executable(|_| None, Some("rtk-wsl1.exe"))
-            .expect("WSL1 alias configuration is valid");
+        let wsl1 = Config::from_lookup(|name| match name {
+            "RTK_WSL_BACKEND" => Some("wsl1".to_owned()),
+            _ => None,
+        })
+        .expect("explicit WSL1 configuration is valid");
         assert_eq!(wsl1.backend, WslBackend::Wsl1);
         assert_eq!(wsl1.distro, DEFAULT_WSL1_DISTRO);
     }
 
     #[test]
-    fn explicit_backend_and_distro_override_alias_defaults() {
-        let config = Config::from_lookup_with_executable(
-            |name| match name {
-                "RTK_WSL_BACKEND" => Some("wsl2".to_owned()),
-                "RTK_WSL_DISTRO" => Some("Ubuntu-24.04".to_owned()),
-                _ => None,
-            },
-            Some("rtk-wsl1.exe"),
-        )
+    fn explicit_backend_and_distro_select_the_wad_wsl_provider() {
+        let config = Config::from_lookup(|name| match name {
+            "RTK_WSL_BACKEND" => Some("wsl2".to_owned()),
+            "RTK_WSL_DISTRO" => Some("Ubuntu-24.04".to_owned()),
+            _ => None,
+        })
         .expect("explicit backend configuration is valid");
         assert_eq!(config.backend, WslBackend::Wsl2);
         assert_eq!(config.distro, "Ubuntu-24.04");
@@ -4049,16 +3897,11 @@ mod tests {
     }
 
     #[test]
-    fn wad_alias_selects_adaptive_profile_without_changing_legacy_defaults() {
-        let wad = Config::from_lookup_with_executable(|_| None, Some("rtk-wad.exe"))
-            .expect("WAD alias configuration is valid");
+    fn canonical_wad_configuration_is_adaptive_by_default() {
+        let wad = default_config();
         assert_eq!(wad.profile, ExecutableProfile::Wad);
         assert_eq!(wad.backend, WslBackend::Auto);
         assert_eq!(wad.wad_route, Route::Auto);
-
-        let legacy = Config::from_lookup_with_executable(|_| None, Some("rtk-wsl.exe"))
-            .expect("legacy configuration is valid");
-        assert_eq!(legacy.profile, ExecutableProfile::Legacy);
     }
 
     #[test]
