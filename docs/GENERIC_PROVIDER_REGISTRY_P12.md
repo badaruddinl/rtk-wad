@@ -3,7 +3,7 @@
 ## Scope
 
 P12 replaces the Go-only discovery boundary with a generic, local-first
-provider registry. `rtk-wad resolve <tool>` and `rtk-wad doctor <tool>` now
+provider registry. `xuva resolve <tool>` and `xuva doctor <tool>` now
 accept a validated executable name and inspect existing Windows and eligible
 WSL providers without installing, starting a shell command, or changing route
 selection.
@@ -41,9 +41,9 @@ letters, digits, `.`, `_`, or `-`. Paths, whitespace, shell metacharacters,
 and non-ASCII names are rejected before Windows or WSL discovery begins.
 
 ```powershell
-rtk-wad resolve python --json
-rtk-wad doctor cargo --refresh
-rtk-wad resolve "tool;not-run"
+xuva resolve python --json
+xuva doctor cargo --refresh
+xuva resolve "tool;not-run"
 ```
 
 The first two commands inspect providers. The third command fails validation;

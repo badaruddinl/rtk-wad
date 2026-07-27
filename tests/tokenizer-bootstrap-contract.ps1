@@ -6,7 +6,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$root = Join-Path ([System.IO.Path]::GetTempPath()) ("rtk-wad-tokenizer-bootstrap-" + [guid]::NewGuid())
+$root = Join-Path ([System.IO.Path]::GetTempPath()) ("xuva-tokenizer-bootstrap-" + [guid]::NewGuid())
 try {
     $plan = & $Installer -PlanPythonBootstrap | ConvertFrom-Json
     if ($plan.package -ne "Python.Python.3.12" -or $plan.source -ne "winget") {

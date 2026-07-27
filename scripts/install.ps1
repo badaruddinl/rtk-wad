@@ -1,21 +1,22 @@
 [CmdletBinding()]
 param(
     [string]$Destination = (Join-Path $env:USERPROFILE ".local\bin"),
-    [string]$Source = (Join-Path $PSScriptRoot "..\target\release\rtk-wad.exe"),
+    [string]$Source = (Join-Path $PSScriptRoot "..\target\release\xuva.exe"),
     [string]$TokenizerRoot,
     [string]$TokenizerPython,
     [switch]$InstallTokenizer,
     [switch]$InstallPython,
     [switch]$ConfirmPythonInstall,
     [switch]$SkipTokenizer,
+    [switch]$SkipProviderScan,
     [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
 $source = (Resolve-Path -LiteralPath $source).Path
 $targetDirectory = [System.IO.Path]::GetFullPath($Destination)
-$target = Join-Path $targetDirectory "rtk-wad.exe"
-$temporary = Join-Path $targetDirectory ".rtk-wad.exe.$PID.new"
+$target = Join-Path $targetDirectory "xuva.exe"
+$temporary = Join-Path $targetDirectory ".xuva.exe.$PID.new"
 $tokenizerInstaller = Join-Path $PSScriptRoot "install-tokenizer.ps1"
 
 if ($InstallTokenizer -and $SkipTokenizer) {
@@ -41,7 +42,6 @@ if ($InstallTokenizer) {
 }
 try {
     Copy-Item -LiteralPath $source -Destination $temporary -ErrorAction Stop
-
     if (Test-Path -LiteralPath $target) {
         if (-not $Force) {
             throw "Refusing to overwrite existing $target. Re-run with -Force after reviewing it."
@@ -61,3 +61,9 @@ try {
 }
 
 Write-Output "Installed $target"
+if (-not $SkipProviderScan) {
+    & $target scan
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installed launcher capability scan failed with exit code $LASTEXITCODE."
+    }
+}

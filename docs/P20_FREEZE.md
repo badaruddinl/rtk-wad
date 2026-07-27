@@ -1,8 +1,8 @@
 # v0.2.0 release freeze
 
-`v0.2.0` freezes the P18–P20 work plus the canonical RTK-WAD artifact, honest
+`v0.2.0` freezes the P18–P20 work plus the canonical XUVA artifact, honest
 local-accounting refinement, public product README, Windows CI coverage for the
-repository's `master` integration path, and the canonical `rtk-wad` GitHub
+repository's `master` integration path, and the canonical `xuva` GitHub
 repository name. It supersedes the earlier `v0.1.0` companion release as the
 current stable baseline. The published `v0.2.0-alpha.1` and
 `v0.2.0-alpha.2` tags remain immutable historical alpha baselines.
@@ -31,7 +31,7 @@ contributions; those remain separate release decisions.
 
 ## Stable release boundary
 
-The release is suitable for stable dogfooding through the canonical `rtk-wad`
+The release is suitable for stable dogfooding through the canonical `xuva`
 command. It is not a claim that every external toolchain is performance-covered:
 benchmark coverage remains limited to the P18 artifacts and documented
 fixture/toolchain evidence.

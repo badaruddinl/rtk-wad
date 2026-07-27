@@ -19,7 +19,7 @@ if (-not $Python) {
     }
 }
 
-$root = Join-Path ([System.IO.Path]::GetTempPath()) ("rtk-wad-tokenizer-" + [guid]::NewGuid())
+$root = Join-Path ([System.IO.Path]::GetTempPath()) ("xuva-tokenizer-" + [guid]::NewGuid())
 try {
     $declared = (Get-Content -LiteralPath $Requirements | Where-Object { $_ -match '^\s*tiktoken==[0-9]+(?:\.[0-9]+)+\s*(?:#.*)?$' } | Select-Object -First 1).Trim()
     if (-not $declared) { throw "The official tokenizer manifest has no exact tiktoken pin." }

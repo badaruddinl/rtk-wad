@@ -7,7 +7,7 @@ an upstream contribution. Check an item only with current evidence.
 
 - [x] Structured argv reaches WSL without rebuilding a user shell command.
 - [x] Windows drive CWD maps to the matching `/mnt/<drive>/...` directory.
-- [x] Explicit custom WSL CWD is supported through `RTK_WSL_CWD`.
+- [x] Explicit custom WSL CWD is supported through `XUVA_WSL_CWD`.
 - [x] Spaces, quotes, ampersands, semicolons, dollar signs, backslashes, and
   Unicode are covered by the process contract.
 - [x] Stdout, stderr, interactive stdin, and exit codes 0/1/42/127 are covered.
@@ -57,7 +57,7 @@ an upstream contribution. Check an item only with current evidence.
 ## Publication decision gate
 
 - [x] Apache-2.0 is the selected license for this standalone companion repository.
-- [x] `badaruddinl/rtk-wad` is a standalone companion project, not an official
+- [x] `badaruddinl/xuva` is a standalone companion project, not an official
   upstream RTK artifact.
 - [x] Tag `v0.1.0-alpha.1` exists; a GitHub Release with binary assets remains
   intentionally deferred until post-freeze dogfooding and CI review.

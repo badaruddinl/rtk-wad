@@ -144,7 +144,7 @@ function Assert-Tokenizer {
 $requirementsPath = (Resolve-Path -LiteralPath $Requirements -ErrorAction Stop).Path
 $tokenizer = Get-TokenizerDependency -RequirementsPath $requirementsPath
 if (-not $Root) {
-    $Root = Join-Path $env:LOCALAPPDATA "rtk-wad\tokenizer\tiktoken-$($tokenizer.Version)"
+    $Root = Join-Path $env:LOCALAPPDATA "xuva\tokenizer\tiktoken-$($tokenizer.Version)"
 }
 $rootPath = [System.IO.Path]::GetFullPath($Root)
 if ($PlanPythonBootstrap) {

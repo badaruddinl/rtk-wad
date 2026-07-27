@@ -3,7 +3,7 @@
 This is a supplementary Windows-native evidence row for the P21 branch. It was
 run against the public `BurntSushi/ripgrep` tag `14.1.1`, commit
 `4649aa9700619f94cf9c66876e9549d83420e16c`, provisioned by the checked-in
-public-corpus manifest. It is not a benchmark of the RTK-WAD repository and it
+public-corpus manifest. It is not a benchmark of the XUVA repository and it
 does not promote any unverified command family.
 
 ## Inputs

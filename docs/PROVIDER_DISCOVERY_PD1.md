@@ -1,17 +1,17 @@
 # On-demand provider discovery: PD1
 
 PD1 adds read-only discovery for the exact Go tool name. It does not change the
-normal RTK-WAD dispatcher, invoke a package manager, download anything, request
+normal XUVA dispatcher, invoke a package manager, download anything, request
 elevation, or offer an installation prompt. Existing commands therefore retain
 their prior routing contract.
 
 ## Commands
 
 ```powershell
-rtk-wad resolve go
-rtk-wad resolve go --json
-rtk-wad resolve go --refresh
-rtk-wad doctor go
+xuva resolve go
+xuva resolve go --json
+xuva resolve go --refresh
+xuva doctor go
 ```
 
 `resolve` exits successfully even when Go is absent, because it is a diagnostic
@@ -33,8 +33,8 @@ an availability diagnosis only. PD1 never changes dispatch based on that index.
 
 ## Local cache
 
-Discovery writes only `%LOCALAPPDATA%\rtk-wad\provider-cache-v1.json`, or the
-equivalent root selected by `RTK_WAD_STATE_DIR`. Entries are scoped to the
+Discovery writes only `%LOCALAPPDATA%\xuva\provider-cache-v1.json`, or the
+equivalent root selected by `XUVA_STATE_DIR`. Entries are scoped to the
 requested tool and expire after five minutes. A cache hit avoids every Windows
 and WSL executable probe. A missing provider is also cached, so an unavailable
 Go binary does not repeatedly start WSL discovery.

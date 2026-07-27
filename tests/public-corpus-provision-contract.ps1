@@ -12,14 +12,14 @@ function Invoke-Git([string[]]$Arguments) {
     return ($output | Out-String).Trim()
 }
 
-$root = Join-Path ([System.IO.Path]::GetTempPath()) ("rtk-wad-public-corpus-" + [guid]::NewGuid())
+$root = Join-Path ([System.IO.Path]::GetTempPath()) ("xuva-public-corpus-" + [guid]::NewGuid())
 try {
     $source = Join-Path $root "source"
     $destination = Join-Path $root "destination"
     $manifest = Join-Path $root "manifest.json"
     New-Item -ItemType Directory -Path $source | Out-Null
     Invoke-Git @("init", "-q", "--initial-branch", "main", $source) | Out-Null
-    Invoke-Git @("-C", $source, "config", "user.name", "RTK-WAD contract") | Out-Null
+    Invoke-Git @("-C", $source, "config", "user.name", "XUVA contract") | Out-Null
     Invoke-Git @("-C", $source, "config", "user.email", "contract@example.invalid") | Out-Null
     Set-Content -LiteralPath (Join-Path $source "package.json") -Value '{"name":"fixture"}' -NoNewline
     Set-Content -LiteralPath (Join-Path $source "README.md") -Value "fixture" -NoNewline

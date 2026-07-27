@@ -33,8 +33,8 @@ $cargoPath = if (Test-Path -LiteralPath $Cargo -PathType Leaf) {
         $perUserCargo
     }
 }
-$source = Join-Path $rootPath "target\release\rtk-wad.exe"
-$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("rtk-wad-release-gate-" + [guid]::NewGuid())
+$source = Join-Path $rootPath "target\release\xuva.exe"
+$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("xuva-release-gate-" + [guid]::NewGuid())
 
 function Invoke-Checked {
     param(
@@ -66,8 +66,8 @@ try {
 
     Invoke-Checked -Name "format" -Action { & $cargoPath fmt --all --check }
     Invoke-Checked -Name "clippy" -Action { & $cargoPath clippy --all-targets -- -D warnings }
-    Invoke-Checked -Name "unit tests" -Action { & $cargoPath test --bin rtk-wad -- --test-threads=1 }
-    Invoke-Checked -Name "release build" -Action { & $cargoPath build --release }
+    Invoke-Checked -Name "unit tests" -Action { & $cargoPath test --bins -- --test-threads=1 }
+    Invoke-Checked -Name "release build" -Action { & $cargoPath build --release --bins }
     Invoke-Checked -Name "WSL process contract" -Action { & $cargoPath test --test process_contract -- --test-threads=1 }
     Invoke-Checked -Name "tokenizer bootstrap contract" -Action { & .\tests\tokenizer-bootstrap-contract.ps1 }
     Invoke-Checked -Name "tokenizer installation contract" -Action { & .\tests\tokenizer-install-contract.ps1 }

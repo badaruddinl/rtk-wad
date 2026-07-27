@@ -68,7 +68,7 @@ git_mode=auto
 ```
 
 The diagnostic command passed against the registered isolated distro.
-Explicitly overriding the alias to `RTK_WSL_BACKEND=wsl2` selected the existing
+Explicitly overriding the alias to `XUVA_WSL_BACKEND=wsl2` selected the existing
 `Ubuntu` WSL2 distro and passed. Selecting the WSL1 backend with that WSL2 distro
 returned a version-mismatch failure.
 
@@ -106,7 +106,7 @@ continuation, and lock release regression all passed without leaving a child
 process behind.
 
 The WSL1-specific integration suite is opt-in through
-`RTK_WSL1_TEST_DISTRO=Ubuntu-RTK-WSL1` and was executed against the registered
+`XUVA_WSL1_TEST_DISTRO=Ubuntu-RTK-WSL1` and was executed against the registered
 WSL1 distro.
 
 ## Benchmark Result

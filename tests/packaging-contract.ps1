@@ -1,15 +1,15 @@
 [CmdletBinding()]
 param(
     [string]$RepositoryRoot = (Split-Path -Parent $PSScriptRoot),
-    [string]$Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "target\release\rtk-wad.exe")
+    [string]$Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "target\release\xuva.exe")
 )
 
 $ErrorActionPreference = "Stop"
 $install = Join-Path $RepositoryRoot "scripts\install.ps1"
 $uninstall = Join-Path $RepositoryRoot "scripts\uninstall.ps1"
-$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) "rtk-wad-packaging-$PID"
+$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) "xuva-packaging-$PID"
 $destination = Join-Path $temporaryRoot "bin"
-$target = Join-Path $destination "rtk-wad.exe"
+$target = Join-Path $destination "xuva.exe"
 $backup = "$target.previous.exe"
 $tokenizerRoot = Join-Path $temporaryRoot "tokenizer"
 
@@ -20,7 +20,7 @@ function Assert-Condition([bool]$Condition, [string]$Message) {
 try {
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
     & $install -Destination $destination
-    Assert-Condition (Test-Path -LiteralPath $target) "fresh install did not create the WAD launcher"
+    Assert-Condition (Test-Path -LiteralPath $target) "fresh install did not create the XUVA launcher"
     Assert-Condition (-not (Test-Path -LiteralPath $tokenizerRoot)) "fresh WAD install unexpectedly provisioned the optional tokenizer"
 
     $reinstallRejected = $false
@@ -42,7 +42,7 @@ try {
     $tokenizerDestination = Join-Path $temporaryRoot "tokenizer-opt-in"
     & $install -Destination $tokenizerDestination -InstallTokenizer -TokenizerRoot $tokenizerRoot
     Assert-Condition (Test-Path -LiteralPath (Join-Path $tokenizerRoot "Scripts\python.exe")) "explicit tokenizer install did not provision the optional dependency"
-    Assert-Condition (Test-Path -LiteralPath (Join-Path $tokenizerDestination "rtk-wad.exe")) "explicit tokenizer install did not create the WAD launcher"
+    Assert-Condition (Test-Path -LiteralPath (Join-Path $tokenizerDestination "xuva.exe")) "explicit tokenizer install did not create the XUVA launcher"
 
     $tokenizerFailureDestination = Join-Path $temporaryRoot "tokenizer-failure"
     $tokenizerFailureRoot = Join-Path $temporaryRoot "tokenizer-failure-root"
@@ -50,7 +50,7 @@ try {
     $tokenizerFailureRaised = $false
     try { & $install -Destination $tokenizerFailureDestination -InstallTokenizer -TokenizerRoot $tokenizerFailureRoot -TokenizerPython $missingPython } catch { $tokenizerFailureRaised = $true }
     Assert-Condition $tokenizerFailureRaised "missing optional tokenizer runtime did not fail its explicit install"
-    Assert-Condition (-not (Test-Path -LiteralPath (Join-Path $tokenizerFailureDestination "rtk-wad.exe"))) "tokenizer failure activated a WAD launcher"
+    Assert-Condition (-not (Test-Path -LiteralPath (Join-Path $tokenizerFailureDestination "xuva.exe"))) "tokenizer failure activated an XUVA launcher"
 
     Set-Content -LiteralPath $target -Value "surviving launcher"
     $missingSource = Join-Path $temporaryRoot "missing.exe"

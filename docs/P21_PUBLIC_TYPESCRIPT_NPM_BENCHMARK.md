@@ -3,7 +3,7 @@
 This supplementary Windows-native evidence row measures the read-only `npm run`
 script-list operation against the public Microsoft TypeScript tag `v5.9.3`,
 commit `c63de15a992d37f0d6cec03ac7631872838602cb`. It is not a benchmark of the
-RTK-WAD repository and it does not run project scripts or install Node packages.
+XUVA repository and it does not run project scripts or install Node packages.
 
 ## Corpus and inputs
 
@@ -31,7 +31,7 @@ RTK-WAD repository and it does not run project scripts or install Node packages.
 
 All recorded commands exited successfully. Raw and WAD-auto emitted the same
 single output hash, so the coverage row is valid. The policy recorded zero
-token saving and slower native-candidate latency; `rtk-wad --explain-route npm
+token saving and slower native-candidate latency; `xuva --explain-route npm
 run` subsequently reported `route=raw` with the lower-latency raw reason.
 
 The faster auto timings are not treated as a performance claim: npm's Windows

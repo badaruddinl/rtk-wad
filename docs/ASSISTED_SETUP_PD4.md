@@ -3,9 +3,9 @@
 PD4 adds an explicit, local-first setup planner:
 
 ```powershell
-rtk-wad setup go
-rtk-wad setup go --json
-rtk-wad setup go --refresh
+xuva setup go
+xuva setup go --json
+xuva setup go --refresh
 ```
 
 The command never installs, downloads, elevates, changes `PATH`, or starts a
@@ -24,7 +24,7 @@ shortcut.
 
 A planned command is evidence for a later explicit apply milestone; it is not
 an instruction that WAD executes in PD4. The plan always includes the required
-post-change check: `rtk-wad doctor go --refresh`.
+post-change check: `xuva doctor go --refresh`.
 
 ## Safety contract
 

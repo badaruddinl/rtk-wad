@@ -13,7 +13,7 @@ exit code `0`:
 | Project location | Selected provider | Verified working directory | Command |
 | --- | --- | --- | --- |
 | Windows worktree | Ubuntu-22.04 WSL RTK Git | `/mnt/e/luthfi/project/rtk-wsl` | `git --version` |
-| Native Ubuntu WSL worktree | Windows Git | `\\wsl.localhost\Ubuntu\tmp\rtk-wad-p19-exec-*` | `git --version` |
+| Native Ubuntu WSL worktree | Windows Git | `\\wsl.localhost\Ubuntu\tmp\xuva-p19-exec-*` | `git --version` |
 
 The first direction used an explicit verified WSL RTK candidate. The second
 used an explicit verified Windows candidate after WAD converted the native WSL

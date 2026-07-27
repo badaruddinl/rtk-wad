@@ -8,8 +8,8 @@ install a tool or a dependency.
 ## Commands
 
 ```powershell
-rtk-wad doctor <tool> [--json] [--refresh]
-rtk-wad setup <tool> [--json] [--refresh]
+xuva doctor <tool> [--json] [--refresh]
+xuva setup <tool> [--json] [--refresh]
 ```
 
 `doctor` reports the discovered Windows and WSL candidates, their verified
@@ -38,7 +38,7 @@ journal.
 
 This boundary keeps a fresh machine diagnosable without turning the first WAD
 invocation into a bulk installation. A user can install a missing tool through
-their chosen system workflow, then run `rtk-wad doctor <tool> --refresh` to
+their chosen system workflow, then run `xuva doctor <tool> --refresh` to
 prove the resulting provider and project mapping.
 
 ## Verification

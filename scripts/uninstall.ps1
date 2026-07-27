@@ -6,21 +6,21 @@ param(
 
 $ErrorActionPreference = "Stop"
 $targetDirectory = [System.IO.Path]::GetFullPath($Destination)
-$target = Join-Path $targetDirectory "rtk-wad.exe"
+$target = Join-Path $targetDirectory "xuva.exe"
 $backup = "$target.previous.exe"
 
 if (-not (Test-Path -LiteralPath $target)) {
-    throw "No installed launcher found at $target."
+    throw "No installed XUVA launcher found in $targetDirectory."
 }
 
 if ($RestorePrevious) {
     if (-not (Test-Path -LiteralPath $backup)) {
-        throw "No previous launcher backup found at $backup."
+        throw "No previous XUVA launcher backup found in $targetDirectory."
     }
     Remove-Item -LiteralPath $target
     Move-Item -LiteralPath $backup -Destination $target
-    Write-Output "Restored $target from $backup"
+    Write-Output "Restored the previous XUVA launcher."
 } else {
     Remove-Item -LiteralPath $target
-    Write-Output "Removed $target."
+    Write-Output "Removed the XUVA launcher."
 }

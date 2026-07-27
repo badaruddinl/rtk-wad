@@ -1,16 +1,16 @@
 [package]
-name = "rtk-wad"
-version = "0.3.0"
+name = "xuva"
+version = "0.4.1"
 edition = "2024"
-description = "Safe adaptive Windows execution policy for raw commands, native RTK, and verified WSL providers"
+description = "Adaptive Windows execution dispatcher for raw commands, native RTK, and verified WSL providers"
 license = "Apache-2.0"
-homepage = "https://github.com/badaruddinl/rtk-wad"
-repository = "https://github.com/badaruddinl/rtk-wad"
+homepage = "https://github.com/badaruddinl/xuva"
+repository = "https://github.com/badaruddinl/xuva"
 readme = "README.md"
 publish = false
 
 [[bin]]
-name = "rtk-wad"
+name = "xuva"
 path = "src/main.rs"
 
 [dependencies]

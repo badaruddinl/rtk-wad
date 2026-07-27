@@ -20,7 +20,7 @@ the literal `PATH`. It makes a native RTK selection or a Windows tool-path
 change invalidate old adaptive evidence before it can affect a route.
 
 ```powershell
-rtk-wad policy context
+xuva policy context
 ```
 
 This prints the current policy schema, manifest version, and opaque context

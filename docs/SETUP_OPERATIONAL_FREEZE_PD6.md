@@ -6,7 +6,7 @@ does not publish, tag, push, install Go, or change a user's global PATH.
 ## Repeatable readiness gate
 
 `tests/setup-readiness-contract.ps1` runs a release binary under the temporary
-name `rtk-wad.exe` and a private `RTK_WAD_STATE_DIR`. It verifies:
+name `xuva.exe` and a private `XUVA_STATE_DIR`. It verifies:
 
 1. `setup go --status` is read-only.
 2. A ready provider makes `--apply --confirm` a no-op rather than an install.
@@ -21,7 +21,7 @@ setup.
 Run the gate after a release build:
 
 ```powershell
-.\tests\setup-readiness-contract.ps1 -Source .\target\release\rtk-wad.exe
+.\tests\setup-readiness-contract.ps1 -Source .\target\release\xuva.exe
 ```
 
 ## Frozen operator contract

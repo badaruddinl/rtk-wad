@@ -1,4 +1,4 @@
-# RTK-WAD documentation
+# XUVA documentation
 
 This index keeps the public README focused on product behavior while preserving
 the evidence, contracts, and milestone records behind it.
@@ -7,8 +7,8 @@ the evidence, contracts, and milestone records behind it.
 
 | Need | Document |
 | --- | --- |
-| Understand adaptive route selection and configuration | [RTK-WAD contract](RTK_WAD.md) |
-| Compare raw Windows, stock RTK, and RTK-WAD honestly | [P20 benchmark comparison](BENCHMARK_COMPARISON_P20.md) |
+| Understand adaptive route selection and configuration | [XUVA contract](XUVA.md) |
+| Compare raw Windows, stock RTK, and XUVA honestly | [P20 benchmark comparison](BENCHMARK_COMPARISON_P20.md) |
 | Inspect exact native Windows, WSL1, and WSL2 figures | [P18 core matrix](BENCHMARK_CORE_MATRIX_P18_2026-07-25.md) |
 | Verify a source checkout before release | [P20 release gate](RELEASE_GATE_P20.md) |
 | Inspect the v0.3.0 baseline and P7 dispatcher boundary | [P7 dispatcher foundation](P7_DISPATCHER_FOUNDATION.md) |

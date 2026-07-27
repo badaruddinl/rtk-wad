@@ -24,17 +24,17 @@ unsafe extern "system" {
 }
 
 fn launcher() -> &'static str {
-    env!("CARGO_BIN_EXE_rtk-wad")
+    env!("CARGO_BIN_EXE_xuva")
 }
 
 fn command(program: &str) -> Command {
     let mut command = Command::new(launcher());
-    command.env("RTK_WSL_RTK_PATH", program);
-    command.env("RTK_WAD_ROUTE", "wsl2");
-    if let Ok(distro) = std::env::var("RTK_WSL1_TEST_DISTRO") {
+    command.env("XUVA_WSL_RTK_PATH", program);
+    command.env("XUVA_ROUTE", "wsl2");
+    if let Ok(distro) = std::env::var("XUVA_WSL1_TEST_DISTRO") {
         command
-            .env("RTK_WSL_BACKEND", "wsl1")
-            .env("RTK_WSL_DISTRO", distro);
+            .env("XUVA_WSL_BACKEND", "wsl1")
+            .env("XUVA_WSL_DISTRO", distro);
     }
     command
 }
@@ -42,11 +42,11 @@ fn command(program: &str) -> Command {
 fn wad_launcher() -> (PathBuf, PathBuf) {
     let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
-        "rtk-wad-process-contract-{}-{nonce}",
+        "xuva-process-contract-{}-{nonce}",
         std::process::id()
     ));
     std::fs::create_dir_all(&directory).expect("temporary WAD directory is created");
-    let wad = directory.join("rtk-wad.exe");
+    let wad = directory.join("xuva.exe");
     std::fs::copy(launcher(), &wad).expect("test launcher is copied under the WAD command name");
     (wad, directory)
 }
@@ -55,6 +55,29 @@ fn process_contract_guard() -> MutexGuard<'static, ()> {
     PROCESS_CONTRACT_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[test]
+fn dispatcher_owned_version_never_enters_environment_resolution() {
+    let _guard = process_contract_guard();
+    let output = Command::new(launcher())
+        .env("XUVA_WSL_DISTRO", "missing-version-test-distro")
+        .env("XUVA_ROUTE", "not-a-route")
+        .args(["--version"])
+        .output()
+        .expect("version command starts");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        format!("xuva {}", env!("CARGO_PKG_VERSION"))
+    );
+    assert!(output.stderr.is_empty());
 }
 
 #[test]
@@ -106,10 +129,8 @@ fn supports_stdin_for_a_simple_interactive_command() {
 #[test]
 fn maps_a_temp_windows_worktree_to_the_wsl_current_directory() {
     let _guard = process_contract_guard();
-    let directory = std::env::temp_dir().join(format!(
-        "rtk-wad-windows-cwd-contract-{}",
-        std::process::id()
-    ));
+    let directory =
+        std::env::temp_dir().join(format!("xuva-windows-cwd-contract-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("temporary Windows worktree is created");
     let windows_path = directory.to_string_lossy().replace('\\', "/");
     let (drive, remainder) = windows_path
@@ -145,7 +166,7 @@ fn maps_a_temp_windows_worktree_to_the_wsl_current_directory() {
 fn routes_git_from_a_windows_worktree_to_native_git_with_structured_arguments() {
     let _guard = process_contract_guard();
     let output = Command::new(launcher())
-        .env("RTK_WSL_DISTRO", "missing-test-distro")
+        .env("XUVA_WSL_DISTRO", "missing-test-distro")
         .args(["git", "--version"])
         .output()
         .expect("native Git route starts");
@@ -163,9 +184,9 @@ fn routes_git_from_a_windows_worktree_to_native_git_with_structured_arguments() 
 fn dispatches_wsl_only_go_raw_from_a_windows_shell() {
     let _guard = process_contract_guard();
     let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
-    let fixture = format!("/tmp/rtk-wad-p7-go-{}-{nonce}", std::process::id());
+    let fixture = format!("/tmp/xuva-p7-go-{}-{nonce}", std::process::id());
     assert!(
-        fixture.starts_with("/tmp/rtk-wad-p7-go-"),
+        fixture.starts_with("/tmp/xuva-p7-go-"),
         "fixture cleanup target is constrained to the test namespace"
     );
     let setup = Command::new("wsl.exe")
@@ -176,7 +197,7 @@ fn dispatches_wsl_only_go_raw_from_a_windows_shell() {
             "sh",
             "-c",
             r###"mkdir -p "$1"; printf '#!/bin/sh\nprintf "go version go-fixture linux/amd64\n"\n' > "$1/go"; chmod 755 "$1/go""###,
-            "rtk-wad-p7-go-fixture",
+            "xuva-p7-go-fixture",
             &fixture,
         ])
         .output()
@@ -191,12 +212,12 @@ fn dispatches_wsl_only_go_raw_from_a_windows_shell() {
         .map(PathBuf::from)
         .expect("Windows system root is available")
         .join("System32");
-    let state = std::env::temp_dir().join(format!("rtk-wad-p7-go-state-{nonce}"));
+    let state = std::env::temp_dir().join(format!("xuva-p7-go-state-{nonce}"));
     let output = Command::new(launcher())
         .env("PATH", system32)
-        .env("RTK_WAD_STATE_DIR", &state)
-        .env("RTK_WSL_DISTRO", "Ubuntu")
-        .env("RTK_WSL_EXTRA_PATH", &fixture)
+        .env("XUVA_STATE_DIR", &state)
+        .env("XUVA_WSL_DISTRO", "Ubuntu")
+        .env("XUVA_WSL_EXTRA_PATH", &fixture)
         .args(["go", "version"])
         .output()
         .expect("Go dispatcher starts");
@@ -224,10 +245,10 @@ fn dispatches_wsl_only_go_from_powershell_cmd_and_git_bash() {
     let _guard = process_contract_guard();
     let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let fixture = format!(
-        "/tmp/rtk-wad-p7-go-shell-matrix-{}-{nonce}",
+        "/tmp/xuva-p7-go-shell-matrix-{}-{nonce}",
         std::process::id()
     );
-    assert!(fixture.starts_with("/tmp/rtk-wad-p7-go-shell-matrix-"));
+    assert!(fixture.starts_with("/tmp/xuva-p7-go-shell-matrix-"));
     let setup = Command::new("wsl.exe")
         .args([
             "-d",
@@ -236,7 +257,7 @@ fn dispatches_wsl_only_go_from_powershell_cmd_and_git_bash() {
             "sh",
             "-c",
             r###"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'if [ "$1" = "run" ]; then printf "arg:%s\n" "$2"; else printf "go version shell-matrix-fixture linux/amd64\n"; fi' > "$1/go"; chmod 755 "$1/go""###,
-            "rtk-wad-p7-go-shell-matrix-fixture",
+            "xuva-p7-go-shell-matrix-fixture",
             &fixture,
         ])
         .output()
@@ -247,15 +268,15 @@ fn dispatches_wsl_only_go_from_powershell_cmd_and_git_bash() {
         .map(PathBuf::from)
         .expect("Windows system root is available")
         .join("System32");
-    let state = std::env::temp_dir().join(format!("rtk-wad-p7-go-shell-matrix-state-{nonce}"));
+    let state = std::env::temp_dir().join(format!("xuva-p7-go-shell-matrix-state-{nonce}"));
     let configure = |command: &mut Command| {
         command
             .env("PATH", &system32)
-            .env("RTK_WAD_STATE_DIR", &state)
-            .env("RTK_WSL_DISTRO", "Ubuntu")
-            .env("RTK_WSL_EXTRA_PATH", &fixture)
-            .env("RTK_WAD_OUTPUT_ADAPTER", "raw")
-            .env("RTK_WAD_TEST_LAUNCHER", launcher());
+            .env("XUVA_STATE_DIR", &state)
+            .env("XUVA_WSL_DISTRO", "Ubuntu")
+            .env("XUVA_WSL_EXTRA_PATH", &fixture)
+            .env("XUVA_OUTPUT_ADAPTER", "raw")
+            .env("XUVA_TEST_LAUNCHER", launcher());
     };
     let literal = "space & $dollar\\漢字";
 
@@ -267,7 +288,7 @@ fn dispatches_wsl_only_go_from_powershell_cmd_and_git_bash() {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "& $env:RTK_WAD_TEST_LAUNCHER go version",
+            "& $env:XUVA_TEST_LAUNCHER go version",
         ])
         .output()
         .expect("PowerShell Go dispatch starts");
@@ -279,7 +300,7 @@ fn dispatches_wsl_only_go_from_powershell_cmd_and_git_bash() {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "& $env:RTK_WAD_TEST_LAUNCHER go run 'space & $dollar\\漢字'",
+            "& $env:XUVA_TEST_LAUNCHER go run 'space & $dollar\\漢字'",
         ])
         .output()
         .expect("PowerShell literal Go dispatch starts");
@@ -293,12 +314,12 @@ fn dispatches_wsl_only_go_from_powershell_cmd_and_git_bash() {
     let cmd_wrapper = state.join("invoke-go-literal.cmd");
     std::fs::write(
         &cmd_wrapper,
-        "@echo off\r\n\"%RTK_WAD_TEST_LAUNCHER%\" go run \"%RTK_WAD_TEST_LITERAL%\"\r\n",
+        "@echo off\r\n\"%XUVA_TEST_LAUNCHER%\" go run \"%XUVA_TEST_LITERAL%\"\r\n",
     )
     .expect("CMD literal wrapper is written");
     let mut cmd_literal = Command::new("cmd.exe");
     configure(&mut cmd_literal);
-    cmd_literal.env("RTK_WAD_TEST_LITERAL", literal);
+    cmd_literal.env("XUVA_TEST_LITERAL", literal);
     let cmd_literal = cmd_literal
         .args([
             "/d",
@@ -324,7 +345,7 @@ fn dispatches_wsl_only_go_from_powershell_cmd_and_git_bash() {
             "--noprofile",
             "--norc",
             "-c",
-            "exec \"$RTK_WAD_TEST_LAUNCHER\" go version",
+            "exec \"$XUVA_TEST_LAUNCHER\" go version",
         ])
         .output()
         .expect("Git Bash Go dispatch starts");
@@ -336,7 +357,7 @@ fn dispatches_wsl_only_go_from_powershell_cmd_and_git_bash() {
             "--noprofile",
             "--norc",
             "-c",
-            "exec \"$RTK_WAD_TEST_LAUNCHER\" go run 'space & $dollar\\漢字'",
+            "exec \"$XUVA_TEST_LAUNCHER\" go run 'space & $dollar\\漢字'",
         ])
         .output()
         .expect("Git Bash literal Go dispatch starts");
@@ -384,8 +405,8 @@ fn dispatches_wsl_only_go_from_powershell_cmd_and_git_bash() {
 fn wsl_shim_preserves_same_distro_context_and_literal_argv() {
     let _guard = process_contract_guard();
     let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
-    let fixture = format!("/tmp/rtk-wad-p7-wsl-shim-{}-{nonce}", std::process::id());
-    assert!(fixture.starts_with("/tmp/rtk-wad-p7-wsl-shim-"));
+    let fixture = format!("/tmp/xuva-p7-wsl-shim-{}-{nonce}", std::process::id());
+    assert!(fixture.starts_with("/tmp/xuva-p7-wsl-shim-"));
     let setup = Command::new("wsl.exe")
         .args([
             "-d",
@@ -394,7 +415,7 @@ fn wsl_shim_preserves_same_distro_context_and_literal_argv() {
             "sh",
             "-c",
             r###"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'printf "cwd:%s\n" "$PWD"' 'printf "args:%s|%s\n" "$1" "$2"' > "$1/go"; chmod 755 "$1/go""###,
-            "rtk-wad-p7-wsl-shim-fixture",
+            "xuva-p7-wsl-shim-fixture",
             &fixture,
         ])
         .output()
@@ -416,7 +437,7 @@ fn wsl_shim_preserves_same_distro_context_and_literal_argv() {
     let launcher_path = map_path(launcher());
     let shim_windows_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("scripts")
-        .join("rtk-wad-wsl.sh");
+        .join("xuva-wsl.sh");
     let shim_path = map_path(&shim_windows_path.to_string_lossy());
     let literal = "space & $dollar\\\u{6f22}\u{5b57}";
     let output = Command::new("wsl.exe")
@@ -426,8 +447,8 @@ fn wsl_shim_preserves_same_distro_context_and_literal_argv() {
             "--exec",
             "sh",
             "-c",
-            r###"cd /tmp; export RTK_WAD_WINDOWS_EXE="$1" RTK_WSL_EXTRA_PATH="$2" RTK_WAD_OUTPUT_ADAPTER=raw; exec sh "$3" go run "$4""###,
-            "rtk-wad-p7-wsl-shim-run",
+            r###"cd /tmp; export XUVA_WINDOWS_EXE="$1" XUVA_WSL_EXTRA_PATH="$2" XUVA_OUTPUT_ADAPTER=raw; exec sh "$3" go run "$4""###,
+            "xuva-p7-wsl-shim-run",
             &launcher_path,
             &fixture,
             &shim_path,
@@ -457,7 +478,7 @@ fn wsl_shim_maps_a_windows_backed_project_to_another_distro() {
     let _guard = process_contract_guard();
     let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let fixture = format!(
-        "/tmp/rtk-wad-p7-cross-distro-shim-{}-{nonce}",
+        "/tmp/xuva-p7-cross-distro-shim-{}-{nonce}",
         std::process::id()
     );
     let setup = Command::new("wsl.exe")
@@ -468,7 +489,7 @@ fn wsl_shim_maps_a_windows_backed_project_to_another_distro() {
             "sh",
             "-c",
             r###"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'printf "cwd:%s\n" "$PWD"' 'printf "args:%s|%s\n" "$1" "$2"' > "$1/go"; chmod 755 "$1/go""###,
-            "rtk-wad-p7-cross-distro-fixture",
+            "xuva-p7-cross-distro-fixture",
             &fixture,
         ])
         .output()
@@ -490,7 +511,7 @@ fn wsl_shim_maps_a_windows_backed_project_to_another_distro() {
     let launcher_path = map_path(launcher());
     let shim_windows_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("scripts")
-        .join("rtk-wad-wsl.sh");
+        .join("xuva-wsl.sh");
     let shim_path = map_path(&shim_windows_path.to_string_lossy());
     let project_path = map_path(env!("CARGO_MANIFEST_DIR"));
     let literal = "cross distro & $dollar\\\u{6f22}\u{5b57}";
@@ -501,8 +522,8 @@ fn wsl_shim_maps_a_windows_backed_project_to_another_distro() {
             "--exec",
             "sh",
             "-c",
-            r###"cd "$4"; export RTK_WAD_WINDOWS_EXE="$1" RTK_WSL_EXTRA_PATH="$2" RTK_WAD_OUTPUT_ADAPTER=raw; exec sh "$3" go run "$5""###,
-            "rtk-wad-p7-cross-distro-run",
+            r###"cd "$4"; export XUVA_WINDOWS_EXE="$1" XUVA_WSL_EXTRA_PATH="$2" XUVA_OUTPUT_ADAPTER=raw; exec sh "$3" go run "$5""###,
+            "xuva-p7-cross-distro-run",
             &launcher_path,
             &fixture,
             &shim_path,
@@ -554,7 +575,7 @@ fn wsl_shim_uses_a_compatible_windows_go_from_a_windows_backed_project() {
     let launcher_path = map_path(launcher());
     let shim_windows_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("scripts")
-        .join("rtk-wad-wsl.sh");
+        .join("xuva-wsl.sh");
     let shim_path = map_path(&shim_windows_path.to_string_lossy());
     let project_path = map_path(env!("CARGO_MANIFEST_DIR"));
     let output = Command::new("wsl.exe")
@@ -564,8 +585,8 @@ fn wsl_shim_uses_a_compatible_windows_go_from_a_windows_backed_project() {
             "--exec",
             "sh",
             "-c",
-            r###"cd "$3"; export RTK_WAD_WINDOWS_EXE="$1" RTK_WAD_OUTPUT_ADAPTER=raw; exec sh "$2" go version"###,
-            "rtk-wad-p7-windows-go-run",
+            r###"cd "$3"; export XUVA_WINDOWS_EXE="$1" XUVA_OUTPUT_ADAPTER=raw; exec sh "$2" go version"###,
+            "xuva-p7-windows-go-run",
             &launcher_path,
             &shim_path,
             &project_path,
@@ -590,8 +611,8 @@ fn wsl_shim_uses_a_compatible_windows_go_from_a_windows_backed_project() {
             "--exec",
             "sh",
             "-c",
-            r###"cd "$3"; export RTK_WAD_WINDOWS_EXE="$1" RTK_WAD_OUTPUT_ADAPTER=raw; exec sh "$2" --explain-route go version"###,
-            "rtk-wad-p7-windows-go-explain",
+            r###"cd "$3"; export XUVA_WINDOWS_EXE="$1" XUVA_OUTPUT_ADAPTER=raw; exec sh "$2" --explain-route go version"###,
+            "xuva-p7-windows-go-explain",
             &launcher_path,
             &shim_path,
             &project_path,
@@ -611,10 +632,10 @@ fn invalidates_wsl_provider_cache_when_version_changes_without_identity_change()
     let _guard = process_contract_guard();
     let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let fixture = format!(
-        "/tmp/rtk-wad-p7-go-version-cache-{}-{nonce}",
+        "/tmp/xuva-p7-go-version-cache-{}-{nonce}",
         std::process::id()
     );
-    assert!(fixture.starts_with("/tmp/rtk-wad-p7-go-version-cache-"));
+    assert!(fixture.starts_with("/tmp/xuva-p7-go-version-cache-"));
     let setup = Command::new("wsl.exe")
         .args([
             "-d",
@@ -623,7 +644,7 @@ fn invalidates_wsl_provider_cache_when_version_changes_without_identity_change()
             "sh",
             "-c",
             r###"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'if [ "$1" = "--version" ]; then printf "go version fixture-v1\n"; else printf "fixture command\n"; fi' > "$1/go"; chmod 755 "$1/go""###,
-            "rtk-wad-p7-go-version-cache-fixture",
+            "xuva-p7-go-version-cache-fixture",
             &fixture,
         ])
         .output()
@@ -634,14 +655,14 @@ fn invalidates_wsl_provider_cache_when_version_changes_without_identity_change()
         .map(PathBuf::from)
         .expect("Windows system root is available")
         .join("System32");
-    let state = std::env::temp_dir().join(format!("rtk-wad-p7-go-version-cache-state-{nonce}"));
+    let state = std::env::temp_dir().join(format!("xuva-p7-go-version-cache-state-{nonce}"));
     let configure = |command: &mut Command| {
         command
             .env("PATH", &system32)
-            .env("RTK_WAD_STATE_DIR", &state)
-            .env("RTK_WSL_DISTRO", "Ubuntu")
-            .env("RTK_WSL_EXTRA_PATH", &fixture)
-            .env("RTK_WAD_OUTPUT_ADAPTER", "raw");
+            .env("XUVA_STATE_DIR", &state)
+            .env("XUVA_WSL_DISTRO", "Ubuntu")
+            .env("XUVA_WSL_EXTRA_PATH", &fixture)
+            .env("XUVA_OUTPUT_ADAPTER", "raw");
     };
     let mut initial = Command::new(launcher());
     configure(&mut initial);
@@ -663,7 +684,7 @@ fn invalidates_wsl_provider_cache_when_version_changes_without_identity_change()
             "sh",
             "-c",
             r###"before=$(stat -Lc '%s:%Y' -- "$1/go") || exit 1; timestamp=$(printf '%s' "$before" | cut -d: -f2); printf '%s\n' '#!/bin/sh' 'if [ "$1" = "--version" ]; then printf "go version fixture-v2\n"; else printf "fixture command\n"; fi' > "$1/go"; touch -d "@$timestamp" "$1/go"; after=$(stat -Lc '%s:%Y' -- "$1/go") || exit 1; test "$before" = "$after""###,
-            "rtk-wad-p7-go-version-cache-mutate",
+            "xuva-p7-go-version-cache-mutate",
             &fixture,
         ])
         .output()
@@ -700,7 +721,7 @@ fn invalidates_provider_cache_when_the_project_git_revision_changes() {
     let _guard = process_contract_guard();
     let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
-        "rtk-wad-p7-git-revision-cache-{}-{nonce}",
+        "xuva-p7-git-revision-cache-{}-{nonce}",
         std::process::id()
     ));
     let state = directory.join("state");
@@ -721,7 +742,7 @@ fn invalidates_provider_cache_when_the_project_git_revision_changes() {
     git(&["init"]);
     git(&[
         "-c",
-        "user.name=RTK-WAD P7",
+        "user.name=XUVA P7",
         "-c",
         "user.email=p7@example.invalid",
         "commit",
@@ -732,7 +753,7 @@ fn invalidates_provider_cache_when_the_project_git_revision_changes() {
 
     let which = || {
         Command::new(launcher())
-            .env("RTK_WAD_STATE_DIR", &state)
+            .env("XUVA_STATE_DIR", &state)
             .current_dir(&directory)
             .args(["which", "go"])
             .output()
@@ -742,7 +763,7 @@ fn invalidates_provider_cache_when_the_project_git_revision_changes() {
     let second = which();
     git(&[
         "-c",
-        "user.name=RTK-WAD P7",
+        "user.name=XUVA P7",
         "-c",
         "user.email=p7@example.invalid",
         "commit",
@@ -778,7 +799,7 @@ fn invalidates_provider_cache_when_path_or_configured_distro_changes() {
     let _guard = process_contract_guard();
     let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
-        "rtk-wad-p7-path-distro-cache-{}-{nonce}",
+        "xuva-p7-path-distro-cache-{}-{nonce}",
         std::process::id()
     ));
     let first_path = directory.join("first");
@@ -805,8 +826,8 @@ fn invalidates_provider_cache_when_path_or_configured_distro_changes() {
         Command::new(launcher())
             .env("PATH", path)
             .env("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-            .env("RTK_WAD_STATE_DIR", &state)
-            .env("RTK_WSL_DISTRO", distro)
+            .env("XUVA_STATE_DIR", &state)
+            .env("XUVA_WSL_DISTRO", distro)
             .current_dir(&directory)
             .args(["which", "npm"])
             .output()
@@ -844,9 +865,9 @@ fn invalidates_provider_cache_when_path_or_configured_distro_changes() {
 fn dispatches_wsl_only_cargo_raw_from_a_windows_shell() {
     let _guard = process_contract_guard();
     let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
-    let fixture = format!("/tmp/rtk-wad-p7-cargo-{}-{nonce}", std::process::id());
+    let fixture = format!("/tmp/xuva-p7-cargo-{}-{nonce}", std::process::id());
     assert!(
-        fixture.starts_with("/tmp/rtk-wad-p7-cargo-"),
+        fixture.starts_with("/tmp/xuva-p7-cargo-"),
         "fixture cleanup target is constrained to the test namespace"
     );
     let setup = Command::new("wsl.exe")
@@ -857,7 +878,7 @@ fn dispatches_wsl_only_cargo_raw_from_a_windows_shell() {
             "sh",
             "-c",
             r###"mkdir -p "$1"; printf '#!/bin/sh\nprintf "cargo 1.99.0-wsl-fixture\\n"\n' > "$1/cargo"; chmod 755 "$1/cargo""###,
-            "rtk-wad-p7-cargo-fixture",
+            "xuva-p7-cargo-fixture",
             &fixture,
         ])
         .output()
@@ -872,13 +893,13 @@ fn dispatches_wsl_only_cargo_raw_from_a_windows_shell() {
         .map(PathBuf::from)
         .expect("Windows system root is available")
         .join("System32");
-    let state = std::env::temp_dir().join(format!("rtk-wad-p7-cargo-state-{nonce}"));
+    let state = std::env::temp_dir().join(format!("xuva-p7-cargo-state-{nonce}"));
     let output = Command::new(launcher())
         .env("PATH", system32)
-        .env("RTK_WAD_STATE_DIR", &state)
-        .env("RTK_WSL_DISTRO", "Ubuntu")
-        .env("RTK_WSL_EXTRA_PATH", &fixture)
-        .env("RTK_WAD_OUTPUT_ADAPTER", "raw")
+        .env("XUVA_STATE_DIR", &state)
+        .env("XUVA_WSL_DISTRO", "Ubuntu")
+        .env("XUVA_WSL_EXTRA_PATH", &fixture)
+        .env("XUVA_OUTPUT_ADAPTER", "raw")
         .args(["cargo", "--version"])
         .output()
         .expect("Cargo dispatcher starts");
@@ -906,10 +927,10 @@ fn dispatches_each_remaining_supported_wsl_only_toolchain_raw() {
     let _guard = process_contract_guard();
     let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let fixture = format!(
-        "/tmp/rtk-wad-p7-generic-toolchain-{}-{nonce}",
+        "/tmp/xuva-p7-generic-toolchain-{}-{nonce}",
         std::process::id()
     );
-    assert!(fixture.starts_with("/tmp/rtk-wad-p7-generic-toolchain-"));
+    assert!(fixture.starts_with("/tmp/xuva-p7-generic-toolchain-"));
     let setup = Command::new("wsl.exe")
         .args([
             "-d",
@@ -918,7 +939,7 @@ fn dispatches_each_remaining_supported_wsl_only_toolchain_raw() {
             "sh",
             "-c",
             r###"mkdir -p "$1"; for tool in node npm pnpm python python3 pytest java gradle mvn dotnet git; do printf '#!/bin/sh\nprintf "fixture-tool:%%s\\n" "$0"\n' > "$1/$tool"; chmod 755 "$1/$tool"; done"###,
-            "rtk-wad-p7-generic-toolchain-fixture",
+            "xuva-p7-generic-toolchain-fixture",
             &fixture,
         ])
         .output()
@@ -933,17 +954,17 @@ fn dispatches_each_remaining_supported_wsl_only_toolchain_raw() {
         .map(PathBuf::from)
         .expect("Windows system root is available")
         .join("System32");
-    let state = std::env::temp_dir().join(format!("rtk-wad-p7-generic-toolchain-state-{nonce}"));
+    let state = std::env::temp_dir().join(format!("xuva-p7-generic-toolchain-state-{nonce}"));
     for tool in [
         "node", "npm", "pnpm", "python", "python3", "pytest", "java", "gradle", "mvn", "dotnet",
         "git",
     ] {
         let output = Command::new(launcher())
             .env("PATH", &system32)
-            .env("RTK_WAD_STATE_DIR", &state)
-            .env("RTK_WSL_DISTRO", "Ubuntu")
-            .env("RTK_WSL_EXTRA_PATH", &fixture)
-            .env("RTK_WAD_OUTPUT_ADAPTER", "raw")
+            .env("XUVA_STATE_DIR", &state)
+            .env("XUVA_WSL_DISTRO", "Ubuntu")
+            .env("XUVA_WSL_EXTRA_PATH", &fixture)
+            .env("XUVA_OUTPUT_ADAPTER", "raw")
             .args([tool, "--version"])
             .output()
             .unwrap_or_else(|error| panic!("{tool} dispatcher starts: {error}"));
@@ -975,8 +996,8 @@ fn dispatches_each_remaining_supported_wsl_only_toolchain_raw() {
 fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
     let _guard = process_contract_guard();
     let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
-    let fixture = format!("/tmp/rtk-wad-p7-go-contract-{}-{nonce}", std::process::id());
-    assert!(fixture.starts_with("/tmp/rtk-wad-p7-go-contract-"));
+    let fixture = format!("/tmp/xuva-p7-go-contract-{}-{nonce}", std::process::id());
+    assert!(fixture.starts_with("/tmp/xuva-p7-go-contract-"));
     let setup = Command::new("wsl.exe")
         .args([
             "-d",
@@ -985,7 +1006,7 @@ fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
             "sh",
             "-c",
             r###"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'printf "cwd:%s\n" "$PWD"' 'printf "args:%s|%s\n" "$1" "$2"' 'exit 42' > "$1/go"; chmod 755 "$1/go""###,
-            "rtk-wad-p7-go-contract",
+            "xuva-p7-go-contract",
             &fixture,
         ])
         .output()
@@ -993,7 +1014,7 @@ fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
     assert!(setup.status.success());
 
     let directory = std::env::temp_dir().join(format!(
-        "rtk-wad p7 go cwd {} \u{6f22}\u{5b57}",
+        "xuva p7 go cwd {} \u{6f22}\u{5b57}",
         std::process::id()
     ));
     std::fs::create_dir_all(&directory).expect("temporary Windows worktree is created");
@@ -1006,17 +1027,17 @@ fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
         .map(PathBuf::from)
         .expect("Windows system root is available")
         .join("System32");
-    let state = std::env::temp_dir().join(format!("rtk-wad-p7-go-contract-state-{nonce}"));
+    let state = std::env::temp_dir().join(format!("xuva-p7-go-contract-state-{nonce}"));
     let literal = "space;and&dollar$HOME\\\u{6f22}\u{5b57}";
     let configure = |command: &mut Command| {
         command
             .env("PATH", &system32)
-            .env("RTK_WAD_STATE_DIR", &state)
-            .env("RTK_WSL_DISTRO", "Ubuntu")
-            .env("RTK_WSL_EXTRA_PATH", &fixture)
-            .env("RTK_WAD_OUTPUT_ADAPTER", "raw")
-            .env_remove("RTK_WAD_NATIVE_RTK_PATH")
-            .env_remove("RTK_WSL_RTK_PATH")
+            .env("XUVA_STATE_DIR", &state)
+            .env("XUVA_WSL_DISTRO", "Ubuntu")
+            .env("XUVA_WSL_EXTRA_PATH", &fixture)
+            .env("XUVA_OUTPUT_ADAPTER", "raw")
+            .env_remove("XUVA_NATIVE_RTK_PATH")
+            .env_remove("XUVA_WSL_RTK_PATH")
             .current_dir(&directory);
     };
     let mut explain = Command::new(launcher());
@@ -1051,7 +1072,7 @@ fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
             "sh",
             "-c",
             r###"printf '%s\n' '#!/bin/sh' 'printf "go fixture identity changed substantially\\n"' 'exit 42' > "$1/go"; chmod 755 "$1/go""###,
-            "rtk-wad-p7-go-contract-mutate",
+            "xuva-p7-go-contract-mutate",
             &fixture,
         ])
         .output()
@@ -1122,7 +1143,7 @@ fn wad_profile_selects_one_route_and_uses_a_local_gain_ledger() {
         .output()
         .expect("WAD diagnostics start");
     assert!(info.status.success());
-    assert!(String::from_utf8_lossy(&info.stdout).contains("adapter=rtk-wad"));
+    assert!(String::from_utf8_lossy(&info.stdout).contains("adapter=xuva"));
 
     let explained = Command::new(&launcher)
         .args(["--explain-route", "git", "commit", "-m", "contract"])
@@ -1138,7 +1159,7 @@ fn wad_profile_selects_one_route_and_uses_a_local_gain_ledger() {
         .expect("WAD raw route starts");
     assert!(raw.status.success());
     assert!(String::from_utf8_lossy(&raw.stdout).starts_with("git version "));
-    let scratch = local_app_data.join("rtk-wad").join("scratch");
+    let scratch = local_app_data.join("xuva").join("scratch");
     let scratch_files = std::fs::read_dir(&scratch)
         .expect("WAD scratch directory exists")
         .count();
@@ -1154,7 +1175,7 @@ fn wad_profile_selects_one_route_and_uses_a_local_gain_ledger() {
         .expect("WAD gain starts");
     assert!(gain.status.success());
     let gain_stdout = String::from_utf8_lossy(&gain.stdout);
-    assert!(gain_stdout.contains("RTK-WAD Measured Token Accounting"));
+    assert!(gain_stdout.contains("XUVA Measured Token Accounting"));
     assert!(gain_stdout.contains("Invocations: 1"));
 
     std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
@@ -1174,8 +1195,8 @@ fn wad_calibrates_safe_commands_across_natural_invocations() {
 
     let run = || {
         Command::new(&launcher)
-            .env("RTK_WAD_STATE_DIR", &state)
-            .env("RTK_WAD_NATIVE_RTK_PATH", &fake_rtk)
+            .env("XUVA_STATE_DIR", &state)
+            .env("XUVA_NATIVE_RTK_PATH", &fake_rtk)
             .args(["git", "status", "--short"])
             .output()
             .expect("calibration command starts")
@@ -1202,7 +1223,7 @@ fn wad_calibrates_safe_commands_across_natural_invocations() {
     assert!(!recorded.contains("git status"));
 
     let inspection = Command::new(&launcher)
-        .env("RTK_WAD_STATE_DIR", &state)
+        .env("XUVA_STATE_DIR", &state)
         .arg("calibration")
         .output()
         .expect("calibration inspection starts");
@@ -1260,7 +1281,7 @@ fn wad_resolve_verifies_wsl_project_paths_for_windows_providers() {
         .expect("test project directory has a Windows drive prefix");
     let mounted_project_path = format!("/mnt/{}{}", drive.to_lowercase(), remainder);
     let mut distros = vec!["Ubuntu".to_owned()];
-    if let Ok(wsl1_distro) = std::env::var("RTK_WSL1_TEST_DISTRO")
+    if let Ok(wsl1_distro) = std::env::var("XUVA_WSL1_TEST_DISTRO")
         && !distros.contains(&wsl1_distro)
     {
         distros.push(wsl1_distro);
@@ -1275,10 +1296,10 @@ fn wad_resolve_verifies_wsl_project_paths_for_windows_providers() {
         let user = String::from_utf8_lossy(&user.stdout).trim().to_owned();
         assert!(!user.is_empty());
         let mounted = Command::new(&launcher)
-            .env("RTK_WAD_STATE_DIR", &state)
-            .env("RTK_WSL_DISTRO", &distro)
-            .env("RTK_WSL_USER", &user)
-            .env("RTK_WSL_CWD", &mounted_project_path)
+            .env("XUVA_STATE_DIR", &state)
+            .env("XUVA_WSL_DISTRO", &distro)
+            .env("XUVA_WSL_USER", &user)
+            .env("XUVA_WSL_CWD", &mounted_project_path)
             .args(["resolve", "git", "--json", "--refresh"])
             .output()
             .expect("mounted WSL project resolution starts");
@@ -1292,7 +1313,7 @@ fn wad_resolve_verifies_wsl_project_paths_for_windows_providers() {
         );
 
         let native_path = format!(
-            "/tmp/rtk-wad-p13-native-{}-{}",
+            "/tmp/xuva-p13-native-{}-{}",
             std::process::id(),
             distro.replace(|character: char| !character.is_ascii_alphanumeric(), "-")
         );
@@ -1302,10 +1323,10 @@ fn wad_resolve_verifies_wsl_project_paths_for_windows_providers() {
             .expect("temporary native WSL project is created");
         assert!(created.success());
         let native = Command::new(&launcher)
-            .env("RTK_WAD_STATE_DIR", &state)
-            .env("RTK_WSL_DISTRO", &distro)
-            .env("RTK_WSL_USER", &user)
-            .env("RTK_WSL_CWD", &native_path)
+            .env("XUVA_STATE_DIR", &state)
+            .env("XUVA_WSL_DISTRO", &distro)
+            .env("XUVA_WSL_USER", &user)
+            .env("XUVA_WSL_CWD", &native_path)
             .args(["resolve", "git", "--json", "--refresh"])
             .output()
             .expect("native WSL project resolution starts");
@@ -1315,7 +1336,7 @@ fn wad_resolve_verifies_wsl_project_paths_for_windows_providers() {
             .as_str()
             .expect("native WSL project has a Windows path");
         let expected_prefix = format!(
-            r"\\wsl.localhost\{}\tmp\rtk-wad-p13-native-{}-",
+            r"\\wsl.localhost\{}\tmp\xuva-p13-native-{}-",
             distro.to_ascii_lowercase(),
             std::process::id()
         );
@@ -1380,8 +1401,8 @@ fn wad_provider_exec_runs_each_available_verified_provider_without_replay() {
 
     let raw = Command::new(&launcher)
         .env("PATH", &path)
-        .env("RTK_WAD_STATE_DIR", &state)
-        .env("RTK_WSL_DISTRO", "Ubuntu")
+        .env("XUVA_STATE_DIR", &state)
+        .env("XUVA_WSL_DISTRO", "Ubuntu")
         .args(["provider", "exec", "p14-tool", "--", literal])
         .output()
         .expect("Windows raw provider starts");
@@ -1393,9 +1414,9 @@ fn wad_provider_exec_runs_each_available_verified_provider_without_replay() {
 
     let native = Command::new(&launcher)
         .env("PATH", &path)
-        .env("RTK_WAD_STATE_DIR", &native_state)
-        .env("RTK_WAD_NATIVE_RTK_PATH", &fake_rtk)
-        .env("RTK_WSL_DISTRO", "Ubuntu")
+        .env("XUVA_STATE_DIR", &native_state)
+        .env("XUVA_NATIVE_RTK_PATH", &fake_rtk)
+        .env("XUVA_WSL_DISTRO", "Ubuntu")
         .args(["provider", "exec", "p14-tool", "--", literal])
         .output()
         .expect("Windows RTK provider starts");
@@ -1407,8 +1428,8 @@ fn wad_provider_exec_runs_each_available_verified_provider_without_replay() {
     assert_eq!(native_stdout.matches("rtk-args:").count(), 1);
 
     let resolution = Command::new(&launcher)
-        .env("RTK_WAD_STATE_DIR", &state)
-        .env("RTK_WSL_DISTRO", "Ubuntu")
+        .env("XUVA_STATE_DIR", &state)
+        .env("XUVA_WSL_DISTRO", "Ubuntu")
         .args(["resolve", "git", "--json", "--refresh"])
         .output()
         .expect("Git provider resolution starts");
@@ -1423,8 +1444,8 @@ fn wad_provider_exec_runs_each_available_verified_provider_without_replay() {
         available_provider_candidate_index(&resolution, "wsl_rtk", Some("Ubuntu"))
     {
         let wsl_rtk = Command::new(&launcher)
-            .env("RTK_WAD_STATE_DIR", &state)
-            .env("RTK_WSL_DISTRO", "Ubuntu")
+            .env("XUVA_STATE_DIR", &state)
+            .env("XUVA_WSL_DISTRO", "Ubuntu")
             .args([
                 "provider",
                 "exec",
@@ -1444,8 +1465,8 @@ fn wad_provider_exec_runs_each_available_verified_provider_without_replay() {
         available_provider_candidate_index(&resolution, "wsl_raw", Some("Ubuntu-RTK-WSL1"))
     {
         let wsl_raw = Command::new(&launcher)
-            .env("RTK_WAD_STATE_DIR", &state)
-            .env("RTK_WSL_DISTRO", "Ubuntu")
+            .env("XUVA_STATE_DIR", &state)
+            .env("XUVA_WSL_DISTRO", "Ubuntu")
             .args([
                 "provider",
                 "exec",
@@ -1461,8 +1482,8 @@ fn wad_provider_exec_runs_each_available_verified_provider_without_replay() {
         assert!(String::from_utf8_lossy(&wsl_raw.stdout).starts_with("git version "));
 
         let rejected = Command::new(&launcher)
-            .env("RTK_WAD_STATE_DIR", &state)
-            .env("RTK_WSL_DISTRO", "Ubuntu")
+            .env("XUVA_STATE_DIR", &state)
+            .env("XUVA_WSL_DISTRO", "Ubuntu")
             .args([
                 "provider",
                 "exec",
@@ -1546,7 +1567,7 @@ fn wad_policy_requires_a_matching_local_adapter_context() {
     let (launcher, directory) = wad_launcher();
     let state = directory.join("state");
     let context = Command::new(&launcher)
-        .env("RTK_WAD_STATE_DIR", &state)
+        .env("XUVA_STATE_DIR", &state)
         .args(["policy", "context"])
         .output()
         .expect("policy context starts");
@@ -1579,14 +1600,14 @@ fn wad_policy_requires_a_matching_local_adapter_context() {
     )
     .expect("policy fixture is written");
     let imported = Command::new(&launcher)
-        .env("RTK_WAD_STATE_DIR", &state)
+        .env("XUVA_STATE_DIR", &state)
         .args(["policy", "import", source.to_str().expect("policy path")])
         .output()
         .expect("policy import starts");
     assert!(imported.status.success());
 
     let selected = Command::new(&launcher)
-        .env("RTK_WAD_STATE_DIR", &state)
+        .env("XUVA_STATE_DIR", &state)
         .args(["--explain-route", "rg", "needle"])
         .output()
         .expect("matching policy explanation starts");
@@ -1597,8 +1618,8 @@ fn wad_policy_requires_a_matching_local_adapter_context() {
     std::fs::write(&alternate_rtk, "@echo off\r\nexit /b 0\r\n")
         .expect("alternate RTK fixture is written");
     let invalidated = Command::new(&launcher)
-        .env("RTK_WAD_STATE_DIR", &state)
-        .env("RTK_WAD_NATIVE_RTK_PATH", &alternate_rtk)
+        .env("XUVA_STATE_DIR", &state)
+        .env("XUVA_NATIVE_RTK_PATH", &alternate_rtk)
         .args(["--explain-route", "rg", "needle"])
         .output()
         .expect("changed-context explanation starts");
@@ -1615,7 +1636,7 @@ fn wad_generic_setup_is_diagnostic_only_and_never_creates_an_install_transaction
     let state = directory.join("state");
 
     let ready = Command::new(&launcher)
-        .env("RTK_WAD_STATE_DIR", &state)
+        .env("XUVA_STATE_DIR", &state)
         .args(["setup", "git", "--json", "--refresh"])
         .output()
         .expect("generic ready setup diagnosis starts");
@@ -1630,7 +1651,7 @@ fn wad_generic_setup_is_diagnostic_only_and_never_creates_an_install_transaction
 
     let missing_tool = "p17-tool-that-is-not-installed";
     let blocked = Command::new(&launcher)
-        .env("RTK_WAD_STATE_DIR", &state)
+        .env("XUVA_STATE_DIR", &state)
         .args(["setup", missing_tool, "--json", "--refresh"])
         .output()
         .expect("generic blocked setup diagnosis starts");
@@ -1649,7 +1670,7 @@ fn wad_generic_setup_is_diagnostic_only_and_never_creates_an_install_transaction
     );
 
     let doctor = Command::new(&launcher)
-        .env("RTK_WAD_STATE_DIR", &state)
+        .env("XUVA_STATE_DIR", &state)
         .args(["doctor", missing_tool, "--refresh"])
         .output()
         .expect("generic missing-provider doctor starts");
@@ -1660,7 +1681,7 @@ fn wad_generic_setup_is_diagnostic_only_and_never_creates_an_install_transaction
     assert!(doctor_stdout.contains("setup p17-tool-that-is-not-installed"));
 
     let forced = Command::new(&launcher)
-        .env("RTK_WAD_STATE_DIR", &state)
+        .env("XUVA_STATE_DIR", &state)
         .args(["setup", missing_tool, "--apply", "--confirm"])
         .output()
         .expect("generic forced setup starts");
@@ -1674,14 +1695,14 @@ fn wad_generic_setup_is_diagnostic_only_and_never_creates_an_install_transaction
 #[test]
 fn provisioned_wsl1_bridge_preserves_the_process_contract_when_requested() {
     let _guard = process_contract_guard();
-    let Ok(distro) = std::env::var("RTK_WSL1_TEST_DISTRO") else {
+    let Ok(distro) = std::env::var("XUVA_WSL1_TEST_DISTRO") else {
         return;
     };
     let literal = "wsl1 space/漢字;and&dollar$HOME\\tail";
     let output = Command::new(launcher())
-        .env("RTK_WSL_BACKEND", "wsl1")
-        .env("RTK_WSL_DISTRO", distro)
-        .env("RTK_WSL_RTK_PATH", "/usr/bin/printf")
+        .env("XUVA_WSL_BACKEND", "wsl1")
+        .env("XUVA_WSL_DISTRO", distro)
+        .env("XUVA_WSL_RTK_PATH", "/usr/bin/printf")
         .args(["%s", literal])
         .output()
         .expect("WSL1 bridge starts");
@@ -1697,11 +1718,11 @@ fn provisioned_wsl1_bridge_preserves_the_process_contract_when_requested() {
 #[test]
 fn ctrl_break_releases_the_global_lock_for_waiting_children() {
     let _guard = process_contract_guard();
-    let ready_file = std::env::temp_dir().join(format!("rtk-wad-ready-{}", std::process::id()));
+    let ready_file = std::env::temp_dir().join(format!("xuva-ready-{}", std::process::id()));
     let _ = std::fs::remove_file(&ready_file);
     let mut first = command("/bin/sh")
         .args(["-c", "sleep 30"])
-        .env("RTK_WSL_TEST_READY_FILE", &ready_file)
+        .env("XUVA_WSL_TEST_READY_FILE", &ready_file)
         .creation_flags(CREATE_NEW_PROCESS_GROUP)
         .stderr(Stdio::piped())
         .spawn()
@@ -1807,7 +1828,7 @@ fn ctrl_break_releases_the_global_lock_for_waiting_children() {
 fn ctrl_break_cancels_from_a_temp_windows_worktree() {
     let _guard = process_contract_guard();
     let directory = std::env::temp_dir().join(format!(
-        "rtk-wad-windows-cancel-contract-{}",
+        "xuva-windows-cancel-contract-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&directory).expect("temporary Windows worktree is created");
@@ -1815,7 +1836,7 @@ fn ctrl_break_cancels_from_a_temp_windows_worktree() {
     let mut child = command("/bin/sh")
         .current_dir(&directory)
         .args(["-c", "sleep 30"])
-        .env("RTK_WSL_TEST_READY_FILE", &ready_file)
+        .env("XUVA_WSL_TEST_READY_FILE", &ready_file)
         .creation_flags(CREATE_NEW_PROCESS_GROUP)
         .stderr(Stdio::piped())
         .spawn()
@@ -1864,14 +1885,14 @@ fn ctrl_break_cancels_from_a_temp_windows_worktree() {
 fn ctrl_break_cancels_a_raw_windows_node_child() {
     let _guard = process_contract_guard();
     let ready_file = std::env::temp_dir().join(format!(
-        "rtk-wad-p7-raw-node-ready-{}-{}",
+        "xuva-p7-raw-node-ready-{}-{}",
         std::process::id(),
         WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed)
     ));
     let node_program =
         "require('fs').writeFileSync(process.env.P7_READY, 'ready'); setInterval(() => {}, 1000)";
     let mut child = Command::new(launcher())
-        .env("RTK_WAD_OUTPUT_ADAPTER", "raw")
+        .env("XUVA_OUTPUT_ADAPTER", "raw")
         .env("P7_READY", &ready_file)
         .args(["node", "-e", node_program])
         .creation_flags(CREATE_NEW_PROCESS_GROUP)
