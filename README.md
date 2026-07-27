@@ -91,6 +91,13 @@ Install it for the current user:
 rtk-wad gain
 ```
 
+The installer performs `rtk-wad scan` after activating the binary. It
+inventories every launchable executable on the Windows `PATH` and the WSL
+distros that actually exist, without executing those tools, installing a
+toolchain, or forcing WSL. The dispatcher resolves and caches any safe
+executable name on demand; use `rtk-wad scan nvm rustc` to refresh named
+providers across Windows and WSL explicitly.
+
 The core installer has no Python or tokenizer dependency. The pinned
 [`tiktoken`](requirements/wad-tokenizer.txt) environment is optional and used
 only to reproduce benchmark token counts. Install it explicitly when running a

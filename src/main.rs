@@ -41,6 +41,7 @@ const CALIBRATION_ARGUMENT: &str = "calibration";
 const RESOLVE_ARGUMENT: &str = "resolve";
 const DOCTOR_ARGUMENT: &str = "doctor";
 const WHICH_ARGUMENT: &str = "which";
+const SCAN_ARGUMENT: &str = "scan";
 const PROVIDER_ARGUMENT: &str = "provider";
 const SURFACE_ARGUMENT: &str = "surface";
 const SETUP_ARGUMENT: &str = "setup";
@@ -590,18 +591,24 @@ fn save_provider_cache(cache: &ProviderCacheFile) -> Result<(), String> {
         .map_err(|error| format!("unable to finalize provider cache: {error}"))
 }
 
-fn cache_entry_is_fresh(entry: &ProviderCacheEntry, now: u64, context_signature: &str) -> bool {
+fn cache_entry_is_fresh(
+    entry: &ProviderCacheEntry,
+    now: u64,
+    context_signature: &str,
+    validate_versions: bool,
+) -> bool {
     now.saturating_sub(entry.observed_unix_seconds) <= PROVIDER_CACHE_TTL_SECONDS
         && entry.context_signature == context_signature
         && binary_identity_is_current(entry.windows.executable_identity.as_ref())
         && binary_identity_is_current(entry.windows.native_rtk_identity.as_ref())
-        && cached_tool_version_is_current(
-            entry.windows.executable.as_deref(),
-            entry.windows.executable_version.as_deref(),
-            None,
-        )
+        && (!validate_versions
+            || cached_tool_version_is_current(
+                entry.windows.executable.as_deref(),
+                entry.windows.executable_version.as_deref(),
+                None,
+            ))
         && entry.wsl.iter().all(wsl_probe_identities_are_current)
-        && entry.wsl.iter().all(wsl_probe_version_is_current)
+        && (!validate_versions || entry.wsl.iter().all(wsl_probe_version_is_current))
 }
 
 fn binary_identity_is_current(identity: Option<&BinaryIdentity>) -> bool {
@@ -952,13 +959,22 @@ fn current_project_location(config: &Config) -> ProjectLocation {
         })
 }
 
-fn discover_tool(tool: &str, config: &Config, include_wsl: bool) -> ProviderCacheEntry {
+fn discover_tool(
+    tool: &str,
+    config: &Config,
+    include_wsl: bool,
+    inspect_versions: bool,
+) -> ProviderCacheEntry {
     let executable = if tool == "go" { "go.exe" } else { tool };
     let windows_executable = first_windows_executable(executable);
     let native_rtk = configured_windows_executable(&config.native_rtk_path);
-    let executable_version = windows_executable
-        .as_deref()
-        .and_then(|path| tool_version(path, None));
+    let executable_version = inspect_versions
+        .then(|| {
+            windows_executable
+                .as_deref()
+                .and_then(|path| tool_version(path, None))
+        })
+        .flatten();
     let windows = WindowsToolProbe {
         executable_capabilities: version_capabilities(&executable_version),
         executable_version,
@@ -992,6 +1008,7 @@ fn cached_or_discovered_tool(
     config: &Config,
     refresh: bool,
     require_wsl: bool,
+    validate_versions: bool,
 ) -> (ProviderCacheEntry, &'static str) {
     let now = unix_seconds();
     let context_signature = discovery_context_signature(config, require_wsl);
@@ -999,13 +1016,13 @@ fn cached_or_discovered_tool(
     if !refresh
         && let Some(entry) = cache.entries.iter().find(|entry| {
             entry.tool == tool
-                && cache_entry_is_fresh(entry, now, &context_signature)
+                && cache_entry_is_fresh(entry, now, &context_signature, validate_versions)
                 && (!require_wsl || entry.wsl_probe_complete)
         })
     {
         return (entry.clone(), "hit");
     }
-    let discovered = discover_tool(tool, config, require_wsl);
+    let discovered = discover_tool(tool, config, require_wsl, validate_versions);
     cache.entries.retain(|entry| entry.tool != tool);
     cache.entries.push(discovered.clone());
     if let Err(error) = save_provider_cache(&cache) {
@@ -1175,7 +1192,7 @@ fn windows_project_path(project: &ProjectLocation, user: Option<&str>) -> Option
 
 fn resolve_tool_provider(tool: &str, config: &Config, refresh: bool) -> ProviderResolution {
     let project = current_project_location(config);
-    let (discovery, cache) = cached_or_discovered_tool(tool, config, refresh, true);
+    let (discovery, cache) = cached_or_discovered_tool(tool, config, refresh, true, true);
     resolve_tool_provider_from_discovery_with_user(
         tool,
         project,
@@ -1284,23 +1301,10 @@ enum ProviderDispatchDecision {
 }
 
 fn is_dispatchable_provider_tool(arguments: &[OsString]) -> bool {
-    matches!(
-        arguments.first().and_then(|argument| argument.to_str()),
-        Some(
-            "go" | "cargo"
-                | "node"
-                | "npm"
-                | "pnpm"
-                | "python"
-                | "python3"
-                | "pytest"
-                | "java"
-                | "gradle"
-                | "mvn"
-                | "dotnet"
-                | "git"
-        )
-    )
+    arguments
+        .first()
+        .and_then(|argument| argument.to_str())
+        .is_some_and(is_safe_provider_tool_name)
 }
 
 fn wsl_route_for_version(version: Option<u8>) -> Option<Route> {
@@ -1338,39 +1342,37 @@ fn provider_dispatch_decision(
     let tool = arguments
         .first()
         .and_then(|argument| argument.to_str())
-        .expect("dispatchable provider tools are valid Unicode");
+        .expect("dispatchable provider tools have a safe Unicode name");
     let project = current_project_location(config);
-    // A WSL suggestion needs the complete inventory immediately. Windows-first
-    // routes probe only Windows on the hot path and expand to WSL only after
-    // that candidate has been ruled out.
-    let needs_wsl_inventory = matches!(static_route, Route::Wsl1 | Route::Wsl2 | Route::Auto);
-    let (discovery, cache) = cached_or_discovered_tool(tool, config, false, needs_wsl_inventory);
-    // An automatic conservative WSL1 route is only a legacy fallback. A
-    // dispatchable tool must still reach the complete resolver so a verified
-    // Windows provider can replace that fallback before any child starts.
-    if static_route != Route::Wsl1
-        && windows_tool_is_usable(&project, static_route, &discovery.windows)
-    {
-        return ProviderDispatchDecision::KeepStaticRoute;
+    // A Windows project always probes its native executable first. This keeps
+    // an unknown command such as `code`, `nvm`, or a user tool out of WSL when
+    // Windows already owns it. Only a missing native candidate expands to the
+    // WSL inventory. A WSL project still needs the complete inventory first so
+    // its same-distro provider keeps precedence over a compatible Windows one.
+    let (windows_discovery, windows_cache) =
+        cached_or_discovered_tool(tool, config, false, false, false);
+    if project.kind != ProjectLocationKind::Wsl && windows_discovery.windows.executable.is_some() {
+        return provider_dispatch_decision_from_resolution(
+            arguments,
+            config,
+            static_route,
+            resolve_tool_provider_from_discovery_with_user(
+                tool,
+                project,
+                windows_discovery,
+                windows_cache,
+                config.user.as_deref(),
+            ),
+        );
     }
-    let resolution = if needs_wsl_inventory {
-        resolve_tool_provider_from_discovery_with_user(
-            tool,
-            project,
-            discovery,
-            cache,
-            config.user.as_deref(),
-        )
-    } else {
-        let (discovery, cache) = cached_or_discovered_tool(tool, config, false, true);
-        resolve_tool_provider_from_discovery_with_user(
-            tool,
-            project,
-            discovery,
-            cache,
-            config.user.as_deref(),
-        )
-    };
+    let (discovery, cache) = cached_or_discovered_tool(tool, config, false, true, true);
+    let resolution = resolve_tool_provider_from_discovery_with_user(
+        tool,
+        project,
+        discovery,
+        cache,
+        config.user.as_deref(),
+    );
     provider_dispatch_decision_from_resolution(arguments, config, static_route, resolution)
 }
 
@@ -1445,7 +1447,7 @@ fn provider_dispatch_decision_from_resolution(
         };
         return ProviderDispatchDecision::Missing {
             reason: format!(
-                "{} is unavailable in the safe Windows and WSL providers ({detail}); run `rtk-wad doctor {}` for details. Installation is disabled in P7.",
+                "command `{}` was not found in verified Windows or WSL providers ({detail}); run `rtk-wad doctor {}` for details. Installation is disabled in P7.",
                 resolution.tool, resolution.tool
             ),
         };
@@ -1620,6 +1622,30 @@ fn is_safe_provider_tool_name(tool: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
 }
 
+fn windows_path_tool_names() -> Vec<String> {
+    let mut tools = HashSet::new();
+    let path = env::var_os("PATH").unwrap_or_default();
+    for directory in env::split_paths(&path) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() || !is_windows_launchable_path(&path.to_string_lossy()) {
+                continue;
+            }
+            if let Some(name) = path.file_stem().and_then(|name| name.to_str())
+                && is_safe_provider_tool_name(name)
+            {
+                tools.insert(name.to_ascii_lowercase());
+            }
+        }
+    }
+    let mut tools: Vec<_> = tools.into_iter().collect();
+    tools.sort_unstable();
+    tools
+}
+
 fn provider_command(arguments: &[OsString], config: &Config, doctor: bool) -> ExitCode {
     let Some(tool) = arguments.get(1).and_then(|argument| argument.to_str()) else {
         eprintln!(
@@ -1660,6 +1686,63 @@ fn provider_command(arguments: &[OsString], config: &Config, doctor: bool) -> Ex
         return ExitCode::FAILURE;
     }
     print_provider_resolution(&resolve_tool_provider(tool, config, refresh), json, doctor)
+}
+
+fn provider_scan_command(arguments: &[OsString], config: &Config) -> ExitCode {
+    if arguments.len() == 1 {
+        let windows_tools = windows_path_tool_names();
+        let wsl_distros = installed_wsl_distributions()
+            .into_iter()
+            .map(|(distro, version)| format!("{distro}:{}", version.unwrap_or_default()))
+            .collect::<Vec<_>>();
+        println!("scan=complete; windows_tools={}", windows_tools.len());
+        println!(
+            "wsl_distros={}",
+            if wsl_distros.is_empty() {
+                "none".to_owned()
+            } else {
+                wsl_distros.join(",")
+            }
+        );
+        println!(
+            "provider_cache=on-demand; use `rtk-wad scan <tool>...` to refresh named providers"
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    let requested_tools: Vec<&str> = {
+        let mut tools = Vec::new();
+        for argument in arguments.iter().skip(1) {
+            let Some(tool) = argument
+                .to_str()
+                .filter(|tool| is_safe_provider_tool_name(tool))
+            else {
+                eprintln!(
+                    "rtk-wad: usage: scan [<tool>...]; tool names must contain only ASCII letters, digits, '.', '_', or '-'"
+                );
+                return ExitCode::FAILURE;
+            };
+            if !tools.contains(&tool) {
+                tools.push(tool);
+            }
+        }
+        tools
+    };
+
+    for tool in &requested_tools {
+        let resolution = resolve_tool_provider(tool, config, true);
+        let recommended = resolution
+            .recommended
+            .and_then(|index| resolution.candidates.get(index))
+            .map_or("missing", |candidate| candidate.kind.as_str());
+        println!(
+            "tool={tool}; cache={}; candidates={}; recommended={recommended}",
+            resolution.cache,
+            resolution.candidates.len()
+        );
+    }
+    println!("scan=complete; tools={}", requested_tools.len());
+    ExitCode::SUCCESS
 }
 
 fn has_complete_go_provider(resolution: &ProviderResolution) -> bool {
@@ -3674,6 +3757,12 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     }
     if arguments
         .first()
+        .is_some_and(|argument| argument == SCAN_ARGUMENT)
+    {
+        return provider_scan_command(&arguments, config);
+    }
+    if arguments
+        .first()
         .is_some_and(|argument| argument == SETUP_ARGUMENT)
     {
         return setup_command(&arguments, config);
@@ -4909,16 +4998,18 @@ mod tests {
         assert!(cache_entry_is_fresh(
             &entry,
             100 + PROVIDER_CACHE_TTL_SECONDS,
-            "fixture"
+            "fixture",
+            true
         ));
         assert!(
-            !cache_entry_is_fresh(&entry, 100, "changed-path-or-git-revision"),
+            !cache_entry_is_fresh(&entry, 100, "changed-path-or-git-revision", true),
             "a changed discovery fingerprint invalidates even a new entry"
         );
         assert!(!cache_entry_is_fresh(
             &entry,
             101 + PROVIDER_CACHE_TTL_SECONDS,
-            "fixture"
+            "fixture",
+            true
         ));
     }
 
@@ -5268,13 +5359,13 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_wsl1_is_eliminated_and_windows_raw_remains_a_valid_plan() {
+    fn generic_windows_executable_overrides_an_unavailable_legacy_wsl_route() {
         let project_path = env::current_dir()
             .expect("test project directory exists")
             .to_string_lossy()
             .to_string();
         let resolution = resolve_tool_provider_from_discovery_with_user(
-            "go",
+            "nvm",
             ProjectLocation {
                 kind: ProjectLocationKind::Windows,
                 path: project_path.clone(),
@@ -5282,13 +5373,13 @@ mod tests {
                 windows_path: None,
             },
             ProviderCacheEntry {
-                tool: "go".to_owned(),
+                tool: "nvm".to_owned(),
                 observed_unix_seconds: 1,
                 context_signature: "fixture".to_owned(),
                 windows: WindowsToolProbe {
-                    executable: Some(r"C:\\Go\\bin\\go.exe".to_owned()),
+                    executable: Some(r"C:\\Users\\test\\AppData\\Local\\nvm\\nvm.exe".to_owned()),
                     native_rtk: None,
-                    executable_version: Some("go1.fixture".to_owned()),
+                    executable_version: Some("1.2.2".to_owned()),
                     executable_capabilities: vec!["version".to_owned()],
                     executable_identity: None,
                     native_rtk_identity: None,
@@ -5312,7 +5403,7 @@ mod tests {
         assert_eq!(resolution.candidates.len(), 1);
         assert_eq!(resolution.availability.wsl[0].executable, None);
         match provider_dispatch_decision_from_resolution(
-            &[OsString::from("go"), OsString::from("version")],
+            &[OsString::from("nvm"), OsString::from("ls")],
             &default_config(),
             Route::Wsl1,
             resolution,
@@ -5327,7 +5418,9 @@ mod tests {
                 assert_eq!(plan.adapter, dispatcher::OutputAdapter::Raw);
                 assert!(fallbacks.is_empty());
             }
-            _ => panic!("an unavailable WSL1 provider must not block Windows raw execution"),
+            _ => {
+                panic!("an unavailable WSL1 provider must not block generic Windows raw execution")
+            }
         }
     }
 
@@ -5528,18 +5621,33 @@ mod tests {
     }
 
     #[test]
-    fn generic_dispatcher_limits_on_demand_discovery_to_supported_toolchains() {
+    fn generic_dispatcher_discovers_every_safe_executable_name() {
         for tool in [
-            "go", "cargo", "node", "npm", "pnpm", "python", "python3", "pytest", "java", "gradle",
-            "mvn", "dotnet", "git",
+            "go",
+            "cargo",
+            "rustc",
+            "node",
+            "nvm",
+            "npm",
+            "pnpm",
+            "python",
+            "python3",
+            "pytest",
+            "java",
+            "gradle",
+            "mvn",
+            "dotnet",
+            "git",
+            "tool.name",
+            "cargo-next",
         ] {
             assert!(
                 is_dispatchable_provider_tool(&[OsString::from(tool)]),
                 "{tool}"
             );
         }
-        assert!(!is_dispatchable_provider_tool(&[OsString::from("cmd")]));
-        assert!(!is_dispatchable_provider_tool(&[OsString::from("go.exe")]));
+        assert!(!is_dispatchable_provider_tool(&[OsString::from("cmd /c")]));
+        assert!(!is_dispatchable_provider_tool(&[OsString::from("go;exit")]));
     }
 
     #[test]

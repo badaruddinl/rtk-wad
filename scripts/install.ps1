@@ -8,6 +8,7 @@ param(
     [switch]$InstallPython,
     [switch]$ConfirmPythonInstall,
     [switch]$SkipTokenizer,
+    [switch]$SkipProviderScan,
     [switch]$Force
 )
 
@@ -61,3 +62,9 @@ try {
 }
 
 Write-Output "Installed $target"
+if (-not $SkipProviderScan) {
+    & $target scan
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installed launcher capability scan failed with exit code $LASTEXITCODE."
+    }
+}
