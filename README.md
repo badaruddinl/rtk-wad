@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="assets/xuva-routing-hero.png" alt="XUVA routing one Windows command through native, RTK, or WSL execution" width="100%" />
+  <img src="assets/xuva-routing-hero.png" alt="XUVA routing a command through verified local and configured environments" width="100%" />
 </p>
 
 <h1 align="center">XUVA</h1>
 
 <p align="center">
-  <strong>Windows-first adaptive command dispatcher.</strong><br />
-  One safe command boundary that chooses raw Windows, native RTK, or a verified WSL route.
+  <strong>Adaptive command dispatcher.</strong><br />
+  One safe command boundary with explainable route selection across local and configured environments.
 </p>
 
 <p align="center">
@@ -16,13 +16,10 @@
   <a href="docs/RELEASE_GATE_P20.md"><img src="https://img.shields.io/badge/status-stable-success.svg" alt="Stable status" /></a>
 </p>
 
-XUVA is a native Windows executable and a Windows-first adaptive command
-dispatcher. It complements [RTK](https://github.com/rtk-ai/rtk); it is not a
-replacement for RTK and it is not merely a WSL bridge. For each command, it
-selects one auditable route: raw Windows, native Windows RTK, or a verified WSL
-provider. It preserves arguments as structured process arguments—never by
-rebuilding a shell command string—and keeps a command native when RTK or WSL
-does not provide verified local value.
+XUVA is an adaptive command dispatcher. For each command, it selects one
+auditable route from the available local and configured providers. It preserves
+arguments as structured process arguments and keeps execution local when
+another route does not provide verified value.
 
 > **Hard cutover.** Starting with `v0.4.1`, the project, repository, binary,
 > installer, environment variables, and state paths use `xuva`. There is no
@@ -33,11 +30,11 @@ does not provide verified local value.
 
 ```mermaid
 flowchart LR
-    A[Windows command and argv] --> B[XUVA]
+    A[Command and argv] --> B[XUVA]
     B --> C{Safe, verified local evidence?}
-    C -->|Mutation or no benefit| D[Raw Windows]
-    C -->|Compact output helps| E[Native Windows RTK]
-    C -->|Linux semantics required and verified| F[WSL1 or WSL2 RTK]
+    C -->|Mutation or no benefit| D[Raw local execution]
+    C -->|Adapter capability helps| E[Configured output adapter]
+    C -->|Provider route is verified| F[Configured environment provider]
     D --> G[One exit code, stdout, and stderr contract]
     E --> G
     F --> G
@@ -45,13 +42,19 @@ flowchart LR
 
 | Route | When XUVA uses it | What it protects |
 | --- | --- | --- |
-| Raw Windows | Mutations, unknown commands, or no measured RTK benefit | Lowest avoidable latency; native Windows toolchain behavior |
-| Native RTK | A verified read-only command has a useful compact-output result | RTK filtering without a WSL bridge |
-| WSL RTK | A verified provider and path mapping require Linux semantics | Structured cross-host execution, not ad-hoc shell quoting |
+| Raw local | Mutations, unknown commands, or no verified adapter benefit | Lowest avoidable latency and original tool behavior |
+| Output adapter | A verified read-only command has a useful adapted result | Compact output without shell reconstruction |
+| Environment provider | A verified provider and path mapping require another environment | Structured cross-host execution, not ad-hoc shell quoting |
 
 The dispatcher never replays a command merely to train its policy. Mutating
 commands do not become adaptive. Provider discovery is local-first and does not
 install a language runtime or tool automatically.
+
+### Optional integration
+
+[RTK](https://github.com/rtk-ai/rtk) is an optional output-adapter dependency.
+When it is installed and a verified route benefits from it, XUVA can select it;
+otherwise XUVA continues with raw or other verified provider routes.
 
 ## Download the verified Windows binary
 
