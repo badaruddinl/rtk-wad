@@ -6,21 +6,27 @@ param(
 
 $ErrorActionPreference = "Stop"
 $targetDirectory = [System.IO.Path]::GetFullPath($Destination)
-$target = Join-Path $targetDirectory "rtk-wad.exe"
+$target = Join-Path $targetDirectory "xuva.exe"
+$legacyTarget = Join-Path $targetDirectory "rtk-wad.exe"
 $backup = "$target.previous.exe"
+$legacyBackup = "$legacyTarget.previous.exe"
 
-if (-not (Test-Path -LiteralPath $target)) {
-    throw "No installed launcher found at $target."
+if (-not (Test-Path -LiteralPath $target) -and -not (Test-Path -LiteralPath $legacyTarget)) {
+    throw "No installed XUVA or legacy RTK-WAD launcher found in $targetDirectory."
 }
 
 if ($RestorePrevious) {
-    if (-not (Test-Path -LiteralPath $backup)) {
-        throw "No previous launcher backup found at $backup."
+    foreach ($entry in @(@($target, $backup), @($legacyTarget, $legacyBackup))) {
+        $active, $previous = $entry
+        if ((Test-Path -LiteralPath $active) -and (Test-Path -LiteralPath $previous)) {
+            Remove-Item -LiteralPath $active
+            Move-Item -LiteralPath $previous -Destination $active
+        }
     }
-    Remove-Item -LiteralPath $target
-    Move-Item -LiteralPath $backup -Destination $target
-    Write-Output "Restored $target from $backup"
+    Write-Output "Restored available XUVA and RTK-WAD launcher backups."
 } else {
-    Remove-Item -LiteralPath $target
-    Write-Output "Removed $target."
+    foreach ($active in @($target, $legacyTarget)) {
+        if (Test-Path -LiteralPath $active) { Remove-Item -LiteralPath $active }
+    }
+    Write-Output "Removed XUVA and legacy RTK-WAD launchers."
 }

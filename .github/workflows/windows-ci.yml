@@ -29,7 +29,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --bin rtk-wad -- --test-threads=1
+        run: cargo test --bins -- --test-threads=1
 
       - name: Detect Ubuntu WSL distro
         id: wsl
@@ -48,7 +48,7 @@ jobs:
         run: Write-Warning 'Ubuntu WSL distro is unavailable on this hosted runner; local WSL process-contract evidence remains required.'
 
       - name: Release build
-        run: cargo build --release
+        run: cargo build --release --bins
 
       - name: Package
         run: cargo package --allow-dirty
@@ -77,7 +77,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build release launcher
-        run: cargo build --release
+        run: cargo build --release --bins
 
       - name: Run tokenizer dependency contracts
         shell: pwsh

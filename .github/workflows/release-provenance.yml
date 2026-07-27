@@ -33,13 +33,14 @@ jobs:
         run: |
           cargo fmt --all --check
           cargo clippy --all-targets -- -D warnings
-          cargo test --bin rtk-wad -- --test-threads=1
-          cargo build --release
+          cargo test --bins -- --test-threads=1
+          cargo build --release --bins
           $dist = 'dist'
           New-Item -ItemType Directory -Path $dist -Force | Out-Null
+          Copy-Item target\release\xuva.exe $dist\xuva.exe
           Copy-Item target\release\rtk-wad.exe $dist\rtk-wad.exe
-          Compress-Archive -Path $dist\rtk-wad.exe -DestinationPath "$dist\rtk-wad-${{ inputs.tag }}-windows-x86_64.zip" -Force
-          Get-FileHash "$dist\rtk-wad-${{ inputs.tag }}-windows-x86_64.zip" -Algorithm SHA256 | ForEach-Object { $_.Hash + '  ' + $_.Path } | Set-Content "$dist\rtk-wad-${{ inputs.tag }}-windows-x86_64.zip.sha256"
+          Compress-Archive -Path $dist\xuva.exe, $dist\rtk-wad.exe -DestinationPath "$dist\xuva-${{ inputs.tag }}-windows-x86_64.zip" -Force
+          Get-FileHash "$dist\xuva-${{ inputs.tag }}-windows-x86_64.zip" -Algorithm SHA256 | ForEach-Object { $_.Hash + '  ' + $_.Path } | Set-Content "$dist\xuva-${{ inputs.tag }}-windows-x86_64.zip.sha256"
 
       - name: Attest release archive provenance
         uses: actions/attest-build-provenance@v2

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Destination = (Join-Path $env:USERPROFILE ".local\bin"),
-    [string]$Source = (Join-Path $PSScriptRoot "..\target\release\rtk-wad.exe"),
+    [string]$Source = (Join-Path $PSScriptRoot "..\target\release\xuva.exe"),
     [string]$TokenizerRoot,
     [string]$TokenizerPython,
     [switch]$InstallTokenizer,
@@ -15,8 +15,10 @@ param(
 $ErrorActionPreference = "Stop"
 $source = (Resolve-Path -LiteralPath $source).Path
 $targetDirectory = [System.IO.Path]::GetFullPath($Destination)
-$target = Join-Path $targetDirectory "rtk-wad.exe"
-$temporary = Join-Path $targetDirectory ".rtk-wad.exe.$PID.new"
+$target = Join-Path $targetDirectory "xuva.exe"
+$legacyTarget = Join-Path $targetDirectory "rtk-wad.exe"
+$temporary = Join-Path $targetDirectory ".xuva.exe.$PID.new"
+$legacyTemporary = Join-Path $targetDirectory ".rtk-wad.exe.$PID.new"
 $tokenizerInstaller = Join-Path $PSScriptRoot "install-tokenizer.ps1"
 
 if ($InstallTokenizer -and $SkipTokenizer) {
@@ -42,26 +44,32 @@ if ($InstallTokenizer) {
 }
 try {
     Copy-Item -LiteralPath $source -Destination $temporary -ErrorAction Stop
+    Copy-Item -LiteralPath $source -Destination $legacyTemporary -ErrorAction Stop
 
-    if (Test-Path -LiteralPath $target) {
-        if (-not $Force) {
-            throw "Refusing to overwrite existing $target. Re-run with -Force after reviewing it."
+    foreach ($activeTarget in @($target, $legacyTarget)) {
+        if (Test-Path -LiteralPath $activeTarget) {
+            if (-not $Force) {
+                throw "Refusing to overwrite existing $activeTarget. Re-run with -Force after reviewing it."
+            }
+            $backup = "$activeTarget.previous.exe"
+            if (Test-Path -LiteralPath $backup) {
+                throw "Refusing to overwrite existing backup $backup. Move or remove it deliberately first."
+            }
+            Move-Item -LiteralPath $activeTarget -Destination $backup
         }
-        $backup = "$target.previous.exe"
-        if (Test-Path -LiteralPath $backup) {
-            throw "Refusing to overwrite existing backup $backup. Move or remove it deliberately first."
-        }
-        Move-Item -LiteralPath $target -Destination $backup
     }
 
     Move-Item -LiteralPath $temporary -Destination $target
+    Move-Item -LiteralPath $legacyTemporary -Destination $legacyTarget
 } finally {
-    if (Test-Path -LiteralPath $temporary) {
-        Remove-Item -LiteralPath $temporary -Force
+    foreach ($temporaryTarget in @($temporary, $legacyTemporary)) {
+        if (Test-Path -LiteralPath $temporaryTarget) {
+            Remove-Item -LiteralPath $temporaryTarget -Force
+        }
     }
 }
 
-Write-Output "Installed $target"
+Write-Output "Installed $target and legacy compatibility shim $legacyTarget"
 if (-not $SkipProviderScan) {
     & $target scan
     if ($LASTEXITCODE -ne 0) {

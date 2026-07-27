@@ -2,6 +2,8 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::process::{Command, ExitCode, Stdio};
 
+use crate::{PRODUCT_COMMAND, PRODUCT_NAME};
+
 const SUPPORTED_HOOKS: &[&str] = &["claude", "cursor", "gemini", "copilot"];
 
 fn supported_hook(name: &str) -> bool {
@@ -10,10 +12,10 @@ fn supported_hook(name: &str) -> bool {
 
 fn rewrite_hook_command(command: &mut String) -> bool {
     if let Some(rewritten) = command.strip_prefix("rtk ") {
-        *command = format!("rtk-wad {rewritten}");
+        *command = format!("{PRODUCT_COMMAND} {rewritten}");
         true
     } else if let Some(rewritten) = command.strip_prefix("rtk.exe ") {
-        *command = format!("rtk-wad {rewritten}");
+        *command = format!("{PRODUCT_COMMAND} {rewritten}");
         true
     } else {
         false
@@ -45,7 +47,7 @@ fn rewrite_hook_payload(payload: &mut serde_json::Value) -> bool {
 fn hook(agent: &str, native_rtk_path: &str) -> ExitCode {
     let mut input = Vec::new();
     if let Err(error) = std::io::stdin().read_to_end(&mut input) {
-        eprintln!("rtk-wad: could not read {agent} hook input: {error}");
+        eprintln!("{PRODUCT_COMMAND}: could not read {agent} hook input: {error}");
         return ExitCode::FAILURE;
     }
     let mut command = Command::new(native_rtk_path);
@@ -57,20 +59,20 @@ fn hook(agent: &str, native_rtk_path: &str) -> ExitCode {
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            eprintln!("rtk-wad: native RTK {agent} hook could not start: {error}");
+            eprintln!("{PRODUCT_COMMAND}: native RTK {agent} hook could not start: {error}");
             return ExitCode::from(127);
         }
     };
     if let Some(mut stdin) = child.stdin.take()
         && let Err(error) = stdin.write_all(&input)
     {
-        eprintln!("rtk-wad: could not forward Claude hook input: {error}");
+        eprintln!("{PRODUCT_COMMAND}: could not forward Claude hook input: {error}");
         return ExitCode::FAILURE;
     }
     let output = match child.wait_with_output() {
         Ok(output) => output,
         Err(error) => {
-            eprintln!("rtk-wad: native RTK {agent} hook did not complete: {error}");
+            eprintln!("{PRODUCT_COMMAND}: native RTK {agent} hook did not complete: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -82,7 +84,7 @@ fn hook(agent: &str, native_rtk_path: &str) -> ExitCode {
     let mut payload: serde_json::Value = match serde_json::from_slice(&output.stdout) {
         Ok(payload) => payload,
         Err(error) => {
-            eprintln!("rtk-wad: native RTK {agent} hook emitted invalid JSON: {error}");
+            eprintln!("{PRODUCT_COMMAND}: native RTK {agent} hook emitted invalid JSON: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -90,7 +92,7 @@ fn hook(agent: &str, native_rtk_path: &str) -> ExitCode {
     match serde_json::to_writer(std::io::stdout(), &payload) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("rtk-wad: could not emit Claude hook JSON: {error}");
+            eprintln!("{PRODUCT_COMMAND}: could not emit Claude hook JSON: {error}");
             ExitCode::FAILURE
         }
     }
@@ -107,19 +109,19 @@ fn initialization_command(agent: &str) -> &'static str {
 }
 
 fn print_integration(agent: &str) {
-    println!("RTK-WAD {agent} integration is intentionally opt-in.");
+    println!("{PRODUCT_NAME} {agent} integration is intentionally opt-in.");
     println!(
         "1. Configure the stock native RTK hook with: {}",
         initialization_command(agent)
     );
     println!(
-        "2. In the resulting agent hook registration, replace only `rtk hook {agent}` with `rtk-wad agent hook {agent}`."
+        "2. In the resulting agent hook registration, replace only `rtk hook {agent}` with `{PRODUCT_COMMAND} agent hook {agent}`."
     );
     println!(
         "3. Keep all other hook entries unchanged, restart the agent, then run a safe command such as git status."
     );
     println!(
-        "The adapter delegates rewrite decisions to native RTK and changes only a rewritten `rtk ...` command into `rtk-wad ...`."
+        "The adapter delegates rewrite decisions to native RTK and changes only a rewritten `rtk ...` command into `{PRODUCT_COMMAND} ...`."
     );
 }
 
@@ -131,7 +133,7 @@ pub(crate) fn command(arguments: &[OsString], native_rtk_path: &str) -> ExitCode
     {
         if !supported_hook(agent) {
             eprintln!(
-                "rtk-wad: unsupported agent `{agent}`; supported hooks: {}",
+                "{PRODUCT_COMMAND}: unsupported agent `{agent}`; supported hooks: {}",
                 SUPPORTED_HOOKS.join(", ")
             );
             return ExitCode::FAILURE;
@@ -144,7 +146,7 @@ pub(crate) fn command(arguments: &[OsString], native_rtk_path: &str) -> ExitCode
             }
             _ => {
                 eprintln!(
-                    "rtk-wad: usage: agent hook <agent> | agent integration <agent> (agents: {})",
+                    "{PRODUCT_COMMAND}: usage: agent hook <agent> | agent integration <agent> (agents: {})",
                     SUPPORTED_HOOKS.join(", ")
                 );
                 ExitCode::FAILURE
@@ -152,7 +154,7 @@ pub(crate) fn command(arguments: &[OsString], native_rtk_path: &str) -> ExitCode
         };
     }
     eprintln!(
-        "rtk-wad: usage: agent hook <agent> | agent integration <agent> (agents: {})",
+        "{PRODUCT_COMMAND}: usage: agent hook <agent> | agent integration <agent> (agents: {})",
         SUPPORTED_HOOKS.join(", ")
     );
     ExitCode::FAILURE
@@ -173,7 +175,7 @@ mod tests {
         assert!(rewrite_hook_payload(&mut claude));
         assert_eq!(
             claude.pointer("/hookSpecificOutput/updatedInput/command"),
-            Some(&serde_json::json!("rtk-wad git status --short"))
+            Some(&serde_json::json!("xuva git status --short"))
         );
         assert_eq!(
             claude.pointer("/hookSpecificOutput/permissionDecision"),
@@ -193,7 +195,7 @@ mod tests {
         ] {
             assert!(rewrite_hook_payload(&mut payload));
             let rendered = payload.to_string();
-            assert!(rendered.contains("rtk-wad git status"));
+            assert!(rendered.contains("xuva git status"));
             assert!(!rendered.contains("rtk.exe git status"));
         }
     }

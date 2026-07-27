@@ -1,8 +1,8 @@
 [package]
-name = "rtk-wad"
-version = "0.4.0-alpha.4"
+name = "xuva"
+version = "0.4.0"
 edition = "2024"
-description = "Safe adaptive Windows execution policy for raw commands, native RTK, and verified WSL providers"
+description = "Adaptive Windows execution dispatcher for raw commands, native RTK, and verified WSL providers"
 license = "Apache-2.0"
 homepage = "https://github.com/badaruddinl/rtk-wad"
 repository = "https://github.com/badaruddinl/rtk-wad"
@@ -10,8 +10,14 @@ readme = "README.md"
 publish = false
 
 [[bin]]
-name = "rtk-wad"
+name = "xuva"
 path = "src/main.rs"
+
+[[bin]]
+# Compatibility command. Keep this binary through the migration window so
+# existing shells, agent hooks, and automation do not break.
+name = "rtk-wad"
+path = "src/legacy_rtk_wad.rs"
 
 [dependencies]
 rusqlite = { version = "0.31", features = ["bundled"] }

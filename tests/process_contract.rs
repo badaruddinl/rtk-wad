@@ -23,6 +23,10 @@ unsafe extern "system" {
     fn GenerateConsoleCtrlEvent(ctrl_type: u32, process_group_id: u32) -> i32;
 }
 
+fn xuva_launcher() -> &'static str {
+    env!("CARGO_BIN_EXE_xuva")
+}
+
 fn launcher() -> &'static str {
     env!("CARGO_BIN_EXE_rtk-wad")
 }
@@ -60,7 +64,7 @@ fn process_contract_guard() -> MutexGuard<'static, ()> {
 #[test]
 fn dispatcher_owned_version_never_enters_environment_resolution() {
     let _guard = process_contract_guard();
-    let output = Command::new(launcher())
+    let output = Command::new(xuva_launcher())
         .env("RTK_WSL_DISTRO", "missing-version-test-distro")
         .env("RTK_WAD_ROUTE", "not-a-route")
         .args(["--version"])
@@ -75,9 +79,23 @@ fn dispatcher_owned_version_never_enters_environment_resolution() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        format!("rtk-wad {}", env!("CARGO_PKG_VERSION"))
+        format!("xuva {}", env!("CARGO_PKG_VERSION"))
     );
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn legacy_command_remains_a_compatible_launcher() {
+    let output = Command::new(launcher())
+        .args(["--version"])
+        .output()
+        .expect("legacy version command starts");
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        format!("xuva {}", env!("CARGO_PKG_VERSION"))
+    );
 }
 
 #[test]
@@ -1145,7 +1163,7 @@ fn wad_profile_selects_one_route_and_uses_a_local_gain_ledger() {
         .output()
         .expect("WAD diagnostics start");
     assert!(info.status.success());
-    assert!(String::from_utf8_lossy(&info.stdout).contains("adapter=rtk-wad"));
+    assert!(String::from_utf8_lossy(&info.stdout).contains("adapter=xuva"));
 
     let explained = Command::new(&launcher)
         .args(["--explain-route", "git", "commit", "-m", "contract"])

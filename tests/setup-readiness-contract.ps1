@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "target\release\rtk-wad.exe"),
+    [string]$Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "target\release\xuva.exe"),
     [string]$NativeRtk
 )
 
@@ -18,7 +18,7 @@ $previousNativeRtk = $env:RTK_WAD_NATIVE_RTK_PATH
 
 try {
     New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
-    $binary = Join-Path $temporaryRoot "rtk-wad.exe"
+    $binary = Join-Path $temporaryRoot "xuva.exe"
     Copy-Item -LiteralPath $Source -Destination $binary
     $env:RTK_WAD_STATE_DIR = Join-Path $temporaryRoot "state"
 

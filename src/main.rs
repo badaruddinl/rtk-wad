@@ -18,6 +18,10 @@ mod dispatcher;
 mod metrics;
 mod paths;
 
+pub(crate) const PRODUCT_NAME: &str = "XUVA";
+pub(crate) const PRODUCT_COMMAND: &str = "xuva";
+pub(crate) const LEGACY_COMMAND: &str = "rtk-wad";
+
 #[cfg(test)]
 use adapters::windows::apply_command_spec;
 #[cfg(test)]
@@ -1268,11 +1272,11 @@ fn resolve_tool_provider_from_discovery_with_user(
     let recommended = candidates.iter().position(|candidate| candidate.usable);
     let diagnosis = recommended.map_or_else(
         || format!(
-            "no verified provider is available for {}; run `rtk-wad setup {tool}` for a non-installing setup diagnosis",
+            "no verified provider is available for {}; run `{PRODUCT_COMMAND} setup {tool}` for a non-installing setup diagnosis",
             tool
         ),
         |index| format!(
-            "candidate {index} is verified; run `rtk-wad provider exec {tool} -- <args...>` to execute it explicitly"
+            "candidate {index} is verified; run `{PRODUCT_COMMAND} provider exec {tool} -- <args...>` to execute it explicitly"
         ),
     );
     ProviderResolution {
@@ -1447,7 +1451,7 @@ fn provider_dispatch_decision_from_resolution(
         };
         return ProviderDispatchDecision::Missing {
             reason: format!(
-                "command `{}` was not found in verified Windows or WSL providers ({detail}); run `rtk-wad doctor {}` for details. Installation is disabled in P7.",
+                "command `{}` was not found in verified Windows or WSL providers ({detail}); run `{PRODUCT_COMMAND} doctor {}` for details. Installation is disabled in P7.",
                 resolution.tool, resolution.tool
             ),
         };
@@ -1705,7 +1709,7 @@ fn provider_scan_command(arguments: &[OsString], config: &Config) -> ExitCode {
             }
         );
         println!(
-            "provider_cache=on-demand; use `rtk-wad scan <tool>...` to refresh named providers"
+            "provider_cache=on-demand; use `{PRODUCT_COMMAND} scan <tool>...` to refresh named providers"
         );
         return ExitCode::SUCCESS;
     }
@@ -3282,13 +3286,14 @@ fn configured_wsl_backend(config: &Config, route: Route) -> Config {
 }
 
 fn print_adapter_info(config: &Config) {
-    println!("adapter=rtk-wad");
+    println!("adapter={PRODUCT_COMMAND}");
+    println!("command={PRODUCT_COMMAND}");
+    println!("legacy_command={LEGACY_COMMAND}");
     println!("profile={}", config.profile.as_str());
     println!("route_preference={}", config.wad_route.as_str());
     println!("environment={}", config.environment.as_str());
     println!("native_rtk_path={}", config.native_rtk_path);
     println!("metrics=local-aggregate-only");
-    println!("command=rtk-wad");
 }
 
 fn run_native_rtk(
@@ -3710,7 +3715,7 @@ fn is_version_command(arguments: &[OsString]) -> bool {
 
 fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     if is_version_command(&arguments) {
-        println!("rtk-wad {}", env!("CARGO_PKG_VERSION"));
+        println!("{PRODUCT_COMMAND} {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     if arguments
@@ -3816,7 +3821,9 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
                 }
             };
         }
-        eprintln!("rtk-wad: usage: rtk-wad policy [show|context] | policy import <evidence.json>");
+        eprintln!(
+            "{PRODUCT_COMMAND}: usage: {PRODUCT_COMMAND} policy [show|context] | policy import <evidence.json>"
+        );
         return ExitCode::FAILURE;
     }
     if arguments
@@ -3832,7 +3839,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
                 }
             };
         }
-        eprintln!("rtk-wad: usage: rtk-wad calibration [show]");
+        eprintln!("{PRODUCT_COMMAND}: usage: {PRODUCT_COMMAND} calibration [show]");
         return ExitCode::FAILURE;
     }
     if arguments.len() == 1 && arguments[0] == ADAPTER_INFO_ARGUMENT {
@@ -3941,7 +3948,9 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         };
     }
     if arguments.is_empty() {
-        eprintln!("rtk-wad: no command supplied; use rtk-wad --adapter-info for configuration");
+        eprintln!(
+            "{PRODUCT_COMMAND}: no command supplied; use {PRODUCT_COMMAND} --adapter-info for configuration"
+        );
         return ExitCode::FAILURE;
     }
     if let Some(reason) = provider_missing {
@@ -4085,7 +4094,7 @@ fn main() -> ExitCode {
     // a local version query must remain instant even when WSL is unavailable
     // or a caller has an invalid dispatcher configuration.
     if is_version_command(&original_arguments) {
-        println!("rtk-wad {}", env!("CARGO_PKG_VERSION"));
+        println!("{PRODUCT_COMMAND} {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     let bridge = match wsl_bridge_request(&original_arguments) {

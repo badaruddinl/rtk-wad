@@ -33,7 +33,7 @@ pub(crate) enum ExecutableProfile {
 impl ExecutableProfile {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::Wad => "rtk-wad",
+            Self::Wad => "xuva",
         }
     }
 }

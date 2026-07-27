@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/rtk-wad-routing-hero.png" alt="RTK-WAD routing one Windows command through native, RTK, or WSL execution" width="100%" />
+  <img src="assets/rtk-wad-routing-hero.png" alt="XUVA routing one Windows command through native, RTK, or WSL execution" width="100%" />
 </p>
 
-<h1 align="center">RTK-WAD</h1>
+<h1 align="center">XUVA</h1>
 
 <p align="center">
   <strong>Windows-first adaptive command dispatcher.</strong><br />
@@ -16,7 +16,7 @@
   <a href="docs/RELEASE_GATE_P20.md"><img src="https://img.shields.io/badge/status-stable-success.svg" alt="Stable status" /></a>
 </p>
 
-RTK-WAD is a native Windows executable and a Windows-first adaptive command
+XUVA is a native Windows executable and a Windows-first adaptive command
 dispatcher. It complements [RTK](https://github.com/rtk-ai/rtk); it is not a
 replacement for RTK and it is not merely a WSL bridge. For each command, it
 selects one auditable route: raw Windows, native Windows RTK, or a verified WSL
@@ -24,8 +24,20 @@ provider. It preserves arguments as structured process arguments—never by
 rebuilding a shell command string—and keeps a command native when RTK or WSL
 does not provide verified local value.
 
-> **Stable baseline.** The current release is `v0.3.0`. The repository,
-> package, installer, and executable are all `rtk-wad`.
+> **Migration in progress.** `xuva` is the canonical command from `v0.4.0`.
+> The installer also creates `rtk-wad.exe` as a compatibility shim, so existing
+> scripts, hooks, and state paths continue to work. The current stable baseline
+> remains `v0.3.0` under the original RTK-WAD identity.
+
+## Migrating from RTK-WAD
+
+Use `xuva` for new documentation, automation, and agent-hook registrations.
+The legacy `rtk-wad` command runs the same dispatcher and prints the same XUVA
+version, so migration can be incremental. Existing `RTK_WAD_*` environment
+variables and local state/cache locations are retained for compatibility; new
+WSL shims also accept `XUVA_*` names. This repository and its GitHub release
+history deliberately retain their current location until a separate external
+cutover is approved.
 
 ## Why RTK-WAD
 
@@ -80,22 +92,22 @@ Build a release binary on Windows:
 
 ```powershell
 cargo build --release
-.\target\release\rtk-wad.exe --version
-.\target\release\rtk-wad.exe --explain-route rg -n "pattern" src
+.\target\release\xuva.exe --version
+.\target\release\xuva.exe --explain-route rg -n "pattern" src
 ```
 
 Install it for the current user:
 
 ```powershell
 .\scripts\install.ps1
-rtk-wad gain
+xuva gain
 ```
 
-The installer performs `rtk-wad scan` after activating the binary. It
+The installer performs `xuva scan` after activating the binary. It
 inventories every launchable executable on the Windows `PATH` and the WSL
 distros that actually exist, without executing those tools, installing a
 toolchain, or forcing WSL. The dispatcher resolves and caches any safe
-executable name on demand; use `rtk-wad scan nvm rustc` to refresh named
+executable name on demand; use `xuva scan nvm rustc` to refresh named
 providers across Windows and WSL explicitly.
 
 The core installer has no Python or tokenizer dependency. The pinned
@@ -116,7 +128,7 @@ per-command environment mode. It keeps RTK meta commands on native RTK and
 runs unverified external commands directly on Windows:
 
 ```powershell
-rtk-wad --environment windows-only --explain-route pytest -q
+xuva --environment windows-only --explain-route pytest -q
 $env:RTK_WAD_ENVIRONMENT = "windows-only"
 ```
 
@@ -125,18 +137,18 @@ $env:RTK_WAD_ENVIRONMENT = "windows-only"
 RTK-WAD provides conservative adapters for the native RTK hooks used by Claude
 Code, Cursor, Gemini CLI, and GitHub Copilot. Each adapter delegates rewrite
 decisions to stock RTK, then changes only an emitted
-`rtk ...` command into `rtk-wad ...`; it does not parse or rebuild agent shell
+`rtk ...` command into `xuva ...`; it does not parse or rebuild agent shell
 commands itself. The registration is deliberately opt-in so existing agent
 hooks are not silently changed:
 
 ```powershell
-rtk-wad agent integration claude
-rtk-wad agent integration cursor
-rtk-wad agent integration gemini
-rtk-wad agent integration copilot
+xuva agent integration claude
+xuva agent integration cursor
+xuva agent integration gemini
+xuva agent integration copilot
 ```
 
-Follow the printed three-step setup, then use the matching `rtk-wad agent hook
+Follow the printed three-step setup, then use the matching `xuva agent hook
 <agent>` command in the hook registration. See [agent
 integration](docs/AGENT_INTEGRATION.md) for the supported boundary and failure
 behavior.
@@ -215,8 +227,8 @@ the originating distro, physical CWD, Windows-mounted CWD when available, and
 structured argv are retained:
 
 ```sh
-export RTK_WAD_WINDOWS_EXE=/mnt/c/tools/rtk-wad.exe
-sh /mnt/c/tools/rtk-wad-wsl.sh go version
+export XUVA_WINDOWS_EXE=/mnt/c/tools/xuva.exe
+sh /mnt/c/tools/xuva-wsl.sh go version
 ```
 
 Set `RTK_WSL_EXTRA_PATH` only when a WSL-only tool lives outside that distro's
@@ -227,6 +239,7 @@ Linux environment variables to Windows `.exe` processes.
 
 | Topic | Reference |
 | --- | --- |
+| XUVA command migration and compatibility | [Migration notes](docs/XUVA_MIGRATION.md) |
 | Routing, configuration, and local accounting | [RTK-WAD contract](docs/RTK_WAD.md) |
 | Public benchmark comparison | [P20 comparison](docs/BENCHMARK_COMPARISON_P20.md) |
 | Public external-corpus benchmark | [P21 ripgrep evidence](docs/P21_PUBLIC_RIPGREP_BENCHMARK.md) |
