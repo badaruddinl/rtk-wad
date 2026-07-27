@@ -34,4 +34,4 @@ as one structured argument; tests cover spaces and literal shell characters.
   token evidence and measured latency.
 
 The resulting recommendation remains informational in PD2. Existing
-`rtk-wad go ...` routing is unchanged.
+`xuva go ...` routing is unchanged.

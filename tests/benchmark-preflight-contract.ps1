@@ -6,7 +6,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("rtk-wad-p18-preflight-" + [guid]::NewGuid())
+$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("xuva-p18-preflight-" + [guid]::NewGuid())
 try {
     New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
     $output = Join-Path $temporaryRoot "preflight.json"

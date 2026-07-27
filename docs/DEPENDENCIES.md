@@ -2,7 +2,7 @@
 
 ## WAD tokenizer
 
-`rtk-wad` has no tokenizer runtime dependency. [tiktoken on
+`xuva` has no tokenizer runtime dependency. [tiktoken on
 PyPI](https://pypi.org/project/tiktoken/) is an optional, official benchmark
 dependency used only for reproducible token accounting.
 `requirements/wad-tokenizer.txt` is the canonical package manifest: the

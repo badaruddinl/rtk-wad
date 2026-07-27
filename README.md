@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/rtk-wad-routing-hero.png" alt="XUVA routing one Windows command through native, RTK, or WSL execution" width="100%" />
+  <img src="assets/xuva-routing-hero.png" alt="XUVA routing one Windows command through native, RTK, or WSL execution" width="100%" />
 </p>
 
 <h1 align="center">XUVA</h1>
@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/badaruddinl/rtk-wad/actions/workflows/windows-ci.yml"><img src="https://github.com/badaruddinl/rtk-wad/actions/workflows/windows-ci.yml/badge.svg?branch=master" alt="Windows CI" /></a>
-  <a href="https://github.com/badaruddinl/rtk-wad/tags"><img src="https://img.shields.io/github/v/tag/badaruddinl/rtk-wad?sort=semver&label=version" alt="Version tag" /></a>
+  <a href="https://github.com/badaruddinl/xuva/actions/workflows/windows-ci.yml"><img src="https://github.com/badaruddinl/xuva/actions/workflows/windows-ci.yml/badge.svg?branch=master" alt="Windows CI" /></a>
+  <a href="https://github.com/badaruddinl/xuva/tags"><img src="https://img.shields.io/github/v/tag/badaruddinl/xuva?sort=semver&label=version" alt="Version tag" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0 license" /></a>
   <a href="docs/RELEASE_GATE_P20.md"><img src="https://img.shields.io/badge/status-stable-success.svg" alt="Stable status" /></a>
 </p>
@@ -24,26 +24,16 @@ provider. It preserves arguments as structured process arguments—never by
 rebuilding a shell command string—and keeps a command native when RTK or WSL
 does not provide verified local value.
 
-> **Migration in progress.** `xuva` is the canonical command from `v0.4.0`.
-> The installer also creates `rtk-wad.exe` as a compatibility shim, so existing
-> scripts, hooks, and state paths continue to work. The current stable baseline
-> remains `v0.3.0` under the original RTK-WAD identity.
+> **Hard cutover.** Starting with `v0.4.1`, the project, repository, binary,
+> installer, environment variables, and state paths use `xuva`. There is no
+> legacy launcher in this release line. GitHub redirects the former repository
+> URL for historic tags and evidence.
 
-## Migrating from RTK-WAD
-
-Use `xuva` for new documentation, automation, and agent-hook registrations.
-The legacy `rtk-wad` command runs the same dispatcher and prints the same XUVA
-version, so migration can be incremental. Existing `RTK_WAD_*` environment
-variables and local state/cache locations are retained for compatibility; new
-WSL shims also accept `XUVA_*` names. This repository and its GitHub release
-history deliberately retain their current location until a separate external
-cutover is approved.
-
-## Why RTK-WAD
+## Why XUVA
 
 ```mermaid
 flowchart LR
-    A[Windows command and argv] --> B[RTK-WAD]
+    A[Windows command and argv] --> B[XUVA]
     B --> C{Safe, verified local evidence?}
     C -->|Mutation or no benefit| D[Raw Windows]
     C -->|Compact output helps| E[Native Windows RTK]
@@ -53,7 +43,7 @@ flowchart LR
     F --> G
 ```
 
-| Route | When RTK-WAD uses it | What it protects |
+| Route | When XUVA uses it | What it protects |
 | --- | --- | --- |
 | Raw Windows | Mutations, unknown commands, or no measured RTK benefit | Lowest avoidable latency; native Windows toolchain behavior |
 | Native RTK | A verified read-only command has a useful compact-output result | RTK filtering without a WSL bridge |
@@ -65,15 +55,15 @@ install a language runtime or tool automatically.
 
 ## Download the verified Windows binary
 
-The stable Windows x86_64 archive contains `rtk-wad.exe`. It is built from the
-immutable `v0.3.0` tag,
+The Windows x86_64 archive contains `xuva.exe`. The historic `v0.3.0` archive
+is retained under its original filename and built from the immutable tag,
 published with a SHA-256 sidecar, and accompanied by a GitHub build-provenance
 attestation. It is not Authenticode-signed; see [release
 provenance](docs/RELEASE_PROVENANCE.md) for the explicit trust boundary.
 
-- [Download the v0.3.0 Windows archive](https://github.com/badaruddinl/rtk-wad/releases/download/v0.3.0/rtk-wad-v0.3.0-windows-x86_64.zip)
-- [Download its SHA-256 sidecar](https://github.com/badaruddinl/rtk-wad/releases/download/v0.3.0/rtk-wad-v0.3.0-windows-x86_64.zip.sha256)
-- [Open the v0.3.0 release record](https://github.com/badaruddinl/rtk-wad/releases/tag/v0.3.0)
+- [Download the v0.3.0 Windows archive](https://github.com/badaruddinl/xuva/releases/download/v0.3.0/rtk-wad-v0.3.0-windows-x86_64.zip)
+- [Download its SHA-256 sidecar](https://github.com/badaruddinl/xuva/releases/download/v0.3.0/rtk-wad-v0.3.0-windows-x86_64.zip.sha256)
+- [Open the v0.3.0 release record](https://github.com/badaruddinl/xuva/releases/tag/v0.3.0)
 
 Verify the archive after downloading it:
 
@@ -129,12 +119,12 @@ runs unverified external commands directly on Windows:
 
 ```powershell
 xuva --environment windows-only --explain-route pytest -q
-$env:RTK_WAD_ENVIRONMENT = "windows-only"
+$env:XUVA_ENVIRONMENT = "windows-only"
 ```
 
 ## Agent hook adapters
 
-RTK-WAD provides conservative adapters for the native RTK hooks used by Claude
+XUVA provides conservative adapters for the native RTK hooks used by Claude
 Code, Cursor, Gemini CLI, and GitHub Copilot. Each adapter delegates rewrite
 decisions to stock RTK, then changes only an emitted
 `rtk ...` command into `xuva ...`; it does not parse or rebuild agent shell
@@ -155,28 +145,28 @@ behavior.
 
 ## A route decision you can inspect
 
-RTK-WAD exposes the policy decision instead of hiding it. This is a captured
+XUVA exposes the policy decision instead of hiding it. This is a captured
 local example from the repository's current release binary; another machine or
 command form may choose differently.
 
 ```text
-> rtk-wad --explain-route rg -n RTK_WAD src
+> xuva --explain-route rg -n XUVA src
 route=native-rtk
 reason=local calibration candidate: first safe observation uses native RTK
 command_family=rg
 ```
 
-Use `rtk-wad policy show` and `rtk-wad calibration show` to inspect the local
+Use `xuva policy show` and `xuva calibration show` to inspect the local
 evidence behind later decisions.
 
 ## Benchmark result: token saving *and* latency
 
-The public benchmark does not claim that RTK-WAD is universally faster. It uses
+The public benchmark does not claim that XUVA is universally faster. It uses
 five warmed measurements on the recorded Windows host and `tiktoken==0.12.0`
 over combined stdout and stderr. `Tokens saved` is always `raw tokens -
-RTK-WAD auto tokens` for the same command form.
+XUVA auto tokens` for the same command form.
 
-| Workload | Raw Windows | RTK-WAD auto | Raw → auto tokens | Tokens saved | Saving | Automatic route |
+| Workload | Raw Windows | XUVA auto | Raw → auto tokens | Tokens saved | Saving | Automatic route |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | `git status --short --branch` | 127.613 ms | 266.283 ms | 37 → 37 | 0 | 0.0% | Raw |
 | `git log --oneline -100` | 126.856 ms | 309.754 ms | 864 → 864 | 0 | 0.0% | Raw |
@@ -191,7 +181,7 @@ flowchart LR
     D --> E[Native RTK selected\n1,082 tokens saved / 34.2%\nwith measured latency cost]
 ```
 
-Three of four measured workloads save no tokens, so RTK-WAD keeps them raw.
+Three of four measured workloads save no tokens, so XUVA keeps them raw.
 Broad `rg` saves 1,082 tokens (34.2%) and clears the documented 25% token-first
 threshold despite being slower on this host. See the versioned
 [comparison and methodology](docs/BENCHMARK_COMPARISON_P20.md), the
@@ -203,10 +193,10 @@ must remain corpus-specific and falsifiable.
 
 ### Read `gain` honestly
 
-`rtk-wad gain` is local RTK tracker accounting, not a benchmark runner and not
+`xuva gain` is local RTK tracker accounting, not a benchmark runner and not
 a raw-token estimator. It reports all invocations, but only native/WSL RTK
 routes contribute RTK-measured token fields. Raw-route invocations are retained
-as explicitly **unmeasured**; RTK-WAD does not invent a token estimate for them.
+as explicitly **unmeasured**; XUVA does not invent a token estimate for them.
 
 Token saving is also not a promise of lower API cost or lower latency. Prompt,
 system, conversation, output, and model pricing all affect an eventual bill.
@@ -231,7 +221,7 @@ export XUVA_WINDOWS_EXE=/mnt/c/tools/xuva.exe
 sh /mnt/c/tools/xuva-wsl.sh go version
 ```
 
-Set `RTK_WSL_EXTRA_PATH` only when a WSL-only tool lives outside that distro's
+Set `XUVA_WSL_EXTRA_PATH` only when a WSL-only tool lives outside that distro's
 normal `PATH`. The shim is required because WSL does not forward arbitrary
 Linux environment variables to Windows `.exe` processes.
 
@@ -240,7 +230,7 @@ Linux environment variables to Windows `.exe` processes.
 | Topic | Reference |
 | --- | --- |
 | XUVA command migration and compatibility | [Migration notes](docs/XUVA_MIGRATION.md) |
-| Routing, configuration, and local accounting | [RTK-WAD contract](docs/RTK_WAD.md) |
+| Routing, configuration, and local accounting | [XUVA contract](docs/XUVA.md) |
 | Public benchmark comparison | [P20 comparison](docs/BENCHMARK_COMPARISON_P20.md) |
 | Public external-corpus benchmark | [P21 ripgrep evidence](docs/P21_PUBLIC_RIPGREP_BENCHMARK.md) |
 | Public Node-package benchmark | [P21 TypeScript `npm run` evidence](docs/P21_PUBLIC_TYPESCRIPT_NPM_BENCHMARK.md) |
@@ -270,7 +260,7 @@ command-surface parity, and crate hygiene.
 
 ## License and upstream boundary
 
-RTK-WAD is Apache-2.0 licensed to match RTK. It is not an official RTK package
+XUVA is Apache-2.0 licensed to match RTK. It is not an official RTK package
 and remains `publish = false`. Potential upstream contributions must target
 RTK's `develop` branch, be scoped and tested independently, and comply with
 its contributor requirements.

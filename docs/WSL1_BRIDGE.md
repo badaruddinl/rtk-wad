@@ -4,14 +4,14 @@
 
 The WSL1 profile provides a lower-overhead Linux execution candidate for RTK
 without converting, unregistering, or otherwise modifying an existing WSL2
-distribution. It is opt-in and selected through the canonical `rtk-wad`
+distribution. It is opt-in and selected through the canonical `xuva`
 command.
 
 The profile has two parts:
 
 1. `Ubuntu-RTK-WSL1`, a dedicated Ubuntu 22.04 WSL1 distribution containing a
    non-root `rtk` user and RTK under `$HOME/.local/bin/rtk`.
-2. `rtk-wad --route wsl1`, an explicit route through the same canonical
+2. `xuva --route wsl1`, an explicit route through the same canonical
    executable.
 
 ## Prerequisites
@@ -53,7 +53,7 @@ The provisioner:
 - restarts only the new distro and runs an RTK smoke test.
 
 The downloaded images remain under `E:\luthfi\wsl\images`, but the default runtime
-location is `%LOCALAPPDATA%\rtk-wad\Ubuntu-RTK-WSL1` on NTFS. WSL1 expands its
+location is `%LOCALAPPDATA%\xuva\Ubuntu-RTK-WSL1` on NTFS. WSL1 expands its
 root filesystem into ordinary host files and must not be installed on exFAT.
 Existing WSL2 distros are never converted or terminated.
 
@@ -77,29 +77,29 @@ cargo build --release
 ```
 
 The installer retains atomic staging, refusal, backup, rollback, and recovery
-behavior for `rtk-wad.exe` only.
+behavior for `xuva.exe` only.
 
 ## Selection Contract
 
-| RTK-WAD route or configuration | Backend | Default distro |
+| XUVA route or configuration | Backend | Default distro |
 |---|---|---|
-| `rtk-wad` | `auto` | `Ubuntu` |
-| `rtk-wad --route wsl1` | `wsl1` | `Ubuntu-RTK-WSL1` |
-| `RTK_WSL_BACKEND=wsl1` | `wsl1` | `Ubuntu-RTK-WSL1` |
-| `RTK_WSL_BACKEND=wsl2` | `wsl2` | `Ubuntu` |
+| `xuva` | `auto` | `Ubuntu` |
+| `xuva --route wsl1` | `wsl1` | `Ubuntu-RTK-WSL1` |
+| `XUVA_WSL_BACKEND=wsl1` | `wsl1` | `Ubuntu-RTK-WSL1` |
+| `XUVA_WSL_BACKEND=wsl2` | `wsl2` | `Ubuntu` |
 
-`RTK_WSL_DISTRO` overrides the default distro. `RTK_WSL_BACKEND` explicitly
+`XUVA_WSL_DISTRO` overrides the default distro. `XUVA_WSL_BACKEND` explicitly
 selects the WSL provider for the canonical command.
 
 The Git router remains orthogonal to the WSL backend. Git launched from a native
-Windows worktree still uses `git.exe` under `RTK_WSL_GIT_MODE=auto`.
+Windows worktree still uses `git.exe` under `XUVA_WSL_GIT_MODE=auto`.
 
 ## Diagnostics
 
 Use the explicit diagnostic path before dogfooding or after distro maintenance:
 
 ```powershell
-rtk-wad --route wsl1 --explain-route git --version
+xuva --route wsl1 --explain-route git --version
 ```
 
 Expected output includes:
@@ -120,7 +120,7 @@ The WSL1 profile passed the following promotion gates:
 - `cargo clippy --all-targets -- -D warnings`;
 - unit and packaging/recovery tests;
 - the opt-in WSL1 process contract using
-  `RTK_WSL1_TEST_DISTRO=Ubuntu-RTK-WSL1`;
+  `XUVA_WSL1_TEST_DISTRO=Ubuntu-RTK-WSL1`;
 - literal argv, Unicode, stdout/stderr, exit 0/1/42/127, interactive stdin, and
   cancellation/lock release;
 - warm and after-idle latency comparison against WSL2 and native Windows RTK;

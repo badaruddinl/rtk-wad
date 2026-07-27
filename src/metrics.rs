@@ -14,12 +14,12 @@ pub(crate) struct TokenTotals {
 }
 
 pub(crate) fn wad_data_root() -> PathBuf {
-    env::var_os("RTK_WAD_STATE_DIR")
+    env::var_os("XUVA_STATE_DIR")
         .map(PathBuf::from)
         .or_else(|| {
             env::var_os("LOCALAPPDATA")
                 .map(PathBuf::from)
-                .map(|root| root.join("rtk-wad"))
+                .map(|root| root.join("xuva"))
         })
         .unwrap_or_else(env::temp_dir)
 }

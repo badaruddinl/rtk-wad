@@ -1,18 +1,18 @@
-# RTK-WAD adaptive routing contract
+# XUVA adaptive routing contract
 
-`rtk-wad` is the canonical Windows command for this project. It is an adaptive
+`xuva` is the canonical Windows command for this project. It is an adaptive
 dispatcher; it is not a shell wrapper and does not stringify or re-parse the
 arguments it receives.
 
 ## Canonical command
 
-`rtk-wad` is the only executable, installer target, and supported command
-surface. WSL1 and WSL2 remain explicit routes of that command; they are not
-separate binaries or compatibility aliases.
+`xuva` is the primary executable, installer target, and supported command
+surface. `xuva` remains an intentionally compatible legacy launcher; WSL1
+and WSL2 remain explicit routes rather than separate binaries.
 
 ## Route selection
 
-`rtk-wad` resolves exactly one route before it starts a child process:
+`xuva` resolves exactly one route before it starts a child process:
 
 | Route | Auto-selection rule | Execution |
 | --- | --- | --- |
@@ -27,8 +27,8 @@ effect as the selected backend and cannot replay a mutating command. Use the
 following command to inspect a decision without execution:
 
 ```powershell
-rtk-wad --explain-route git log -1
-rtk-wad --route wsl1 --explain-route proxy /usr/bin/printf '%s'
+xuva --explain-route git log -1
+xuva --route wsl1 --explain-route proxy /usr/bin/printf '%s'
 ```
 
 For an `auto` decision only, a missing native RTK executable is an exception:
@@ -45,9 +45,9 @@ guaranteed WSL tool-not-found failure.
 families. They likewise execute their `.bat` launchers once with structured argv;
 this keeps Flutter Windows workflows out of the WSL shell path.
 
-`RTK_WAD_ROUTE` sets the default route (`auto`, `raw`, `native-rtk`, `wsl1`, or
+`XUVA_ROUTE` sets the default route (`auto`, `raw`, `native-rtk`, `wsl1`, or
 `wsl2`). A leading `--route` option has higher precedence for a single
-invocation. `RTK_WAD_NATIVE_RTK_PATH` selects the stock native RTK executable;
+invocation. `XUVA_NATIVE_RTK_PATH` selects the stock native RTK executable;
 it defaults to `rtk.exe` on `PATH`.
 
 ## Evidence-backed decisions
@@ -56,8 +56,8 @@ The static policy is safe when no evidence exists. A local three-way benchmark
 can additionally install route evidence:
 
 ```powershell
-rtk-wad policy import .\flowpeek.route-policy.json
-rtk-wad policy show
+xuva policy import .\flowpeek.route-policy.json
+xuva policy show
 ```
 
 Import merges evidence by its command key and atomically replaces only a key
@@ -72,7 +72,7 @@ verified read-only Git allowlist, `rg`, verified Cargo operations, the exact
 read-only `npm run` listing form, and the exact `go test ./...` form. A policy file can never make a Git mutation
 or `npm run <script>` adaptive, nor can it cause a command to run twice. The
 local policy is read-only during normal execution and can be overridden for
-testing with `RTK_WAD_POLICY_PATH`.
+testing with `XUVA_POLICY_PATH`.
 
 ## Local adaptive calibration (P10)
 
@@ -105,8 +105,8 @@ aggregate native RTK token counts. It never stores the command arguments or
 its output.
 
 ```powershell
-rtk-wad --explain-route rg -n 'needle' src
-rtk-wad calibration show
+xuva --explain-route rg -n 'needle' src
+xuva calibration show
 ```
 
 `--explain-route` is read-only: it reports the next route but does not advance
@@ -116,7 +116,7 @@ the full safety and validation contract.
 
 ## On-demand provider discovery (PD1)
 
-`rtk-wad resolve go` and `rtk-wad doctor go` inspect existing Windows and WSL
+`xuva resolve go` and `xuva doctor go` inspect existing Windows and WSL
 Go providers without changing command routing or installing anything. The
 five-minute local cache is per tool and can be bypassed with `--refresh`. See
 [`PROVIDER_DISCOVERY_PD1.md`](PROVIDER_DISCOVERY_PD1.md) for the exact scope,
@@ -127,18 +127,18 @@ the structured `wsl.exe --exec wslpath` form plus a target-host directory
 probe. This is still diagnostic-only; see
 [`BIDIRECTIONAL_PROVIDER_MAPPING_P13.md`](BIDIRECTIONAL_PROVIDER_MAPPING_P13.md).
 
-P14 adds `rtk-wad provider exec <tool> [--candidate <index>] -- <args...>` for
+P14 adds `xuva provider exec <tool> [--candidate <index>] -- <args...>` for
 one verified provider execution without shell reconstruction or post-start
 fallback. It remains explicit while P15 classifies the command surface; see
 [`PROVIDER_EXECUTION_ENGINE_P14.md`](PROVIDER_EXECUTION_ENGINE_P14.md).
 
-P15 embeds the complete RTK `0.43.0` command manifest. `rtk-wad surface
+P15 embeds the complete RTK `0.43.0` command manifest. `xuva surface
 --json` reports all 69 families and their conservative route classes, while a
 runtime contract compares that inventory with the live WSL RTK help output; see
 [`COMMAND_SURFACE_PARITY_P15.md`](COMMAND_SURFACE_PARITY_P15.md).
 
 P16 binds adaptive policy and local calibration to the current manifest plus
-an opaque Windows adapter-context signature. Use `rtk-wad policy context`
+an opaque Windows adapter-context signature. Use `xuva policy context`
 before creating an importable benchmark policy; see
 [`ADAPTIVE_DECISION_HARDENING_P16.md`](ADAPTIVE_DECISION_HARDENING_P16.md).
 
@@ -147,13 +147,13 @@ Windows Go is unavailable. A missing safe provider exits `127` before a child
 starts; installation remains disabled. See
 [`PROVIDER_EXECUTION_PD3.md`](PROVIDER_EXECUTION_PD3.md).
 
-PD4 adds `rtk-wad setup go [--json] [--refresh]`, which renders a local setup
+PD4 adds `xuva setup go [--json] [--refresh]`, which renders a local setup
 plan only. It can show a narrowly scoped Windows `winget` command when native
 RTK exists, but it does not execute the command or install anything. See
 [`ASSISTED_SETUP_PD4.md`](ASSISTED_SETUP_PD4.md).
 
-PD5 adds an opt-in apply boundary: `rtk-wad setup go --apply` re-renders a
-fresh plan, while only `rtk-wad setup go --apply --confirm` can execute its
+PD5 adds an opt-in apply boundary: `xuva setup go --apply` re-renders a
+fresh plan, while only `xuva setup go --apply --confirm` can execute its
 single structured `winget` command. `--status` reports the local journal and
 `--recover` re-discovers providers without replaying an installer. See
 [`OPT_IN_SETUP_PD5.md`](OPT_IN_SETUP_PD5.md).
@@ -194,17 +194,17 @@ the upstream Windows `run` parser or a single-string `proxy` form are not
 auto-routed to stock Windows RTK. They use WSL1 until their native contracts
 are independently verified.
 
-`rtk-wad` does not provide an implicit shell mode. If a workflow genuinely
+`xuva` does not provide an implicit shell mode. If a workflow genuinely
 requires shell syntax, invoke the required shell explicitly and keep it on a
 forced WSL route, for example:
 
 ```powershell
-rtk-wad --route wsl1 proxy /bin/sh -c 'printf "%s" "$HOME"'
+xuva --route wsl1 proxy /bin/sh -c 'printf "%s" "$HOME"'
 ```
 
 ## Optional benchmark tokenizer
 
-The canonical `rtk-wad` installer has no Python dependency. `tiktoken==0.12.0`
+The canonical `xuva` installer has no Python dependency. `tiktoken==0.12.0`
 is an optional private WAD benchmark environment, installed only with
 `scripts/install.ps1 -InstallTokenizer`. This keeps reproducible `o200k_base`
 measurements available without making a dispatcher depend on Python. It never
@@ -222,7 +222,7 @@ exec` after WAD validates the candidate host and project path.
 
 ## Local token savings ledger
 
-`rtk-wad gain` and its `stats` compatibility alias show local **RTK-measured
+`xuva gain` and its `stats` compatibility alias show local **RTK-measured
 token accounting**, not an estimate for every invocation. WAD creates a unique temporary RTK tracker
 database for an individual routed invocation, reads only aggregate counters,
 then removes the temporary database and its WAL sidecars. The persistent local
@@ -230,13 +230,13 @@ ledger contains timestamp, route, command family, aggregate token counts,
 elapsed time, exit code, and whether upstream RTK recorded a measurement. It
 does not retain command arguments or command output.
 
-The ledger is stored under `%LOCALAPPDATA%\rtk-wad\metrics-v1.sqlite`. Set
-`RTK_WAD_STATE_DIR` only for an isolated test or benchmark ledger; it overrides
+The ledger is stored under `%LOCALAPPDATA%\xuva\metrics-v1.sqlite`. Set
+`XUVA_STATE_DIR` only for an isolated test or benchmark ledger; it overrides
 that complete WAD state root without changing the child command's Windows
 profile or caches. A
 command-free RTK schema template is stored beside it so each scratch database
 can be prepared without a first-use migration. Scratch databases live under
-`%LOCALAPPDATA%\rtk-wad\scratch` and stale entries older than 24 hours are
+`%LOCALAPPDATA%\xuva\scratch` and stale entries older than 24 hours are
 removed at the next invocation. Both locations are on the Windows system drive,
 so a repository may stay on exFAT, FAT, a network drive, or another non-NTFS
 source volume. The source filesystem is never used for the ledger or WSL runtime
@@ -252,9 +252,9 @@ made every invocation faster or that it measured raw-route token savings.
 ## Diagnostics
 
 ```powershell
-rtk-wad --adapter-info
-rtk-wad gain
-rtk-wad --explain-route rg 'pattern with spaces' .
+xuva --adapter-info
+xuva gain
+xuva --explain-route rg 'pattern with spaces' .
 ```
 
 The adaptive path does not call `wsl.exe --list` or probe the filesystem before
@@ -262,6 +262,6 @@ each command. WSL version diagnostics remain explicit through the legacy bridge
 commands.
 
 For deterministic fixtures or intentionally provisioned Linux tools, set
-`RTK_WSL_EXTRA_PATH` to a colon-separated list of absolute Linux directories.
+`XUVA_WSL_EXTRA_PATH` to a colon-separated list of absolute Linux directories.
 Relative entries and empty segments are rejected before WSL starts; the default
 child PATH remains unchanged.

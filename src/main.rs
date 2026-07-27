@@ -20,7 +20,6 @@ mod paths;
 
 pub(crate) const PRODUCT_NAME: &str = "XUVA";
 pub(crate) const PRODUCT_COMMAND: &str = "xuva";
-pub(crate) const LEGACY_COMMAND: &str = "rtk-wad";
 
 #[cfg(test)]
 use adapters::windows::apply_command_spec;
@@ -92,7 +91,7 @@ exec 9>"$lock_path"
 remaining=$((lock_wait * 10))
 while ! /usr/bin/flock -n 9; do
     if [ "$remaining" -le 0 ]; then
-        printf 'rtk-wad: timed out waiting for lock %s\n' "$lock_path" >&2
+        printf 'xuva: timed out waiting for lock %s\n' "$lock_path" >&2
         exit 1
     fi
     remaining=$((remaining - 1))
@@ -160,7 +159,7 @@ exec 9>"$lock_path"
 remaining=$((lock_wait * 10))
 while ! /usr/bin/flock -n 9; do
     if [ "$remaining" -le 0 ]; then
-        printf 'rtk-wad: timed out waiting for lock %s\n' "$lock_path" >&2
+        printf 'xuva: timed out waiting for lock %s\n' "$lock_path" >&2
         exit 1
     fi
     remaining=$((remaining - 1))
@@ -229,8 +228,8 @@ fn distro_version_from_list(output: &str, distro: &str) -> Option<u8> {
 }
 
 fn trace(message: impl AsRef<str>) {
-    if env::var("RTK_WSL_TRACE").as_deref() == Ok("1") {
-        eprintln!("rtk-wad: trace: {}", message.as_ref());
+    if env::var("XUVA_WSL_TRACE").as_deref() == Ok("1") {
+        eprintln!("xuva: trace: {}", message.as_ref());
     }
 }
 
@@ -399,7 +398,7 @@ fn print_command_surface(arguments: &[OsString]) -> ExitCode {
             .get(1)
             .is_some_and(|argument| argument != "--json")
     {
-        eprintln!("rtk-wad: usage: surface [--json]");
+        eprintln!("xuva: usage: surface [--json]");
         return ExitCode::FAILURE;
     }
     let report = command_surface_report();
@@ -413,7 +412,7 @@ fn print_command_surface(arguments: &[OsString]) -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(error) => {
-                eprintln!("rtk-wad: unable to render command surface: {error}");
+                eprintln!("xuva: unable to render command surface: {error}");
                 ExitCode::FAILURE
             }
         };
@@ -870,7 +869,7 @@ fn probe_wsl_tool(
             "sh",
             "-c",
             script,
-            "rtk-wad-provider-probe",
+            "xuva-provider-probe",
             tool,
         ])
         .arg(extra_path.unwrap_or_default())
@@ -1496,7 +1495,7 @@ fn print_provider_resolution(
                 }
             }
             Err(error) => {
-                eprintln!("rtk-wad: unable to render provider resolution: {error}");
+                eprintln!("xuva: unable to render provider resolution: {error}");
                 ExitCode::FAILURE
             }
         };
@@ -1653,7 +1652,7 @@ fn windows_path_tool_names() -> Vec<String> {
 fn provider_command(arguments: &[OsString], config: &Config, doctor: bool) -> ExitCode {
     let Some(tool) = arguments.get(1).and_then(|argument| argument.to_str()) else {
         eprintln!(
-            "rtk-wad: usage: {} <tool> [--json] [--refresh]",
+            "xuva: usage: {} <tool> [--json] [--refresh]",
             if doctor {
                 DOCTOR_ARGUMENT
             } else {
@@ -1663,7 +1662,7 @@ fn provider_command(arguments: &[OsString], config: &Config, doctor: bool) -> Ex
         return ExitCode::FAILURE;
     };
     if !is_safe_provider_tool_name(tool) || arguments.len() > 4 {
-        eprintln!("rtk-wad: tool names must contain only ASCII letters, digits, '.', '_', or '-'");
+        eprintln!("xuva: tool names must contain only ASCII letters, digits, '.', '_', or '-'");
         return ExitCode::FAILURE;
     }
     let json = arguments
@@ -1680,7 +1679,7 @@ fn provider_command(arguments: &[OsString], config: &Config, doctor: bool) -> Ex
         .any(|argument| argument != "--json" && argument != "--refresh")
     {
         eprintln!(
-            "rtk-wad: usage: {} <tool> [--json] [--refresh]",
+            "xuva: usage: {} <tool> [--json] [--refresh]",
             if doctor {
                 DOCTOR_ARGUMENT
             } else {
@@ -1722,7 +1721,7 @@ fn provider_scan_command(arguments: &[OsString], config: &Config) -> ExitCode {
                 .filter(|tool| is_safe_provider_tool_name(tool))
             else {
                 eprintln!(
-                    "rtk-wad: usage: scan [<tool>...]; tool names must contain only ASCII letters, digits, '.', '_', or '-'"
+                    "xuva: usage: scan [<tool>...]; tool names must contain only ASCII letters, digits, '.', '_', or '-'"
                 );
                 return ExitCode::FAILURE;
             };
@@ -1767,7 +1766,7 @@ fn setup_go_plan_from_resolution(
     winget_available: bool,
 ) -> SetupPlan {
     let verification_command = vec![
-        "rtk-wad".to_owned(),
+        "xuva".to_owned(),
         "doctor".to_owned(),
         "go".to_owned(),
         "--refresh".to_owned(),
@@ -1834,7 +1833,7 @@ fn setup_go_plan_from_resolution(
 
 fn setup_generic_plan_from_resolution(resolution: &ProviderResolution) -> SetupPlan {
     let verification_command = vec![
-        "rtk-wad".to_owned(),
+        "xuva".to_owned(),
         "doctor".to_owned(),
         resolution.tool.clone(),
         "--refresh".to_owned(),
@@ -1877,7 +1876,7 @@ fn print_setup_plan(plan: &SetupPlan, json: bool) -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(error) => {
-                eprintln!("rtk-wad: unable to render setup plan: {error}");
+                eprintln!("xuva: unable to render setup plan: {error}");
                 ExitCode::FAILURE
             }
         };
@@ -1933,7 +1932,7 @@ fn print_setup_transaction(transaction: Option<&SetupTransaction>, json: bool) -
                 ExitCode::SUCCESS
             }
             Err(error) => {
-                eprintln!("rtk-wad: unable to render setup transaction: {error}");
+                eprintln!("xuva: unable to render setup transaction: {error}");
                 ExitCode::FAILURE
             }
         };
@@ -1996,7 +1995,7 @@ fn recover_setup_transaction(config: &Config, json: bool) -> ExitCode {
     let recovered = match record_setup_transaction(status, previous.command, detail) {
         Ok(transaction) => transaction,
         Err(error) => {
-            eprintln!("rtk-wad: {error}");
+            eprintln!("xuva: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -2008,7 +2007,7 @@ fn apply_setup_plan(plan: &SetupPlan, config: &Config, json: bool) -> ExitCode {
         return print_setup_plan(plan, json);
     }
     let Some(command) = plan.proposed_command.clone() else {
-        eprintln!("rtk-wad: setup is blocked; no installer is selected automatically");
+        eprintln!("xuva: setup is blocked; no installer is selected automatically");
         return ExitCode::FAILURE;
     };
     if let Err(error) = record_setup_transaction(
@@ -2016,7 +2015,7 @@ fn apply_setup_plan(plan: &SetupPlan, config: &Config, json: bool) -> ExitCode {
         Some(command.clone()),
         "installer started after explicit --apply --confirm",
     ) {
-        eprintln!("rtk-wad: {error}");
+        eprintln!("xuva: {error}");
         return ExitCode::FAILURE;
     }
     let mut installer = Command::new(&command[0]);
@@ -2026,7 +2025,7 @@ fn apply_setup_plan(plan: &SetupPlan, config: &Config, json: bool) -> ExitCode {
         Err(error) => {
             let detail = format!("installer could not start: {error}");
             let _ = record_setup_transaction("failed", Some(command), &detail);
-            eprintln!("rtk-wad: {detail}");
+            eprintln!("xuva: {detail}");
             return ExitCode::FAILURE;
         }
     };
@@ -2034,7 +2033,7 @@ fn apply_setup_plan(plan: &SetupPlan, config: &Config, json: bool) -> ExitCode {
         let detail = format!("installer exited with {status}");
         let _ = record_setup_transaction("failed", Some(command), &detail);
         eprintln!(
-            "rtk-wad: {detail}; run `rtk-wad setup go --recover` to re-discover without replaying it"
+            "xuva: {detail}; run `xuva setup go --recover` to re-discover without replaying it"
         );
         return ExitCode::FAILURE;
     }
@@ -2047,27 +2046,27 @@ fn apply_setup_plan(plan: &SetupPlan, config: &Config, json: bool) -> ExitCode {
         ) {
             Ok(transaction) => transaction,
             Err(error) => {
-                eprintln!("rtk-wad: {error}");
+                eprintln!("xuva: {error}");
                 return ExitCode::FAILURE;
             }
         };
         return print_setup_transaction(Some(&transaction), json);
     }
-    let detail = "installer completed but fresh provider discovery is incomplete; reopen the shell if PATH changed, then run `rtk-wad setup go --recover`";
+    let detail = "installer completed but fresh provider discovery is incomplete; reopen the shell if PATH changed, then run `xuva setup go --recover`";
     let _ = record_setup_transaction("verification_required", Some(command), detail);
-    eprintln!("rtk-wad: {detail}");
+    eprintln!("xuva: {detail}");
     ExitCode::FAILURE
 }
 
 fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
     let Some(tool) = arguments.get(1).and_then(|argument| argument.to_str()) else {
         eprintln!(
-            "rtk-wad: usage: setup <tool> [--json] [--refresh]; setup go also supports [--status|--recover|--apply --confirm]"
+            "xuva: usage: setup <tool> [--json] [--refresh]; setup go also supports [--status|--recover|--apply --confirm]"
         );
         return ExitCode::FAILURE;
     };
     if !is_safe_provider_tool_name(tool) {
-        eprintln!("rtk-wad: tool names must contain only ASCII letters, digits, '.', '_', or '-'");
+        eprintln!("xuva: tool names must contain only ASCII letters, digits, '.', '_', or '-'");
         return ExitCode::FAILURE;
     }
     let flags: Vec<&str> = match arguments
@@ -2078,7 +2077,7 @@ fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
     {
         Some(flags) => flags,
         None => {
-            eprintln!("rtk-wad: setup options must be valid Unicode");
+            eprintln!("xuva: setup options must be valid Unicode");
             return ExitCode::FAILURE;
         }
     };
@@ -2092,7 +2091,7 @@ fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
     ];
     if flags.iter().any(|flag| !valid.contains(flag)) {
         eprintln!(
-            "rtk-wad: usage: setup <tool> [--json] [--refresh]; setup go also supports [--status|--recover|--apply --confirm]"
+            "xuva: usage: setup <tool> [--json] [--refresh]; setup go also supports [--status|--recover|--apply --confirm]"
         );
         return ExitCode::FAILURE;
     }
@@ -2105,7 +2104,7 @@ fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
     if tool != "go" {
         if status || recover || apply || confirm {
             eprintln!(
-                "rtk-wad: generic setup is diagnostic-only; `--apply`, `--confirm`, `--status`, and `--recover` are available only for the explicit Go transaction"
+                "xuva: generic setup is diagnostic-only; `--apply`, `--confirm`, `--status`, and `--recover` are available only for the explicit Go transaction"
             );
             return ExitCode::FAILURE;
         }
@@ -2121,7 +2120,7 @@ fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
         || (status && refresh)
     {
         eprintln!(
-            "rtk-wad: usage: setup go [--json] [--refresh] [--status|--recover|--apply --confirm]"
+            "xuva: usage: setup go [--json] [--refresh] [--status|--recover|--apply --confirm]"
         );
         return ExitCode::FAILURE;
     }
@@ -2142,7 +2141,7 @@ fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
     }
     if !confirm {
         eprintln!(
-            "rtk-wad: review the plan above; re-run with `rtk-wad setup go --apply --confirm` to start the installer"
+            "xuva: review the plan above; re-run with `xuva setup go --apply --confirm` to start the installer"
         );
         let _ = print_setup_plan(&plan, json);
         return ExitCode::from(2);
@@ -2151,7 +2150,7 @@ fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
 }
 
 fn wad_policy_path() -> PathBuf {
-    env::var_os("RTK_WAD_POLICY_PATH")
+    env::var_os("XUVA_POLICY_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| wad_data_root().join("route-policy-v2.json"))
 }
@@ -2229,7 +2228,7 @@ fn import_route_policy(source: &Path, config: &Config) -> Result<(), String> {
     validate_route_policy(&incoming)?;
     let expected_context = adaptive_context_signature(config);
     if incoming.context_signature != expected_context {
-        return Err("policy evidence was measured for a different local adapter context; run `rtk-wad policy context` and re-benchmark".to_owned());
+        return Err("policy evidence was measured for a different local adapter context; run `xuva policy context` and re-benchmark".to_owned());
     }
     let destination = wad_policy_path();
     let existing = if destination.exists() {
@@ -2545,7 +2544,7 @@ fn print_calibration() -> Result<(), String> {
         println!("No local adaptive calibration evidence is recorded.");
         return Ok(());
     }
-    println!("RTK-WAD Local Adaptive Calibration");
+    println!("XUVA Local Adaptive Calibration");
     println!();
     for entry in &state.entries {
         let route = entry.selected_route();
@@ -2627,7 +2626,7 @@ fn wsl_launch_prefix(config: &Config) -> Vec<OsString> {
 }
 
 fn test_ready_wsl_path() -> Option<String> {
-    env::var("RTK_WSL_TEST_READY_FILE")
+    env::var("XUVA_WSL_TEST_READY_FILE")
         .ok()
         .and_then(|path| windows_path_to_wsl_path(&path))
 }
@@ -2652,7 +2651,7 @@ fn rtk_arguments_with_metrics(
         OsString::from("/bin/sh"),
         OsString::from("-c"),
         OsString::from(LAUNCH_SCRIPT),
-        OsString::from("rtk-wad"),
+        OsString::from("xuva"),
         OsString::from(&config.lock_wait),
         OsString::from(&config.lock_path),
         OsString::from(config.rtk_path.as_deref().unwrap_or("")),
@@ -2682,7 +2681,7 @@ fn wsl1_rtk_arguments_with_metrics(
         OsString::from("/bin/sh"),
         OsString::from("-c"),
         OsString::from(WSL1_LAUNCH_SCRIPT),
-        OsString::from("rtk-wad-wsl1"),
+        OsString::from("xuva-wsl1"),
         OsString::from(config.rtk_path.as_deref().unwrap_or("")),
         OsString::from(metrics_db_path.unwrap_or("")),
         OsString::from(config.extra_path.as_deref().unwrap_or("")),
@@ -2744,7 +2743,7 @@ fn plan_wsl_arguments_with_metrics(
                 OsString::from("/bin/sh"),
                 OsString::from("-c"),
                 OsString::from(WSL1_PLAN_LAUNCH_SCRIPT),
-                OsString::from("rtk-wad-wsl1-plan"),
+                OsString::from("xuva-wsl1-plan"),
                 OsString::from(metrics_db_path.unwrap_or("")),
                 OsString::from(config.extra_path.as_deref().unwrap_or("")),
                 OsString::from(test_ready_wsl_path().unwrap_or_default()),
@@ -2764,7 +2763,7 @@ fn plan_wsl_arguments_with_metrics(
                 OsString::from("/bin/sh"),
                 OsString::from("-c"),
                 OsString::from(PLAN_LAUNCH_SCRIPT),
-                OsString::from("rtk-wad-plan"),
+                OsString::from("xuva-plan"),
                 OsString::from(&config.lock_wait),
                 OsString::from(&config.lock_path),
                 OsString::from(cancel_token),
@@ -2787,7 +2786,7 @@ fn plan_wsl_arguments_with_metrics(
 }
 
 fn cancel_token() -> String {
-    format!("/tmp/rtk-wad-{}.cancel", std::process::id())
+    format!("/tmp/xuva-{}.cancel", std::process::id())
 }
 
 fn cancel_arguments(config: &Config, token: &str) -> Vec<OsString> {
@@ -2800,7 +2799,7 @@ fn cancel_arguments(config: &Config, token: &str) -> Vec<OsString> {
         OsString::from("/bin/sh"),
         OsString::from("-c"),
         OsString::from(CANCEL_SCRIPT),
-        OsString::from("rtk-wad-cancel"),
+        OsString::from("xuva-cancel"),
         OsString::from(token),
     ]);
     command
@@ -2861,7 +2860,7 @@ mod windows_lock {
     const WAIT_OBJECT_0: u32 = 0;
     const WAIT_ABANDONED: u32 = 0x0000_0080;
     const WAIT_TIMEOUT: u32 = 0x0000_0102;
-    const MUTEX_NAME: &str = r"Local\rtk-wad-wsl1-global-lock";
+    const MUTEX_NAME: &str = r"Local\xuva-wsl1-global-lock";
 
     unsafe extern "system" {
         fn CreateMutexW(
@@ -3288,7 +3287,6 @@ fn configured_wsl_backend(config: &Config, route: Route) -> Config {
 fn print_adapter_info(config: &Config) {
     println!("adapter={PRODUCT_COMMAND}");
     println!("command={PRODUCT_COMMAND}");
-    println!("legacy_command={LEGACY_COMMAND}");
     println!("profile={}", config.profile.as_str());
     println!("route_preference={}", config.wad_route.as_str());
     println!("environment={}", config.environment.as_str());
@@ -3486,20 +3484,20 @@ fn run_execution_plan(
 
 fn provider_exec_command(arguments: &[OsString], config: &Config) -> ExitCode {
     let Some(tool) = arguments.get(2).and_then(|argument| argument.to_str()) else {
-        eprintln!("rtk-wad: usage: provider exec <tool> [--candidate <index>] -- <args...>");
+        eprintln!("xuva: usage: provider exec <tool> [--candidate <index>] -- <args...>");
         return ExitCode::FAILURE;
     };
     if !is_safe_provider_tool_name(tool) {
-        eprintln!("rtk-wad: tool names must contain only ASCII letters, digits, '.', '_', or '-'");
+        eprintln!("xuva: tool names must contain only ASCII letters, digits, '.', '_', or '-'");
         return ExitCode::FAILURE;
     }
     let separator = arguments.iter().position(|argument| argument == "--");
     let Some(separator) = separator else {
-        eprintln!("rtk-wad: provider execution requires `--` before tool arguments");
+        eprintln!("xuva: provider execution requires `--` before tool arguments");
         return ExitCode::FAILURE;
     };
     if separator < 3 {
-        eprintln!("rtk-wad: usage: provider exec <tool> [--candidate <index>] -- <args...>");
+        eprintln!("xuva: usage: provider exec <tool> [--candidate <index>] -- <args...>");
         return ExitCode::FAILURE;
     }
     let options = &arguments[3..separator];
@@ -3509,7 +3507,7 @@ fn provider_exec_command(arguments: &[OsString], config: &Config) -> ExitCode {
         _ => None,
     };
     if !options.is_empty() && candidate_index.is_none() {
-        eprintln!("rtk-wad: usage: provider exec <tool> [--candidate <index>] -- <args...>");
+        eprintln!("xuva: usage: provider exec <tool> [--candidate <index>] -- <args...>");
         return ExitCode::FAILURE;
     }
     // Execution is explicit and must not reuse a provider identity discovered
@@ -3517,20 +3515,16 @@ fn provider_exec_command(arguments: &[OsString], config: &Config) -> ExitCode {
     let resolution = resolve_tool_provider(tool, config, true);
     let index = candidate_index.or(resolution.recommended);
     let Some(index) = index else {
-        eprintln!(
-            "rtk-wad: no verified provider is available; run `rtk-wad doctor {tool}` for details"
-        );
+        eprintln!("xuva: no verified provider is available; run `xuva doctor {tool}` for details");
         return ExitCode::from(127);
     };
     let Some(candidate) = resolution.candidates.get(index) else {
-        eprintln!(
-            "rtk-wad: provider candidate {index} does not exist; run `rtk-wad resolve {tool}`"
-        );
+        eprintln!("xuva: provider candidate {index} does not exist; run `xuva resolve {tool}`");
         return ExitCode::FAILURE;
     };
     if !candidate.usable {
         eprintln!(
-            "rtk-wad: provider candidate {index} is not verified: {}",
+            "xuva: provider candidate {index} is not verified: {}",
             candidate.reason
         );
         return ExitCode::from(127);
@@ -3539,22 +3533,20 @@ fn provider_exec_command(arguments: &[OsString], config: &Config) -> ExitCode {
     let plan = match execution_plan_for_provider_candidate(tool, forwarded, config, candidate) {
         Ok(plan) => plan,
         Err(error) => {
-            eprintln!(
-                "rtk-wad: provider candidate {index} cannot produce an execution plan: {error}"
-            );
+            eprintln!("xuva: provider candidate {index} cannot produce an execution plan: {error}");
             return ExitCode::from(127);
         }
     };
     if has_foreign_absolute_path(forwarded, &plan.candidate) {
         eprintln!(
-            "rtk-wad: provider execution does not translate foreign absolute arguments; run from the verified project directory with relative paths"
+            "xuva: provider execution does not translate foreign absolute arguments; run from the verified project directory with relative paths"
         );
         return ExitCode::FAILURE;
     }
     let route = execution_route(&plan.candidate);
     let needs_console_handler = matches!(route, Route::Wsl1 | Route::Wsl2);
     if needs_console_handler && !console::install() {
-        eprintln!("rtk-wad: unable to register the Windows console cancellation handler");
+        eprintln!("xuva: unable to register the Windows console cancellation handler");
         return ExitCode::FAILURE;
     }
     let started = Instant::now();
@@ -3565,7 +3557,7 @@ fn provider_exec_command(arguments: &[OsString], config: &Config) -> ExitCode {
     } {
         Ok(metrics) => Some(metrics),
         Err(error) => {
-            eprintln!("rtk-wad: metrics disabled for this invocation: {error}");
+            eprintln!("xuva: metrics disabled for this invocation: {error}");
             None
         }
     };
@@ -3586,14 +3578,14 @@ fn provider_exec_command(arguments: &[OsString], config: &Config) -> ExitCode {
             started.elapsed(),
             exit_code,
         ) {
-            eprintln!("rtk-wad: metrics were not recorded: {error}");
+            eprintln!("xuva: metrics were not recorded: {error}");
         }
     }
     match result {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
         Err(error) => {
-            eprintln!("rtk-wad: unable to start provider candidate {index}: {error}");
+            eprintln!("xuva: unable to start provider candidate {index}: {error}");
             ExitCode::FAILURE
         }
     }
@@ -3737,7 +3729,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         if arguments.get(1).is_some_and(|argument| argument == "exec") {
             return provider_exec_command(&arguments, config);
         }
-        eprintln!("rtk-wad: usage: provider exec <tool> [--candidate <index>] -- <args...>");
+        eprintln!("xuva: usage: provider exec <tool> [--candidate <index>] -- <args...>");
         return ExitCode::FAILURE;
     }
     if arguments
@@ -3787,7 +3779,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(error) => {
-                    eprintln!("rtk-wad: unable to render policy context: {error}");
+                    eprintln!("xuva: unable to render policy context: {error}");
                     ExitCode::FAILURE
                 }
             };
@@ -3797,7 +3789,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
                 Some(policy) => match serde_json::to_string_pretty(&policy) {
                     Ok(rendered) => println!("{rendered}"),
                     Err(error) => {
-                        eprintln!("rtk-wad: unable to render route policy: {error}");
+                        eprintln!("xuva: unable to render route policy: {error}");
                         return ExitCode::FAILURE;
                     }
                 },
@@ -3812,11 +3804,11 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         {
             return match import_route_policy(Path::new(&arguments[2]), config) {
                 Ok(()) => {
-                    println!("Imported local RTK-WAD route policy.");
+                    println!("Imported local XUVA route policy.");
                     ExitCode::SUCCESS
                 }
                 Err(error) => {
-                    eprintln!("rtk-wad: {error}");
+                    eprintln!("xuva: {error}");
                     ExitCode::FAILURE
                 }
             };
@@ -3834,7 +3826,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
             return match print_calibration() {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
-                    eprintln!("rtk-wad: {error}");
+                    eprintln!("xuva: {error}");
                     ExitCode::FAILURE
                 }
             };
@@ -3850,7 +3842,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         return match WadMetrics::print_gain() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
-                eprintln!("rtk-wad: {error}");
+                eprintln!("xuva: {error}");
                 ExitCode::FAILURE
             }
         };
@@ -3859,7 +3851,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         match parse_wad_options(arguments, config.wad_route, config.environment) {
             Ok(options) => options,
             Err(error) => {
-                eprintln!("rtk-wad: {error}");
+                eprintln!("xuva: {error}");
                 return ExitCode::FAILURE;
             }
         };
@@ -3891,7 +3883,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         ) {
             Ok(plan) => plan,
             Err(error) => {
-                eprintln!("rtk-wad: local calibration is unavailable: {error}");
+                eprintln!("xuva: local calibration is unavailable: {error}");
                 None
             }
         }
@@ -3954,13 +3946,13 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         return ExitCode::FAILURE;
     }
     if let Some(reason) = provider_missing {
-        eprintln!("rtk-wad: {reason}");
+        eprintln!("xuva: {reason}");
         return ExitCode::from(127);
     }
     let needs_console_handler = matches!(route, Route::Wsl1 | Route::Wsl2);
     let mut console_installed = false;
     if needs_console_handler && !console::install() {
-        eprintln!("rtk-wad: unable to register the Windows console cancellation handler");
+        eprintln!("xuva: unable to register the Windows console cancellation handler");
         return ExitCode::FAILURE;
     } else if needs_console_handler {
         console_installed = true;
@@ -3972,7 +3964,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     } {
         Ok(metrics) => Some(metrics),
         Err(error) => {
-            eprintln!("rtk-wad: metrics disabled for this invocation: {error}");
+            eprintln!("xuva: metrics disabled for this invocation: {error}");
             None
         }
     };
@@ -3994,7 +3986,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
             if matches!(fallback_route, Route::Wsl1 | Route::Wsl2) && !console_installed {
                 if !console::install() {
                     eprintln!(
-                        "rtk-wad: unable to register the Windows console cancellation handler for provider fallback"
+                        "xuva: unable to register the Windows console cancellation handler for provider fallback"
                     );
                     return ExitCode::FAILURE;
                 }
@@ -4020,7 +4012,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
                         if !console_installed {
                             if !console::install() {
                                 eprintln!(
-                                    "rtk-wad: unable to register the Windows console cancellation handler for WSL fallback"
+                                    "xuva: unable to register the Windows console cancellation handler for WSL fallback"
                                 );
                                 return ExitCode::FAILURE;
                             }
@@ -4063,7 +4055,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         ) {
             Ok(totals) => totals,
             Err(error) => {
-                eprintln!("rtk-wad: metrics were not recorded: {error}");
+                eprintln!("xuva: metrics were not recorded: {error}");
                 TokenTotals::default()
             }
         }
@@ -4073,14 +4065,14 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     if let Some(plan) = &calibration
         && let Err(error) = record_calibration(plan, executed_route, elapsed, exit_code, totals)
     {
-        eprintln!("rtk-wad: local calibration was not recorded: {error}");
+        eprintln!("xuva: local calibration was not recorded: {error}");
     }
     match result {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
         Err(error) => {
             eprintln!(
-                "rtk-wad: unable to start {} route: {error}",
+                "xuva: unable to start {} route: {error}",
                 executed_route.as_str()
             );
             ExitCode::FAILURE
@@ -4100,14 +4092,14 @@ fn main() -> ExitCode {
     let bridge = match wsl_bridge_request(&original_arguments) {
         Ok(bridge) => bridge,
         Err(error) => {
-            eprintln!("rtk-wad: invalid WSL bridge payload: {error}");
+            eprintln!("xuva: invalid WSL bridge payload: {error}");
             return ExitCode::FAILURE;
         }
     };
     let mut config = match Config::from_env() {
         Ok(config) => config,
         Err(error) => {
-            eprintln!("rtk-wad: invalid configuration: {error}");
+            eprintln!("xuva: invalid configuration: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -4215,7 +4207,7 @@ mod tests {
             )],
             &config,
             Route::Wsl2,
-            Some("/tmp/rtk-wad-plan-test.cancel"),
+            Some("/tmp/xuva-plan-test.cancel"),
             None,
         )
         .expect("WSL plan arguments are valid");
@@ -4266,7 +4258,7 @@ mod tests {
     #[test]
     fn explicit_wsl1_route_uses_the_windows_mutex_without_redundant_linux_locking() {
         let config = Config::from_lookup(|name| match name {
-            "RTK_WSL_BACKEND" => Some("wsl1".to_owned()),
+            "XUVA_WSL_BACKEND" => Some("wsl1".to_owned()),
             _ => None,
         })
         .expect("explicit WSL1 configuration is valid");
@@ -4344,11 +4336,11 @@ mod tests {
     #[test]
     fn validates_configuration_without_ambient_user_defaults() {
         let config = Config::from_lookup(|name| match name {
-            "RTK_WSL_DISTRO" => Some("Ubuntu-24.04".to_owned()),
-            "RTK_WSL_USER" => Some("alex".to_owned()),
-            "RTK_WSL_RTK_PATH" => Some("/opt/rtk/bin/rtk".to_owned()),
-            "RTK_WSL_CWD" => Some("/work/custom-mount".to_owned()),
-            "RTK_WSL_EXTRA_PATH" => Some("/opt/fixture-bin:/work/tools".to_owned()),
+            "XUVA_WSL_DISTRO" => Some("Ubuntu-24.04".to_owned()),
+            "XUVA_WSL_USER" => Some("alex".to_owned()),
+            "XUVA_WSL_RTK_PATH" => Some("/opt/rtk/bin/rtk".to_owned()),
+            "XUVA_WSL_CWD" => Some("/work/custom-mount".to_owned()),
+            "XUVA_WSL_EXTRA_PATH" => Some("/opt/fixture-bin:/work/tools".to_owned()),
             _ => None,
         })
         .expect("portable config is valid");
@@ -4367,19 +4359,19 @@ mod tests {
     #[test]
     fn rejects_unsafe_or_ambiguous_configuration() {
         let invalid_wait = Config::from_lookup(|name| match name {
-            "RTK_WSL_LOCK_WAIT_SECONDS" => Some("0".to_owned()),
+            "XUVA_WSL_LOCK_WAIT_SECONDS" => Some("0".to_owned()),
             _ => None,
         });
         assert!(invalid_wait.is_err());
 
         let relative_path = Config::from_lookup(|name| match name {
-            "RTK_WSL_RTK_PATH" => Some("bin/rtk".to_owned()),
+            "XUVA_WSL_RTK_PATH" => Some("bin/rtk".to_owned()),
             _ => None,
         });
         assert!(relative_path.is_err());
 
         let invalid_extra_path = Config::from_lookup(|name| match name {
-            "RTK_WSL_EXTRA_PATH" => Some("relative:/opt/tools".to_owned()),
+            "XUVA_WSL_EXTRA_PATH" => Some("relative:/opt/tools".to_owned()),
             _ => None,
         });
         assert!(invalid_extra_path.is_err());
@@ -4414,7 +4406,7 @@ mod tests {
             Some(r"E:\luthfi\project\flowpeek"),
         ));
         let config = Config::from_lookup(|name| match name {
-            "RTK_WSL_GIT_MODE" => Some("wsl".to_owned()),
+            "XUVA_WSL_GIT_MODE" => Some("wsl".to_owned()),
             _ => None,
         })
         .expect("WSL Git mode is valid");
@@ -4428,7 +4420,7 @@ mod tests {
     #[test]
     fn validates_git_mode() {
         let invalid = Config::from_lookup(|name| match name {
-            "RTK_WSL_GIT_MODE" => Some("other".to_owned()),
+            "XUVA_WSL_GIT_MODE" => Some("other".to_owned()),
             _ => None,
         });
         assert!(invalid.is_err());
@@ -4441,7 +4433,7 @@ mod tests {
         assert_eq!(default.distro, DEFAULT_DISTRO);
 
         let wsl1 = Config::from_lookup(|name| match name {
-            "RTK_WSL_BACKEND" => Some("wsl1".to_owned()),
+            "XUVA_WSL_BACKEND" => Some("wsl1".to_owned()),
             _ => None,
         })
         .expect("explicit WSL1 configuration is valid");
@@ -4452,8 +4444,8 @@ mod tests {
     #[test]
     fn explicit_backend_and_distro_select_the_wad_wsl_provider() {
         let config = Config::from_lookup(|name| match name {
-            "RTK_WSL_BACKEND" => Some("wsl2".to_owned()),
-            "RTK_WSL_DISTRO" => Some("Ubuntu-24.04".to_owned()),
+            "XUVA_WSL_BACKEND" => Some("wsl2".to_owned()),
+            "XUVA_WSL_DISTRO" => Some("Ubuntu-24.04".to_owned()),
             _ => None,
         })
         .expect("explicit backend configuration is valid");
@@ -4461,7 +4453,7 @@ mod tests {
         assert_eq!(config.distro, "Ubuntu-24.04");
 
         let invalid = Config::from_lookup(|name| match name {
-            "RTK_WSL_BACKEND" => Some("legacy".to_owned()),
+            "XUVA_WSL_BACKEND" => Some("legacy".to_owned()),
             _ => None,
         });
         assert!(invalid.is_err());
@@ -5026,7 +5018,7 @@ mod tests {
     fn provider_cache_fingerprint_changes_with_wsl_extra_path() {
         let default = default_config();
         let configured = Config::from_lookup(|name| match name {
-            "RTK_WSL_EXTRA_PATH" => Some("/tmp/rtk-wad-go/bin".to_owned()),
+            "XUVA_WSL_EXTRA_PATH" => Some("/tmp/xuva-go/bin".to_owned()),
             _ => None,
         })
         .expect("extra path configuration is valid");
@@ -5300,7 +5292,7 @@ mod tests {
     #[test]
     fn provider_aware_go_routing_runs_a_wsl_only_go_binary_without_rtk() {
         let config = Config::from_lookup(|name| match name {
-            "RTK_WAD_OUTPUT_ADAPTER" => Some("raw".to_owned()),
+            "XUVA_OUTPUT_ADAPTER" => Some("raw".to_owned()),
             _ => None,
         })
         .expect("raw adapter configuration is valid");
@@ -5436,7 +5428,7 @@ mod tests {
     #[test]
     fn provider_planning_retains_the_next_eligible_route_for_pre_start_fallback() {
         let raw_config = Config::from_lookup(|name| match name {
-            "RTK_WAD_OUTPUT_ADAPTER" => Some("raw".to_owned()),
+            "XUVA_OUTPUT_ADAPTER" => Some("raw".to_owned()),
             _ => None,
         })
         .expect("raw adapter configuration is valid");
@@ -5504,7 +5496,7 @@ mod tests {
     #[test]
     fn generic_dispatcher_routes_a_wsl_only_cargo_binary_without_rtk() {
         let config = Config::from_lookup(|name| match name {
-            "RTK_WAD_OUTPUT_ADAPTER" => Some("raw".to_owned()),
+            "XUVA_OUTPUT_ADAPTER" => Some("raw".to_owned()),
             _ => None,
         })
         .expect("raw adapter configuration is valid");

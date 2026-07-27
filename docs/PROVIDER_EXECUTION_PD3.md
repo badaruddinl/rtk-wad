@@ -1,6 +1,6 @@
 # Provider-aware Go execution: PD3
 
-PD3 connects the existing Go provider discovery to normal `rtk-wad go ...`
+PD3 connects the existing Go provider discovery to normal `xuva go ...`
 execution. It remains installation-free: no package manager, download,
 elevation, prompt, or dependency action is available in this milestone.
 
@@ -25,9 +25,9 @@ Linux path remains on its existing WSL route rather than being reclassified.
 
 ## Missing provider behavior
 
-When no safe provider satisfies the contract, automatic `rtk-wad go ...`
+When no safe provider satisfies the contract, automatic `xuva go ...`
 returns exit code `127` before starting a child process. Its diagnostic directs
-the user to `rtk-wad doctor go` and explicitly states that installation is
+the user to `xuva doctor go` and explicitly states that installation is
 disabled in PD3. This preserves the normal distinction between discovering a
 missing binary and executing a command that failed.
 

@@ -7,10 +7,9 @@ param(
 $ErrorActionPreference = "Stop"
 $install = Join-Path $RepositoryRoot "scripts\install.ps1"
 $uninstall = Join-Path $RepositoryRoot "scripts\uninstall.ps1"
-$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) "rtk-wad-packaging-$PID"
+$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) "xuva-packaging-$PID"
 $destination = Join-Path $temporaryRoot "bin"
 $target = Join-Path $destination "xuva.exe"
-$legacyTarget = Join-Path $destination "rtk-wad.exe"
 $backup = "$target.previous.exe"
 $tokenizerRoot = Join-Path $temporaryRoot "tokenizer"
 
@@ -22,7 +21,6 @@ try {
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
     & $install -Destination $destination
     Assert-Condition (Test-Path -LiteralPath $target) "fresh install did not create the XUVA launcher"
-    Assert-Condition (Test-Path -LiteralPath $legacyTarget) "fresh install did not create the RTK-WAD compatibility shim"
     Assert-Condition (-not (Test-Path -LiteralPath $tokenizerRoot)) "fresh WAD install unexpectedly provisioned the optional tokenizer"
 
     $reinstallRejected = $false
@@ -40,13 +38,11 @@ try {
     & $install -Destination $destination -Force
     & $uninstall -Destination $destination
     Assert-Condition (-not (Test-Path -LiteralPath $target)) "uninstall did not remove the launcher"
-    Assert-Condition (-not (Test-Path -LiteralPath $legacyTarget)) "uninstall did not remove the compatibility shim"
 
     $tokenizerDestination = Join-Path $temporaryRoot "tokenizer-opt-in"
     & $install -Destination $tokenizerDestination -InstallTokenizer -TokenizerRoot $tokenizerRoot
     Assert-Condition (Test-Path -LiteralPath (Join-Path $tokenizerRoot "Scripts\python.exe")) "explicit tokenizer install did not provision the optional dependency"
     Assert-Condition (Test-Path -LiteralPath (Join-Path $tokenizerDestination "xuva.exe")) "explicit tokenizer install did not create the XUVA launcher"
-    Assert-Condition (Test-Path -LiteralPath (Join-Path $tokenizerDestination "rtk-wad.exe")) "explicit tokenizer install did not create the RTK-WAD compatibility shim"
 
     $tokenizerFailureDestination = Join-Path $temporaryRoot "tokenizer-failure"
     $tokenizerFailureRoot = Join-Path $temporaryRoot "tokenizer-failure-root"

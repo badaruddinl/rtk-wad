@@ -5,8 +5,8 @@ WAD. The embedded source of truth is
 `benchmarks/command-manifest.json`, currently pinned to RTK `0.43.0`.
 
 ```powershell
-rtk-wad surface
-rtk-wad surface --json
+xuva surface
+xuva surface --json
 ```
 
 The JSON report lists every upstream top-level command, its classification, and
@@ -30,7 +30,7 @@ silently receiving native RTK treatment.
 ## Drift and parity evidence
 
 The process contract starts the actual Ubuntu RTK `0.43.0` binary, parses its
-`--help` command list, and requires exact set equality with `rtk-wad surface
+`--help` command list, and requires exact set equality with `xuva surface
 --json`: 69 command families, no duplicate names, and no unknown
 classification. The existing PowerShell manifest verifier remains available
 when a stock Windows `rtk.exe` is installed:

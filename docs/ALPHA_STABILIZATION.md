@@ -6,7 +6,7 @@ This document records outcomes only; it deliberately avoids raw command logs.
 
 | Gate | Evidence | Status |
 | --- | --- | --- |
-| Portable configuration | Validated environment contract; `RTK_WSL_CWD` covers custom mounts | Pass |
+| Portable configuration | Validated environment contract; `XUVA_WSL_CWD` covers custom mounts | Pass |
 | Argument and process contract | Rust integration tests for literals, Unicode, stdio, exit codes, stdin, and structured native-Git routing from Windows worktrees | Pass |
 | Ctrl+C / Ctrl+Break | Windows handler forwards SIGINT to the dedicated Linux process group; lock-release regression passes | Pass |
 | Packaging and recovery | Isolated PowerShell contract using a temporary destination | Pass |

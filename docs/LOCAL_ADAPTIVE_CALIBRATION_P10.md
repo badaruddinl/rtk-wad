@@ -2,7 +2,7 @@
 
 ## Purpose
 
-P10 supplies a bounded local route-selection foundation for RTK-WAD when no
+P10 supplies a bounded local route-selection foundation for XUVA when no
 imported repeated-run benchmark policy is available for a command. It improves
 on a static preference without turning ordinary commands into benchmark
 replays.
@@ -53,7 +53,7 @@ result. Later observations retain only the five most recent samples per route.
 
 WAD measures end-to-end elapsed time, including dispatcher and local-accounting
 cost. Native RTK token saving comes from the same aggregate RTK tracker counters
-used by `rtk-wad gain`:
+used by `xuva gain`:
 
 ```text
 native_savings_percent = native_saved_tokens / native_input_tokens * 100
@@ -74,8 +74,8 @@ ground truth.
 ## Local state and privacy
 
 P16 supersedes the original v1 location with
-`%LOCALAPPDATA%\rtk-wad\calibration-v2.json`, or the matching isolated
-`RTK_WAD_STATE_DIR` root. It is atomically replaced and contains:
+`%LOCALAPPDATA%\xuva\calibration-v2.json`, or the matching isolated
+`XUVA_STATE_DIR` root. It is atomically replaced and contains:
 
 - a deterministic 64-bit FNV-1a signature of project path plus arguments;
 - a safe command category;
@@ -83,7 +83,7 @@ P16 supersedes the original v1 location with
 - aggregate native RTK input and saved-token counters.
 
 It does **not** contain the project path, argument text, command output,
-environment, or raw-output token counts. `rtk-wad calibration show` exposes
+environment, or raw-output token counts. `xuva calibration show` exposes
 only the category, opaque signature, phase, route, sample counts, and native
 token-saving percentage.
 
@@ -101,6 +101,6 @@ cargo build --release
 cargo package
 ```
 
-Runtime validation uses an isolated `RTK_WAD_STATE_DIR`, invokes a safe local
+Runtime validation uses an isolated `XUVA_STATE_DIR`, invokes a safe local
 search naturally through the sequence, and confirms that `--explain-route`
 does not write state.

@@ -23,7 +23,7 @@ Authorize it only as part of an intentional benchmark setup:
 ```
 
 The installer rejects an unconfirmed bootstrap, does not choose another package
-manager, and does not activate `rtk-wad.exe` until both the private environment
+manager, and does not activate `xuva.exe` until both the private environment
 and the pinned tokenizer import have been verified. A successful package-manager
 operation whose executable is not visible yet requires a new terminal and a
 rerun; it never changes an existing launcher.

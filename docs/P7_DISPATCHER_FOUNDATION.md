@@ -10,7 +10,7 @@ mechanism that discovers or starts a command.
 - The starting `master` commit adds only `.github/FUNDING.yml` after that tag;
   the executable source, packaging scripts, installer, and release documents
   are unchanged.
-- Baseline local gate: `cargo test --bin rtk-wad -- --test-threads=1` passed
+- Baseline local gate: `cargo test --bin xuva -- --test-threads=1` passed
   before the refactor (42 tests).
 - The fixed performance comparator is the v0.3.0 P18 artifact
   [`benchmarks/evidence/p18-comparison-summary.json`](../benchmarks/evidence/p18-comparison-summary.json)
@@ -36,7 +36,7 @@ mechanism that discovers or starts a command.
 The following remain behavioural compatibility gates: literal argv forwarding,
 stdin/stdout/stderr, child exit codes, WSL CWD mapping, and cancellation. Shell
 grammar (`cd`, aliases, pipes, redirection) remains owned by PowerShell, CMD,
-or Git Bash and is not parsed as an executable command by RTK-WAD.
+or Git Bash and is not parsed as an executable command by XUVA.
 
 ## Dispatcher contract
 
@@ -70,7 +70,7 @@ failure. It never retries a process that already started or hides its exit
 code. An explicitly requested route remains an explicit user constraint.
 
 Dispatcher-owned commands are resolved before provider discovery:
-`rtk-wad --version`, `rtk-wad version`, and `rtk-wad -V` return the package
+`xuva --version`, `xuva version`, and `xuva -V` return the package
 version without requiring a Windows executable, WSL distribution, or RTK.
 
 ## Implementation boundaries and hot path
@@ -93,22 +93,22 @@ need a WSL inventory. It returns immediately for a verified Windows candidate.
 If that candidate is absent, discovery expands once to the complete WSL
 inventory; routes already targeting WSL request that complete inventory from
 the start. This avoids duplicate full discovery without changing WSL-only
-selection. A local warm-process check measured `rtk-wad --version` at
+selection. A local warm-process check measured `xuva --version` at
 approximately 46â€“62 ms; a post-build cold start is materially slower and is
 reported as process-start overhead rather than resolver latency.
 
 ## Go vertical slice
 
-`rtk-wad go version` now accepts a verified WSL Go candidate whether it has
+`xuva go version` now accepts a verified WSL Go candidate whether it has
 RTK installed or not. If the Go binary exists only in a mapped WSL project,
 the selected WSL executable is launched as `raw`; this is the expected path
 for a PowerShell, CMD, or Git Bash invocation on Windows.
 
-On the current machine, both `rtk-wad go version` and the same command with
-`RTK_WAD_OUTPUT_ADAPTER=raw` returned the native Go version and exit code 0.
+On the current machine, both `xuva go version` and the same command with
+`XUVA_OUTPUT_ADAPTER=raw` returned the native Go version and exit code 0.
 The process contract also proves the required Windows-to-WSL case live: it
 hides Windows Go from `PATH`, exposes a temporary Go fixture only through
-`RTK_WSL_EXTRA_PATH`, runs `rtk-wad go version`, checks the WSL-only result,
+`XUVA_WSL_EXTRA_PATH`, runs `xuva go version`, checks the WSL-only result,
 and removes the fixture.
 
 That fixture is also invoked through real PowerShell, CMD, and Git Bash
@@ -117,7 +117,7 @@ single literal argument containing a space, Unicode, `$`, `&`, and a
 backslash. The CMD case uses an ASCII batch wrapper with a UTF-16 environment
 value, so its own parsing rules—not a pre-escaped Rust command line—handle
 the literal argument. The Git Bash case explicitly disables MSYS path
-conversion for the native child so the Linux-valued `RTK_WSL_EXTRA_PATH`
+conversion for the native child so the Linux-valued `XUVA_WSL_EXTRA_PATH`
 remains a Linux path; this captures the shell boundary rather than masking it
 with a Windows path rewrite.
 
@@ -134,17 +134,17 @@ mapped project directory, and recommendation diagnosis.
 
 | Requested case | Evidence in this branch | Status |
 | --- | --- | --- |
-| Windows project, Windows Go | Local `rtk-wad go version` and `provider exec go -- version` | Live on this host |
+| Windows project, Windows Go | Local `xuva go version` and `provider exec go -- version` | Live on this host |
 | Windows project, WSL2-only Go | Temporary `/tmp` Go fixture; route, raw adapter, CWD, argv, cache, and exit `42` | Live process contract |
 | Windows project, WSL1-only Go | No WSL1 candidate is installed; resolver retains verified raw candidates and reports the absence | Optional provider unavailable, no dispatch error |
-| WSL project, same distro | `rtk-wad-wsl.sh` process contract from `/tmp` | Live on Ubuntu WSL2 |
+| WSL project, same distro | `xuva-wsl.sh` process contract from `/tmp` | Live on Ubuntu WSL2 |
 | WSL project, other WSL distro | `docker-desktop` source → Ubuntu Go-only fixture through a Windows-mounted project path | One live WSL2 process contract |
 | WSL project, Windows Go | Ubuntu shim from Windows-mounted checkout selects Windows Go raw; child and `--explain-route` are checked | One live WSL2 process contract |
 | Go unavailable | Read-only `doctor`/setup diagnosis; no install is applied | Covered without provisioning |
 
 ### WSL-origin shim
 
-`scripts/rtk-wad-wsl.sh` is the explicit adapter for invoking the Windows
+`scripts/xuva-wsl.sh` is the explicit adapter for invoking the Windows
 dispatcher from a WSL shell. WSL interop does not pass arbitrary Linux
 environment variables to `.exe` processes, so the versioned bridge payload
 sends the WSL distro, physical CWD, its drive-qualified `wslpath -w` Windows
@@ -155,9 +155,9 @@ before resolution; no user argv is inserted into a CMD, PowerShell, or shell
 command string.
 
 ```sh
-export RTK_WAD_WINDOWS_EXE=/mnt/c/tools/rtk-wad.exe
-export RTK_WSL_EXTRA_PATH=/home/me/.local/bin
-sh /mnt/c/tools/rtk-wad-wsl.sh go version
+export XUVA_WINDOWS_EXE=/mnt/c/tools/xuva.exe
+export XUVA_WSL_EXTRA_PATH=/home/me/.local/bin
+sh /mnt/c/tools/xuva-wsl.sh go version
 ```
 
 One process contract starts this shim from `/tmp` in Ubuntu, points it at a Go
@@ -166,7 +166,7 @@ dispatcher selects WSL2, keeps CWD `/tmp`, and preserves a literal argument
 containing spaces, Unicode, `$`, `&`, and a backslash. A second contract starts
 in the `docker-desktop` WSL2 distro from a Windows-mounted checkout, discovers
 Go only in Ubuntu, translates the source CWD through its verified Windows path,
-and verifies Ubuntu receives `/mnt/d/.../rtk-wad` plus the literal argv. It is
+and verifies Ubuntu receives `/mnt/d/.../xuva` plus the literal argv. It is
 evidence for this controlled two-distro WSL2 route, not a claim that arbitrary
 Linux-native paths can cross distributions.
 
@@ -176,7 +176,7 @@ the fixed launcher passes them to `env -i` without shell evaluation. Interactive
 TTY remains inherited from the calling console, as in the v0.3 process
 contract.
 
-The normal `rtk-wad go ...` path now carries that same plan to execution, not
+The normal `xuva go ...` path now carries that same plan to execution, not
 a second route/config/adapter decision. A requested `rtk` adapter fails when a
 candidate has no RTK capability; it never silently falls back to `raw`.
 `provider exec go -- version` also uses this plan executor; a raw Windows Go
@@ -199,8 +199,8 @@ Windows execution candidate when `npm.cmd` is also present. A live local
 `provider exec npm -- --version` and normal `npm --version` returned exit 0.
 
 Cargo is the second live proof: a process-contract fixture hides Windows Cargo,
-exposes a temporary Cargo binary only in WSL through `RTK_WSL_EXTRA_PATH`,
-forces the raw adapter, and verifies `rtk-wad cargo --version` reaches it. A
+exposes a temporary Cargo binary only in WSL through `XUVA_WSL_EXTRA_PATH`,
+forces the raw adapter, and verifies `xuva cargo --version` reaches it. A
 table-driven fixture extends that same WSL-only proof to Node/npm/pnpm,
 Python/python3/pytest, Java/Gradle/Maven, .NET, and Git. Each executable is
 resolved by name, launched at its discovered WSL path, and must return its own
@@ -234,7 +234,7 @@ not release benchmarks:
 
 | Workspace | Command | Cold / warm | Route | Result |
 | --- | --- | --- | --- | --- |
-| `rtk-wad` | `cargo --version` | 2963 ms / 3523 ms | discovered Windows raw | Cargo 1.97.0, exit 0 |
+| `xuva` | `cargo --version` | 2963 ms / 3523 ms | discovered Windows raw | Cargo 1.97.0, exit 0 |
 | Flowpeek (`flow-explore`) | `npm --version` | 2206 ms / 1520 ms | validated Windows raw | npm 11.16.0, exit 0 |
 | kas-new (`kas`) | `npm --version` | 1931 ms / 1508 ms | validated Windows raw | npm 11.16.0, exit 0 |
 
@@ -254,7 +254,7 @@ Each cold/warm pair returned identical UTF-8 output hashes and exit 0:
 
 | Workspace | Command | Cold / warm | Output SHA-256 | Route |
 | --- | --- | --- | --- | --- |
-| `rtk-wad` | `cargo metadata --no-deps --format-version=1` | 2887 ms / 3537 ms | `4ca11c2a…f13ea5e6` | discovered Windows raw |
+| `xuva` | `cargo metadata --no-deps --format-version=1` | 2887 ms / 3537 ms | `4ca11c2a…f13ea5e6` | discovered Windows raw |
 | Flowpeek (`flow-explore`) | `npm run` | 11153 ms / 8690 ms | `da242ab7…db4ef6fd` | discovered Windows raw |
 | kas-new (`kas`) | `npm run` | 9456 ms / 9272 ms | `79c96e89…5a72aa1b` | discovered Windows raw |
 
@@ -316,18 +316,18 @@ Flowpeek's `npm run test:fast` and kas-new's `npm test`. Both exited `0`
 through `route=raw` with `output_adapter=raw`; kas-new reported 83 passing
 test files and 378 passing tests. Flowpeek stayed clean. kas-new retained only
 its pre-existing untracked `.project-flow/` directory. Existing application
-warnings in kas-new were not attributed to RTK-WAD.
+warnings in kas-new were not attributed to XUVA.
 
-Set `RTK_WAD_OUTPUT_ADAPTER=raw` to explicitly disable RTK output adaptation.
+Set `XUVA_OUTPUT_ADAPTER=raw` to explicitly disable RTK output adaptation.
 The default `auto` value preserves v0.3.0 preference for an available RTK
 adapter. `rtk` requires a verified RTK candidate.
 
 Diagnostics are read-only:
 
 ```powershell
-rtk-wad doctor go
-rtk-wad which go
-rtk-wad --explain-route go version
+xuva doctor go
+xuva which go
+xuva --explain-route go version
 ```
 
 `doctor` and `which` report Windows and every eligible WSL distribution,
@@ -335,7 +335,7 @@ binary identity, version/capability probe, usable project mapping, candidate
 reason, and recommendation. `--explain-route` prints the selected route and
 `output_adapter`.
 
-WSL discovery applies the configured `RTK_WSL_EXTRA_PATH` before probing both
+WSL discovery applies the configured `XUVA_WSL_EXTRA_PATH` before probing both
 the requested binary and RTK. This keeps discovery and the later WSL launcher
 on the same executable search boundary.
 
@@ -375,9 +375,9 @@ unavailable external provider into a synthetic pass.
 | Separate request, discovery, route, adapter, execution, provisioning contracts | `dispatcher` module and plan executor; provisioning remains uninvoked | Covered |
 | `doctor`, `which`, and `--explain-route` show provider decisions | Live WSL-only Go fixture checks all three, candidate and diagnosis | Covered |
 | Go from Windows shell when installed only in WSL | PowerShell, CMD, Git Bash live fixtures; literal argv, mapped CWD, exit 42 | Covered for Windows → WSL2 |
-| Go Windows / WSL1 / WSL-origin / cross-distro matrix | Windows native observed; WSL-origin same-distro, one Windows-mounted `docker-desktop` → Ubuntu cross-distro route, and Ubuntu → compatible Windows Go are covered through `rtk-wad-wsl.sh`; WSL1 and native-Linux-path cross-distro candidates are unavailable and diagnosed without error | Covered for available providers |
+| Go Windows / WSL1 / WSL-origin / cross-distro matrix | Windows native observed; WSL-origin same-distro, one Windows-mounted `docker-desktop` → Ubuntu cross-distro route, and Ubuntu → compatible Windows Go are covered through `xuva-wsl.sh`; WSL1 and native-Linux-path cross-distro candidates are unavailable and diagnosed without error | Covered for available providers |
 | Process contract: structured argv, stdio, exits, cancellation, CWD | Existing raw/WSL tests plus shell matrix, stdin, WSL Ctrl+Break, raw Windows Node Ctrl+Break, and dispatcher-owned version contract | Covered for available Windows/WSL2 surface |
 | Cache invalidation: PATH, binary, distro, version, Git revision | Context fingerprint plus identity and version revalidation; live same-identity version, temporary Git revision, PATH, and configured-distro fixtures | Covered for available providers |
 | Resolver across Rust, Node, Python, Java, .NET, Git | Shared resolver; live WSL2 fixture for every listed executable; Windows npm wrapper proof | Covered for Windows → WSL2 |
-| Dogfood on rtk-wad, Flowpeek, kas-new | Four recorded non-mutating cycles; Flowpeek and kas-new workloads pass through raw dispatch with route, exit, and corpus-status observations | RTK-adapter/cancellation evidence pending; raw pre-start fallback is unit-covered |
+| Dogfood on xuva, Flowpeek, kas-new | Four recorded non-mutating cycles; Flowpeek and kas-new workloads pass through raw dispatch with route, exit, and corpus-status observations | RTK-adapter/cancellation evidence pending; raw pre-start fallback is unit-covered |
 | v0.4.0-alpha.4 functional readiness | Four real dogfood cycles, raw fallback, 28/28 process contract, and local release build | Ready for a clean-worktree publication decision; RTK benchmark evidence is not claimed |

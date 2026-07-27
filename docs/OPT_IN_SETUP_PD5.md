@@ -7,11 +7,11 @@ plain `setup go` request.
 ## Commands
 
 ```powershell
-rtk-wad setup go
-rtk-wad setup go --apply
-rtk-wad setup go --apply --confirm
-rtk-wad setup go --status
-rtk-wad setup go --recover
+xuva setup go
+xuva setup go --apply
+xuva setup go --apply --confirm
+xuva setup go --status
+xuva setup go --recover
 ```
 
 `--apply` refreshes discovery and renders the current plan again, then exits
@@ -31,8 +31,8 @@ provider performs no action; a blocked plan cannot be applied.
 ## Transaction and recovery
 
 Before the installer starts, WAD atomically writes a local transaction journal
-at `%LOCALAPPDATA%\rtk-wad\setup-transaction-v1.json` (or the test/developer
-override `RTK_WAD_STATE_DIR`). The journal records only the command, status,
+at `%LOCALAPPDATA%\xuva\setup-transaction-v1.json` (or the test/developer
+override `XUVA_STATE_DIR`). The journal records only the command, status,
 timestamp, and concise result. It contains no source code or project data and
 is not intended for Git.
 

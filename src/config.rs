@@ -7,7 +7,7 @@ use std::env;
 
 pub(crate) const DEFAULT_DISTRO: &str = "Ubuntu";
 pub(crate) const DEFAULT_WSL1_DISTRO: &str = "Ubuntu-RTK-WSL1";
-const DEFAULT_LOCK_PATH: &str = "/tmp/rtk-wad.lock";
+const DEFAULT_LOCK_PATH: &str = "/tmp/xuva.lock";
 const DEFAULT_LOCK_WAIT_SECONDS: &str = "120";
 const DEFAULT_GIT_MODE: &str = "auto";
 
@@ -66,7 +66,7 @@ impl OutputAdapterPreference {
             "auto" => Ok(Self::Auto),
             "raw" => Ok(Self::Raw),
             "rtk" => Ok(Self::Rtk),
-            _ => Err("RTK_WAD_OUTPUT_ADAPTER must be auto, raw, or rtk".to_owned()),
+            _ => Err("XUVA_OUTPUT_ADAPTER must be auto, raw, or rtk".to_owned()),
         }
     }
 }
@@ -147,60 +147,58 @@ impl Config {
 
     pub(crate) fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let profile = ExecutableProfile::Wad;
-        let backend = match lookup("RTK_WSL_BACKEND")
+        let backend = match lookup("XUVA_WSL_BACKEND")
             .unwrap_or_else(|| WslBackend::Auto.as_str().to_owned())
             .as_str()
         {
             "auto" => WslBackend::Auto,
             "wsl1" => WslBackend::Wsl1,
             "wsl2" => WslBackend::Wsl2,
-            _ => return Err("RTK_WSL_BACKEND must be auto, wsl1, or wsl2".to_owned()),
+            _ => return Err("XUVA_WSL_BACKEND must be auto, wsl1, or wsl2".to_owned()),
         };
         let default_distro = match backend {
             WslBackend::Wsl1 => DEFAULT_WSL1_DISTRO,
             WslBackend::Auto | WslBackend::Wsl2 => DEFAULT_DISTRO,
         };
-        let distro = required_setting(&lookup, "RTK_WSL_DISTRO", default_distro)?;
-        let user = optional_setting(&lookup, "RTK_WSL_USER")?;
-        let rtk_path = optional_absolute_path(&lookup, "RTK_WSL_RTK_PATH")?;
-        let lock_path = required_absolute_path(&lookup, "RTK_WSL_LOCK_PATH", DEFAULT_LOCK_PATH)?;
+        let distro = required_setting(&lookup, "XUVA_WSL_DISTRO", default_distro)?;
+        let user = optional_setting(&lookup, "XUVA_WSL_USER")?;
+        let rtk_path = optional_absolute_path(&lookup, "XUVA_WSL_RTK_PATH")?;
+        let lock_path = required_absolute_path(&lookup, "XUVA_WSL_LOCK_PATH", DEFAULT_LOCK_PATH)?;
         let lock_wait = required_setting(
             &lookup,
-            "RTK_WSL_LOCK_WAIT_SECONDS",
+            "XUVA_WSL_LOCK_WAIT_SECONDS",
             DEFAULT_LOCK_WAIT_SECONDS,
         )?;
-        let cwd = optional_absolute_path(&lookup, "RTK_WSL_CWD")?;
+        let cwd = optional_absolute_path(&lookup, "XUVA_WSL_CWD")?;
         let git_mode =
-            match required_setting(&lookup, "RTK_WSL_GIT_MODE", DEFAULT_GIT_MODE)?.as_str() {
+            match required_setting(&lookup, "XUVA_WSL_GIT_MODE", DEFAULT_GIT_MODE)?.as_str() {
                 "auto" => GitMode::Auto,
                 "wsl" => GitMode::Wsl,
                 "native" => GitMode::Native,
-                _ => return Err("RTK_WSL_GIT_MODE must be auto, wsl, or native".to_owned()),
+                _ => return Err("XUVA_WSL_GIT_MODE must be auto, wsl, or native".to_owned()),
             };
-        let extra_path = optional_linux_path_list(&lookup, "RTK_WSL_EXTRA_PATH")?;
-        let wad_route = match lookup("RTK_WAD_ROUTE") {
+        let extra_path = optional_linux_path_list(&lookup, "XUVA_WSL_EXTRA_PATH")?;
+        let wad_route = match lookup("XUVA_ROUTE") {
             Some(value) if value.trim().is_empty() => {
-                return Err("RTK_WAD_ROUTE must not be empty when set".to_owned());
+                return Err("XUVA_ROUTE must not be empty when set".to_owned());
             }
-            Some(value) => {
-                Route::parse(&value).map_err(|error| format!("RTK_WAD_ROUTE {error}"))?
-            }
+            Some(value) => Route::parse(&value).map_err(|error| format!("XUVA_ROUTE {error}"))?,
             None => Route::Auto,
         };
-        let environment = match lookup("RTK_WAD_ENVIRONMENT") {
+        let environment = match lookup("XUVA_ENVIRONMENT") {
             Some(value) if value.trim().is_empty() => {
-                return Err("RTK_WAD_ENVIRONMENT must not be empty when set".to_owned());
+                return Err("XUVA_ENVIRONMENT must not be empty when set".to_owned());
             }
             Some(value) => ExecutionEnvironment::parse(&value)
-                .map_err(|error| format!("RTK_WAD_ENVIRONMENT {error}"))?,
+                .map_err(|error| format!("XUVA_ENVIRONMENT {error}"))?,
             None => ExecutionEnvironment::Adaptive,
         };
-        let native_rtk_path = lookup("RTK_WAD_NATIVE_RTK_PATH")
+        let native_rtk_path = lookup("XUVA_NATIVE_RTK_PATH")
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "rtk.exe".to_owned());
-        let output_adapter = match lookup("RTK_WAD_OUTPUT_ADAPTER") {
+        let output_adapter = match lookup("XUVA_OUTPUT_ADAPTER") {
             Some(value) if value.trim().is_empty() => {
-                return Err("RTK_WAD_OUTPUT_ADAPTER must not be empty when set".to_owned());
+                return Err("XUVA_OUTPUT_ADAPTER must not be empty when set".to_owned());
             }
             Some(value) => OutputAdapterPreference::parse(&value)?,
             None => OutputAdapterPreference::Auto,
@@ -212,7 +210,7 @@ impl Config {
             .filter(|value| *value > 0)
             .is_none()
         {
-            return Err("RTK_WSL_LOCK_WAIT_SECONDS must be a positive integer".to_owned());
+            return Err("XUVA_WSL_LOCK_WAIT_SECONDS must be a positive integer".to_owned());
         }
 
         Ok(Self {

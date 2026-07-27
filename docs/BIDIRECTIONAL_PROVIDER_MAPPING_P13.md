@@ -14,7 +14,7 @@ both conditions succeed:
    one argument.
 2. The target host confirms that the resulting path is an existing directory.
 
-When `RTK_WSL_USER` selects a WSL user, both probes include `-u <user>`. The
+When `XUVA_WSL_USER` selects a WSL user, both probes include `-u <user>`. The
 mapping is therefore evaluated under the same WSL identity that a later
 provider execution would use.
 

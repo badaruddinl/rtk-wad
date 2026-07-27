@@ -2,7 +2,7 @@
 param(
     [ValidateSet("pytest-8.4.0", "typescript-5.9.3", "ripgrep-14.1.1", "all")]
     [string]$Corpus = "all",
-    [string]$Destination = (Join-Path $env:LOCALAPPDATA "rtk-wad\benchmark-corpora"),
+    [string]$Destination = (Join-Path $env:LOCALAPPDATA "xuva\benchmark-corpora"),
     [string]$Manifest = (Join-Path $PSScriptRoot "..\benchmarks\public-corpora.json"),
     [string[]]$SparsePath = @()
 )

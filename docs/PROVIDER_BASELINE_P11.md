@@ -2,7 +2,7 @@
 
 ## Purpose
 
-P11 begins the universal RTK-WAD journey with repeatable evidence rather than a
+P11 begins the universal XUVA journey with repeatable evidence rather than a
 single Go-specific assumption. The provider audit identifies Windows tools,
 WSL tool providers, every discovered RTK binary, RTK command surfaces, and
 currently running WAD/WSL processes without installing, changing, or executing

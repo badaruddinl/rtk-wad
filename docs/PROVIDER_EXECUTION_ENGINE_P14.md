@@ -3,14 +3,14 @@
 P14 adds one explicit, end-to-end execution boundary for the provider registry:
 
 ```powershell
-rtk-wad provider exec <tool> [--candidate <index>] -- <args...>
+xuva provider exec <tool> [--candidate <index>] -- <args...>
 ```
 
 The separator is required. Everything after it is passed as structured process
 arguments; WAD does not construct a shell command string.
 
 Without `--candidate`, execution uses the verified recommendation from
-`rtk-wad resolve <tool>`. An explicit index is useful for diagnosis and for
+`xuva resolve <tool>`. An explicit index is useful for diagnosis and for
 comparing an already verified provider. The index must still be usable; this
 command cannot force an unverified mapping into execution.
 

@@ -34,7 +34,7 @@ $cargoPath = if (Test-Path -LiteralPath $Cargo -PathType Leaf) {
     }
 }
 $source = Join-Path $rootPath "target\release\xuva.exe"
-$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("rtk-wad-release-gate-" + [guid]::NewGuid())
+$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("xuva-release-gate-" + [guid]::NewGuid())
 
 function Invoke-Checked {
     param(
