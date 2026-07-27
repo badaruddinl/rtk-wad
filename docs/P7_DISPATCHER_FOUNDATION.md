@@ -26,7 +26,7 @@ mechanism that discovers or starts a command.
   for token/latency claims, not prerequisites for raw dispatcher operation.
   It is therefore not run on this machine. No provider was installed or
   modified to make benchmark evidence pass.
-- The available Windows/WSL process-contract run passed 27 of 27 tests.
+- The available Windows/WSL process-contract run passed 28 of 28 tests.
   Tests execute a verified RTK/WSL1 candidate when it exists; otherwise they
   assert that resolution stays successful through the verified raw candidate.
   This machine exposes Ubuntu WSL2 without RTK and no WSL1 fixture. The suite
@@ -61,6 +61,41 @@ is selected from `RouteCandidate` and output adaptation from `OutputAdapter`;
 it does not branch again on the legacy provider label after planning. The
 legacy `windows_raw` / `windows_rtk` / `wsl_raw` / `wsl_rtk` labels remain in
 diagnostics for v0.3 compatibility, but are not the execution source of truth.
+
+A missing provider is an unavailable candidate, not a resolver error. Auto
+selection excludes it and continues with the next compatible raw or RTK plan.
+If the chosen executable disappears before a child process starts, the plan
+executor retries the next verified candidate only for that `NotFound` start
+failure. It never retries a process that already started or hides its exit
+code. An explicitly requested route remains an explicit user constraint.
+
+Dispatcher-owned commands are resolved before provider discovery:
+`rtk-wad --version`, `rtk-wad version`, and `rtk-wad -V` return the package
+version without requiring a Windows executable, WSL distribution, or RTK.
+
+## Implementation boundaries and hot path
+
+The executable keeps configuration, bridge decoding, and drive-path mapping in
+separate reusable modules (`config`, `bridge`, and `paths`). `main.rs` owns the
+application composition while those modules own their respective validation
+rules. This is an incremental extraction: provider discovery, route policy,
+and process execution retain their existing contracts while further module
+boundaries are introduced behind the same tests.
+
+Device process construction is split under `adapters/`: `windows` owns native
+raw/RTK process creation and structured `CommandSpec` application, while
+`wsl1` and `wsl2` expose separate transports over one shared safe `wsl.exe`
+builder. The shared builder contains only invariant Windows process-group
+setup; route-specific lock, cancellation, and wait policies remain distinct.
+
+The provider fast path probes Windows first when the selected route does not
+need a WSL inventory. It returns immediately for a verified Windows candidate.
+If that candidate is absent, discovery expands once to the complete WSL
+inventory; routes already targeting WSL request that complete inventory from
+the start. This avoids duplicate full discovery without changing WSL-only
+selection. A local warm-process check measured `rtk-wad --version` at
+approximately 46â€“62 ms; a post-build cold start is materially slower and is
+reported as process-start overhead rather than resolver latency.
 
 ## Go vertical slice
 
@@ -266,6 +301,23 @@ entry afterwards. The runner emitted existing React warnings about forwarded
 Those application warnings are recorded as corpus output, not attributed to
 the dispatcher.
 
+### Adaptive fallback and repeat dogfood (2026-07-27)
+
+The post-alpha working tree adds a regression test for the adaptive invariant:
+an unavailable WSL1 Go probe is removed from candidate selection while a
+verified Windows raw Go plan remains executable. A second test retains a
+verified WSL2 plan as a pre-start fallback when WSL1 was selected first. The
+full Windows/WSL process contract passed 28 of 28 tests, including the
+dispatcher-owned version command and the existing PowerShell, CMD, Git Bash,
+WSL bridge, cache, and cancellation cases.
+
+The release build then repeated two non-mutating dispatcher workloads:
+Flowpeek's `npm run test:fast` and kas-new's `npm test`. Both exited `0`
+through `route=raw` with `output_adapter=raw`; kas-new reported 83 passing
+test files and 378 passing tests. Flowpeek stayed clean. kas-new retained only
+its pre-existing untracked `.project-flow/` directory. Existing application
+warnings in kas-new were not attributed to RTK-WAD.
+
 Set `RTK_WAD_OUTPUT_ADAPTER=raw` to explicitly disable RTK output adaptation.
 The default `auto` value preserves v0.3.0 preference for an available RTK
 adapter. `rtk` requires a verified RTK candidate.
@@ -324,8 +376,8 @@ unavailable external provider into a synthetic pass.
 | `doctor`, `which`, and `--explain-route` show provider decisions | Live WSL-only Go fixture checks all three, candidate and diagnosis | Covered |
 | Go from Windows shell when installed only in WSL | PowerShell, CMD, Git Bash live fixtures; literal argv, mapped CWD, exit 42 | Covered for Windows → WSL2 |
 | Go Windows / WSL1 / WSL-origin / cross-distro matrix | Windows native observed; WSL-origin same-distro, one Windows-mounted `docker-desktop` → Ubuntu cross-distro route, and Ubuntu → compatible Windows Go are covered through `rtk-wad-wsl.sh`; WSL1 and native-Linux-path cross-distro candidates are unavailable and diagnosed without error | Covered for available providers |
-| Process contract: structured argv, stdio, exits, cancellation, CWD | Existing raw/WSL tests plus shell matrix, stdin, WSL Ctrl+Break, and raw Windows Node Ctrl+Break contracts | Covered for available Windows/WSL2 surface |
+| Process contract: structured argv, stdio, exits, cancellation, CWD | Existing raw/WSL tests plus shell matrix, stdin, WSL Ctrl+Break, raw Windows Node Ctrl+Break, and dispatcher-owned version contract | Covered for available Windows/WSL2 surface |
 | Cache invalidation: PATH, binary, distro, version, Git revision | Context fingerprint plus identity and version revalidation; live same-identity version, temporary Git revision, PATH, and configured-distro fixtures | Covered for available providers |
 | Resolver across Rust, Node, Python, Java, .NET, Git | Shared resolver; live WSL2 fixture for every listed executable; Windows npm wrapper proof | Covered for Windows → WSL2 |
-| Dogfood on rtk-wad, Flowpeek, kas-new | Three recorded non-mutating cycles; Flowpeek 195-test and kas-new 378-test workloads pass through raw dispatch with route, exit, latency, and corpus-status observations | RTK-adapter/fallback and RTK cancellation evidence pending |
-| v0.4.0-alpha.1 functional readiness | Three real dogfood cycles, raw fallback, 27/27 process contract, and local release build | Ready for a clean-worktree publication decision; RTK benchmark evidence is not claimed |
+| Dogfood on rtk-wad, Flowpeek, kas-new | Four recorded non-mutating cycles; Flowpeek and kas-new workloads pass through raw dispatch with route, exit, and corpus-status observations | RTK-adapter/cancellation evidence pending; raw pre-start fallback is unit-covered |
+| v0.4.0-alpha.2 functional readiness | Four real dogfood cycles, raw fallback, 28/28 process contract, and local release build | Ready for a clean-worktree publication decision; RTK benchmark evidence is not claimed |

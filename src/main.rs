@@ -9,20 +9,32 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+mod adapters;
 mod agent;
+mod bridge;
 mod command_surface;
+mod config;
 mod dispatcher;
 mod metrics;
+mod paths;
 
+#[cfg(test)]
+use adapters::windows::apply_command_spec;
+#[cfg(test)]
+use bridge::decode_wsl_bridge_fields;
+use bridge::wsl_bridge_request;
 use command_surface::{CommandSurface, command_manifest, command_surface, command_surface_report};
+use config::{
+    Config, DEFAULT_DISTRO, DEFAULT_WSL1_DISTRO, ExecutionEnvironment, OutputAdapterPreference,
+    Route, WslBackend,
+};
+#[cfg(test)]
+use config::{ExecutableProfile, GitMode};
 use metrics::{TokenTotals, WadMetrics, wad_data_root};
+use paths::windows_path_to_wsl_path;
 
-const DEFAULT_DISTRO: &str = "Ubuntu";
-const DEFAULT_WSL1_DISTRO: &str = "Ubuntu-RTK-WSL1";
-const DEFAULT_LOCK_PATH: &str = "/tmp/rtk-wad.lock";
-const DEFAULT_LOCK_WAIT_SECONDS: &str = "120";
-const DEFAULT_GIT_MODE: &str = "auto";
 const ADAPTER_INFO_ARGUMENT: &str = "--adapter-info";
+const VERSION_ARGUMENT: &str = "--version";
 const EXPLAIN_ROUTE_ARGUMENT: &str = "--explain-route";
 const POLICY_ARGUMENT: &str = "policy";
 const CALIBRATION_ARGUMENT: &str = "calibration";
@@ -33,7 +45,6 @@ const PROVIDER_ARGUMENT: &str = "provider";
 const SURFACE_ARGUMENT: &str = "surface";
 const SETUP_ARGUMENT: &str = "setup";
 const AGENT_ARGUMENT: &str = "agent";
-const WSL_BRIDGE_PREFIX: &str = "--wsl-bridge=";
 const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 3;
 const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
 const ROUTE_POLICY_SCHEMA_VERSION: u32 = 2;
@@ -186,230 +197,6 @@ exec /usr/bin/env -i \
     "$@"
 "#;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum GitMode {
-    Auto,
-    Wsl,
-    Native,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum WslBackend {
-    Auto,
-    Wsl1,
-    Wsl2,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExecutableProfile {
-    Wad,
-}
-
-impl ExecutableProfile {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Wad => "rtk-wad",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Route {
-    Auto,
-    Raw,
-    NativeRtk,
-    Wsl1,
-    Wsl2,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExecutionEnvironment {
-    Adaptive,
-    WindowsOnly,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OutputAdapterPreference {
-    Auto,
-    Raw,
-    Rtk,
-}
-
-impl OutputAdapterPreference {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "auto" => Ok(Self::Auto),
-            "raw" => Ok(Self::Raw),
-            "rtk" => Ok(Self::Rtk),
-            _ => Err("RTK_WAD_OUTPUT_ADAPTER must be auto, raw, or rtk".to_owned()),
-        }
-    }
-}
-
-impl ExecutionEnvironment {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Adaptive => "adaptive",
-            Self::WindowsOnly => "windows-only",
-        }
-    }
-
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "adaptive" => Ok(Self::Adaptive),
-            "windows-only" => Ok(Self::WindowsOnly),
-            _ => Err("environment must be adaptive or windows-only".to_owned()),
-        }
-    }
-}
-
-impl Route {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Raw => "raw",
-            Self::NativeRtk => "native-rtk",
-            Self::Wsl1 => "wsl1",
-            Self::Wsl2 => "wsl2",
-        }
-    }
-
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "auto" => Ok(Self::Auto),
-            "raw" => Ok(Self::Raw),
-            "native-rtk" => Ok(Self::NativeRtk),
-            "wsl1" => Ok(Self::Wsl1),
-            "wsl2" => Ok(Self::Wsl2),
-            _ => Err("route must be auto, raw, native-rtk, wsl1, or wsl2".to_owned()),
-        }
-    }
-}
-
-impl WslBackend {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Wsl1 => "wsl1",
-            Self::Wsl2 => "wsl2",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Config {
-    profile: ExecutableProfile,
-    backend: WslBackend,
-    distro: String,
-    user: Option<String>,
-    rtk_path: Option<String>,
-    lock_path: String,
-    lock_wait: String,
-    cwd: Option<String>,
-    bridge_windows_cwd: Option<String>,
-    git_mode: GitMode,
-    extra_path: Option<String>,
-    wad_route: Route,
-    environment: ExecutionEnvironment,
-    native_rtk_path: String,
-    output_adapter: OutputAdapterPreference,
-}
-
-impl Config {
-    fn from_env() -> Result<Self, String> {
-        Self::from_lookup(|name| env::var(name).ok())
-    }
-
-    fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
-        let profile = ExecutableProfile::Wad;
-        let backend = match lookup("RTK_WSL_BACKEND")
-            .unwrap_or_else(|| WslBackend::Auto.as_str().to_owned())
-            .as_str()
-        {
-            "auto" => WslBackend::Auto,
-            "wsl1" => WslBackend::Wsl1,
-            "wsl2" => WslBackend::Wsl2,
-            _ => return Err("RTK_WSL_BACKEND must be auto, wsl1, or wsl2".to_owned()),
-        };
-        let default_distro = match backend {
-            WslBackend::Wsl1 => DEFAULT_WSL1_DISTRO,
-            WslBackend::Auto | WslBackend::Wsl2 => DEFAULT_DISTRO,
-        };
-        let distro = required_setting(&lookup, "RTK_WSL_DISTRO", default_distro)?;
-        let user = optional_setting(&lookup, "RTK_WSL_USER")?;
-        let rtk_path = optional_absolute_path(&lookup, "RTK_WSL_RTK_PATH")?;
-        let lock_path = required_absolute_path(&lookup, "RTK_WSL_LOCK_PATH", DEFAULT_LOCK_PATH)?;
-        let lock_wait = required_setting(
-            &lookup,
-            "RTK_WSL_LOCK_WAIT_SECONDS",
-            DEFAULT_LOCK_WAIT_SECONDS,
-        )?;
-        let cwd = optional_absolute_path(&lookup, "RTK_WSL_CWD")?;
-        let git_mode =
-            match required_setting(&lookup, "RTK_WSL_GIT_MODE", DEFAULT_GIT_MODE)?.as_str() {
-                "auto" => GitMode::Auto,
-                "wsl" => GitMode::Wsl,
-                "native" => GitMode::Native,
-                _ => return Err("RTK_WSL_GIT_MODE must be auto, wsl, or native".to_owned()),
-            };
-        let extra_path = optional_linux_path_list(&lookup, "RTK_WSL_EXTRA_PATH")?;
-        let wad_route = match lookup("RTK_WAD_ROUTE") {
-            Some(value) if value.trim().is_empty() => {
-                return Err("RTK_WAD_ROUTE must not be empty when set".to_owned());
-            }
-            Some(value) => {
-                Route::parse(&value).map_err(|error| format!("RTK_WAD_ROUTE {error}"))?
-            }
-            None => Route::Auto,
-        };
-        let environment = match lookup("RTK_WAD_ENVIRONMENT") {
-            Some(value) if value.trim().is_empty() => {
-                return Err("RTK_WAD_ENVIRONMENT must not be empty when set".to_owned());
-            }
-            Some(value) => ExecutionEnvironment::parse(&value)
-                .map_err(|error| format!("RTK_WAD_ENVIRONMENT {error}"))?,
-            None => ExecutionEnvironment::Adaptive,
-        };
-        let native_rtk_path = lookup("RTK_WAD_NATIVE_RTK_PATH")
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "rtk.exe".to_owned());
-        let output_adapter = match lookup("RTK_WAD_OUTPUT_ADAPTER") {
-            Some(value) if value.trim().is_empty() => {
-                return Err("RTK_WAD_OUTPUT_ADAPTER must not be empty when set".to_owned());
-            }
-            Some(value) => OutputAdapterPreference::parse(&value)?,
-            None => OutputAdapterPreference::Auto,
-        };
-
-        if lock_wait
-            .parse::<u64>()
-            .ok()
-            .filter(|value| *value > 0)
-            .is_none()
-        {
-            return Err("RTK_WSL_LOCK_WAIT_SECONDS must be a positive integer".to_owned());
-        }
-
-        Ok(Self {
-            profile,
-            backend,
-            distro,
-            user,
-            rtk_path,
-            lock_path,
-            lock_wait,
-            cwd,
-            bridge_windows_cwd: None,
-            git_mode,
-            extra_path,
-            wad_route,
-            environment,
-            native_rtk_path,
-            output_adapter,
-        })
-    }
-}
-
 fn decode_wsl_output(bytes: &[u8]) -> String {
     if bytes.chunks_exact(2).any(|pair| pair[1] == 0) {
         let units = bytes
@@ -440,69 +227,6 @@ fn trace(message: impl AsRef<str>) {
     if env::var("RTK_WSL_TRACE").as_deref() == Ok("1") {
         eprintln!("rtk-wad: trace: {}", message.as_ref());
     }
-}
-
-fn required_setting(
-    lookup: &impl Fn(&str) -> Option<String>,
-    name: &str,
-    default: &str,
-) -> Result<String, String> {
-    match lookup(name) {
-        Some(value) if value.trim().is_empty() => Err(format!("{name} must not be empty")),
-        Some(value) => Ok(value),
-        None => Ok(default.to_owned()),
-    }
-}
-
-fn optional_setting(
-    lookup: &impl Fn(&str) -> Option<String>,
-    name: &str,
-) -> Result<Option<String>, String> {
-    match lookup(name) {
-        Some(value) if value.trim().is_empty() => Err(format!("{name} must not be empty when set")),
-        Some(value) => Ok(Some(value)),
-        None => Ok(None),
-    }
-}
-
-fn optional_absolute_path(
-    lookup: &impl Fn(&str) -> Option<String>,
-    name: &str,
-) -> Result<Option<String>, String> {
-    let value = optional_setting(lookup, name)?;
-    if value.as_deref().is_some_and(|path| !path.starts_with('/')) {
-        return Err(format!("{name} must be an absolute Linux path"));
-    }
-    Ok(value)
-}
-
-fn required_absolute_path(
-    lookup: &impl Fn(&str) -> Option<String>,
-    name: &str,
-    default: &str,
-) -> Result<String, String> {
-    let value = required_setting(lookup, name, default)?;
-    if !value.starts_with('/') {
-        return Err(format!("{name} must be an absolute Linux path"));
-    }
-    Ok(value)
-}
-
-fn optional_linux_path_list(
-    lookup: &impl Fn(&str) -> Option<String>,
-    name: &str,
-) -> Result<Option<String>, String> {
-    let value = optional_setting(lookup, name)?;
-    if let Some(value) = &value
-        && value
-            .split(':')
-            .any(|entry| entry.is_empty() || !entry.starts_with('/'))
-    {
-        return Err(format!(
-            "{name} must be a colon-separated list of absolute Linux paths"
-        ));
-    }
-    Ok(value)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1551,6 +1275,7 @@ enum ProviderDispatchDecision {
     KeepStaticRoute,
     UsePlan {
         plan: Box<dispatcher::ExecutionPlan>,
+        fallbacks: Vec<dispatcher::ExecutionPlan>,
         reason: String,
     },
     Missing {
@@ -1615,7 +1340,11 @@ fn provider_dispatch_decision(
         .and_then(|argument| argument.to_str())
         .expect("dispatchable provider tools are valid Unicode");
     let project = current_project_location(config);
-    let (discovery, _cache) = cached_or_discovered_tool(tool, config, false, false);
+    // A WSL suggestion needs the complete inventory immediately. Windows-first
+    // routes probe only Windows on the hot path and expand to WSL only after
+    // that candidate has been ruled out.
+    let needs_wsl_inventory = matches!(static_route, Route::Wsl1 | Route::Wsl2 | Route::Auto);
+    let (discovery, cache) = cached_or_discovered_tool(tool, config, false, needs_wsl_inventory);
     // An automatic conservative WSL1 route is only a legacy fallback. A
     // dispatchable tool must still reach the complete resolver so a verified
     // Windows provider can replace that fallback before any child starts.
@@ -1624,12 +1353,25 @@ fn provider_dispatch_decision(
     {
         return ProviderDispatchDecision::KeepStaticRoute;
     }
-    provider_dispatch_decision_from_resolution(
-        arguments,
-        config,
-        static_route,
-        resolve_tool_provider(tool, config, false),
-    )
+    let resolution = if needs_wsl_inventory {
+        resolve_tool_provider_from_discovery_with_user(
+            tool,
+            project,
+            discovery,
+            cache,
+            config.user.as_deref(),
+        )
+    } else {
+        let (discovery, cache) = cached_or_discovered_tool(tool, config, false, true);
+        resolve_tool_provider_from_discovery_with_user(
+            tool,
+            project,
+            discovery,
+            cache,
+            config.user.as_deref(),
+        )
+    };
+    provider_dispatch_decision_from_resolution(arguments, config, static_route, resolution)
 }
 
 fn provider_dispatch_decision_from_resolution(
@@ -1655,28 +1397,27 @@ fn provider_dispatch_decision_from_resolution(
             && (config.output_adapter != OutputAdapterPreference::Rtk || candidate.rtk.is_some())
     };
     let preferred_wsl = resolution.project.distro.as_deref();
-    let candidate = if resolution.project.kind == ProjectLocationKind::Wsl {
+    let ordered_candidates: Vec<&ProviderCandidate> = if resolution.project.kind
+        == ProjectLocationKind::Wsl
+    {
         resolution
             .candidates
             .iter()
-            .find(|candidate| eligible(candidate) && candidate.distro.as_deref() == preferred_wsl)
-            .or_else(|| {
+            .filter(|candidate| eligible(candidate) && candidate.distro.as_deref() == preferred_wsl)
+            .chain(resolution.candidates.iter().filter(|candidate| {
+                eligible(candidate)
+                    && candidate.distro.is_some()
+                    && candidate.distro.as_deref() != preferred_wsl
+            }))
+            .chain(
                 resolution
                     .candidates
                     .iter()
-                    .find(|candidate| eligible(candidate) && candidate.distro.is_some())
-            })
-            .or_else(|| resolution.candidates.iter().find(eligible))
+                    .filter(|candidate| eligible(candidate) && candidate.distro.is_none()),
+            )
+            .collect()
     } else {
-        resolution.candidates.iter().find(eligible)
-    };
-    let Some(candidate) = candidate else {
-        return ProviderDispatchDecision::Missing {
-            reason: format!(
-                "{} is unavailable in the safe Windows and WSL providers; run `rtk-wad doctor {}` for details. Installation is disabled in P7.",
-                resolution.tool, resolution.tool
-            ),
-        };
+        resolution.candidates.iter().filter(eligible).collect()
     };
     let Some((tool, tool_arguments)) = arguments.split_first() else {
         return ProviderDispatchDecision::Missing {
@@ -1688,18 +1429,32 @@ fn provider_dispatch_decision_from_resolution(
             reason: "Provider executable name is not valid Unicode".to_owned(),
         };
     };
-    let plan = match execution_plan_for_provider_candidate(tool, tool_arguments, config, candidate)
-    {
-        Ok(plan) => plan,
-        Err(error) => {
-            return ProviderDispatchDecision::Missing {
-                reason: format!(
-                    "{} provider cannot produce an execution plan: {error}",
-                    resolution.tool
-                ),
-            };
+    let mut planning_errors = Vec::new();
+    let mut planned_candidates = Vec::new();
+    for candidate in ordered_candidates {
+        match execution_plan_for_provider_candidate(tool, tool_arguments, config, candidate) {
+            Ok(plan) => planned_candidates.push((candidate.clone(), plan)),
+            Err(error) => planning_errors.push(format!("{}: {error}", candidate.executable)),
         }
+    }
+    let Some((candidate, plan)) = planned_candidates.first().cloned() else {
+        let detail = if planning_errors.is_empty() {
+            "no compatible candidate was discovered".to_owned()
+        } else {
+            planning_errors.join("; ")
+        };
+        return ProviderDispatchDecision::Missing {
+            reason: format!(
+                "{} is unavailable in the safe Windows and WSL providers ({detail}); run `rtk-wad doctor {}` for details. Installation is disabled in P7.",
+                resolution.tool, resolution.tool
+            ),
+        };
     };
+    let fallbacks = planned_candidates
+        .into_iter()
+        .skip(1)
+        .map(|(_, plan)| plan)
+        .collect();
     let adapter_name = plan.adapter.as_str();
     let location = candidate
         .distro
@@ -1714,6 +1469,7 @@ fn provider_dispatch_decision_from_resolution(
     );
     ProviderDispatchDecision::UsePlan {
         plan: Box::new(plan),
+        fallbacks,
         reason,
     }
 }
@@ -2721,20 +2477,6 @@ fn print_calibration() -> Result<(), String> {
     Ok(())
 }
 
-fn windows_path_to_wsl_path(path: &str) -> Option<String> {
-    let replaced = path.replace('\\', "/");
-    let normalized = replaced.strip_prefix("//?/").unwrap_or(&replaced);
-    let bytes = normalized.as_bytes();
-    if bytes.len() < 3 || bytes[1] != b':' || bytes[2] != b'/' || !bytes[0].is_ascii_alphabetic() {
-        return None;
-    }
-    Some(format!(
-        "/mnt/{}/{}",
-        (bytes[0] as char).to_ascii_lowercase(),
-        &normalized[3..]
-    ))
-}
-
 fn is_wsl_path(value: &OsString) -> bool {
     value.to_string_lossy().starts_with('/')
 }
@@ -3186,22 +2928,6 @@ fn wait_for_wsl1_child(mut child: Child, config: &Config) -> std::io::Result<Exi
     }
 }
 
-fn wsl1_process(arguments: Vec<OsString>) -> Command {
-    wsl_process(arguments)
-}
-
-fn wsl_process(arguments: Vec<OsString>) -> Command {
-    let mut command = Command::new("wsl.exe");
-    command.args(arguments);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(CREATE_NEW_PROCESS_GROUP);
-    }
-    command
-}
-
 fn wad_command_family(arguments: &[OsString]) -> &str {
     arguments
         .first()
@@ -3487,96 +3213,7 @@ fn run_native_rtk(
     config: &Config,
     metrics: Option<&WadMetrics>,
 ) -> std::io::Result<ExitStatus> {
-    run_native_rtk_at(&config.native_rtk_path, arguments, None, metrics)
-}
-
-fn run_native_rtk_at(
-    executable: &str,
-    arguments: &[OsString],
-    current_directory: Option<&str>,
-    metrics: Option<&WadMetrics>,
-) -> std::io::Result<ExitStatus> {
-    let mut command = Command::new(executable);
-    command.args(arguments);
-    if let Some(current_directory) = current_directory {
-        command.current_dir(current_directory);
-    }
-    if let Some(metrics) = metrics {
-        command.env("RTK_DB_PATH", metrics.scratch_windows_path());
-    }
-    command.spawn().and_then(|mut child| child.wait())
-}
-
-fn run_raw(arguments: &[OsString]) -> std::io::Result<ExitStatus> {
-    let Some(program) = arguments.first() else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "a raw route needs a command",
-        ));
-    };
-    let executable = match program.to_str() {
-        Some("git") => OsString::from("git.exe"),
-        Some("npm") => OsString::from("npm.cmd"),
-        Some("npx") => OsString::from("npx.cmd"),
-        Some("pnpm") => OsString::from("pnpm.cmd"),
-        Some("dart") => OsString::from("dart.bat"),
-        Some("flutter") => OsString::from("flutter.bat"),
-        _ => program.clone(),
-    };
-    run_raw_at(&executable, &arguments[1..], None)
-}
-
-fn run_raw_at(
-    executable: &OsString,
-    arguments: &[OsString],
-    current_directory: Option<&str>,
-) -> std::io::Result<ExitStatus> {
-    let mut command = Command::new(executable);
-    command.args(arguments);
-    if let Some(current_directory) = current_directory {
-        command.current_dir(current_directory);
-    }
-    command.spawn().and_then(|mut child| child.wait())
-}
-
-fn apply_command_spec(command: &mut Command, request: &dispatcher::CommandSpec) {
-    command.args(&request.arguments);
-    if let Some(current_directory) = &request.cwd {
-        command.current_dir(current_directory);
-    }
-    command.envs(request.environment.iter().map(|(key, value)| (key, value)));
-    // Stdio inherits the invoking console by default. That preserves both
-    // interactive TTY commands and ordinary stdin/stdout/stderr forwarding;
-    // callers that need pipes own that policy at the outer process boundary.
-    let _ = request.interactive;
-}
-
-fn run_raw_plan_at(
-    executable: &OsString,
-    request: &dispatcher::CommandSpec,
-) -> std::io::Result<ExitStatus> {
-    let mut command = Command::new(executable);
-    apply_command_spec(&mut command, request);
-    command.spawn().and_then(|mut child| child.wait())
-}
-
-fn run_native_rtk_plan_at(
-    executable: &OsString,
-    arguments: &[OsString],
-    request: &dispatcher::CommandSpec,
-    metrics: Option<&WadMetrics>,
-) -> std::io::Result<ExitStatus> {
-    let mut command = Command::new(executable);
-    command.args(arguments);
-    if let Some(current_directory) = &request.cwd {
-        command.current_dir(current_directory);
-    }
-    command.envs(request.environment.iter().map(|(key, value)| (key, value)));
-    if let Some(metrics) = metrics {
-        command.env("RTK_DB_PATH", metrics.scratch_windows_path());
-    }
-    let _ = request.interactive;
-    command.spawn().and_then(|mut child| child.wait())
+    adapters::windows::run_rtk_at(&config.native_rtk_path, arguments, None, metrics)
 }
 
 fn has_foreign_absolute_path(arguments: &[OsString], route: &dispatcher::RouteCandidate) -> bool {
@@ -3719,11 +3356,11 @@ fn run_execution_plan(
         (
             dispatcher::RouteCandidate::Windows { executable, .. },
             dispatcher::OutputAdapter::Raw,
-        ) => run_raw_plan_at(executable, &plan.request),
+        ) => adapters::windows::run_plan(executable, &plan.request),
         (
             dispatcher::RouteCandidate::Windows { .. },
             dispatcher::OutputAdapter::Rtk { executable },
-        ) => run_native_rtk_plan_at(executable, &rtk_arguments(), &plan.request, metrics),
+        ) => adapters::windows::run_rtk_plan(executable, &rtk_arguments(), &plan.request, metrics),
         (
             dispatcher::RouteCandidate::Wsl1 { .. } | dispatcher::RouteCandidate::Wsl2 { .. },
             adapter,
@@ -3885,7 +3522,7 @@ fn run_wsl_route(
     });
     if route == Route::Wsl1 {
         let _lock = windows_lock::acquire(&config.lock_wait).map_err(std::io::Error::other)?;
-        wsl1_process(wsl1_rtk_arguments_with_metrics(
+        adapters::wsl1::process(wsl1_rtk_arguments_with_metrics(
             arguments,
             config,
             metrics_path.as_deref(),
@@ -3894,7 +3531,7 @@ fn run_wsl_route(
         .and_then(|child| wait_for_wsl1_child(child, config))
     } else {
         let token = cancel_token();
-        wsl_process(rtk_arguments_with_metrics(
+        adapters::wsl2::process(rtk_arguments_with_metrics(
             arguments,
             config,
             &token,
@@ -3927,7 +3564,7 @@ fn run_wsl_execution_plan(
             None,
             metrics_path.as_deref(),
         )?;
-        wsl1_process(command)
+        adapters::wsl1::process(command)
             .spawn()
             .and_then(|child| wait_for_wsl1_child(child, config))
     } else {
@@ -3941,7 +3578,7 @@ fn run_wsl_execution_plan(
             Some(&token),
             metrics_path.as_deref(),
         )?;
-        wsl_process(command)
+        adapters::wsl2::process(command)
             .spawn()
             .and_then(|child| wait_for_wsl_child(child, config, &token))
     }
@@ -3980,7 +3617,19 @@ fn parse_wad_options(
     }
 }
 
+fn is_version_command(arguments: &[OsString]) -> bool {
+    arguments.len() == 1
+        && matches!(
+            arguments[0].to_str(),
+            Some(VERSION_ARGUMENT | "version" | "-V")
+        )
+}
+
 fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
+    if is_version_command(&arguments) {
+        println!("rtk-wad {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     if arguments
         .first()
         .is_some_and(|argument| argument == AGENT_ARGUMENT)
@@ -4160,6 +3809,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     let selected_config = configured_wsl_backend(&invocation_config, route);
     let mut provider_missing = None;
     let mut execution_plan = None;
+    let mut fallback_execution_plans = Vec::new();
     let mut selected_adapter = match route {
         Route::Raw => dispatcher::OutputAdapter::Raw,
         Route::NativeRtk | Route::Wsl1 | Route::Wsl2 | Route::Auto => {
@@ -4173,11 +3823,13 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
             ProviderDispatchDecision::KeepStaticRoute => {}
             ProviderDispatchDecision::UsePlan {
                 plan,
+                fallbacks,
                 reason: provider_reason,
             } => {
                 route = execution_route(&plan.candidate);
                 selected_adapter = plan.adapter.clone();
                 execution_plan = Some(*plan);
+                fallback_execution_plans = fallbacks;
                 reason = provider_reason;
             }
             ProviderDispatchDecision::Missing {
@@ -4228,10 +3880,35 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     };
     let mut executed_route = route;
     let result = if let Some(plan) = execution_plan.as_ref() {
-        run_execution_plan(plan, &invocation_config, metrics.as_ref())
+        let mut result = run_execution_plan(plan, &invocation_config, metrics.as_ref());
+        for fallback in &fallback_execution_plans {
+            if !result
+                .as_ref()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            {
+                break;
+            }
+            let fallback_route = execution_route(&fallback.candidate);
+            trace(format!(
+                "selected provider executable was unavailable before child start; retrying {} candidate",
+                fallback_route.as_str()
+            ));
+            if matches!(fallback_route, Route::Wsl1 | Route::Wsl2) && !console_installed {
+                if !console::install() {
+                    eprintln!(
+                        "rtk-wad: unable to register the Windows console cancellation handler for provider fallback"
+                    );
+                    return ExitCode::FAILURE;
+                }
+                console_installed = true;
+            }
+            executed_route = fallback_route;
+            result = run_execution_plan(fallback, &invocation_config, metrics.as_ref());
+        }
+        result
     } else {
         match route {
-            Route::Raw => run_raw(&arguments),
+            Route::Raw => adapters::windows::run(&arguments),
             Route::NativeRtk => {
                 match run_native_rtk(&arguments, &selected_config, metrics.as_ref()) {
                     Err(error)
@@ -4315,6 +3992,13 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
 
 fn main() -> ExitCode {
     let original_arguments: Vec<OsString> = env::args_os().skip(1).collect();
+    // This is intentionally before bridge decoding and environment parsing:
+    // a local version query must remain instant even when WSL is unavailable
+    // or a caller has an invalid dispatcher configuration.
+    if is_version_command(&original_arguments) {
+        println!("rtk-wad {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     let bridge = match wsl_bridge_request(&original_arguments) {
         Ok(bridge) => bridge,
         Err(error) => {
@@ -4342,128 +4026,26 @@ fn main() -> ExitCode {
     wad_main(arguments, &config)
 }
 
-struct WslBridgeRequest {
-    distro: String,
-    cwd: String,
-    windows_cwd: Option<String>,
-    extra_path: Option<String>,
-    output_adapter: OutputAdapterPreference,
-    arguments: Vec<OsString>,
-}
-
-fn wsl_bridge_request(arguments: &[OsString]) -> Result<Option<WslBridgeRequest>, String> {
-    if arguments.len() != 1 {
-        return Ok(None);
-    }
-    let Some(encoded) = arguments[0]
-        .to_str()
-        .and_then(|argument| argument.strip_prefix(WSL_BRIDGE_PREFIX))
-    else {
-        return Ok(None);
-    };
-    let fields = decode_wsl_bridge_fields(encoded)?;
-    let [
-        protocol,
-        distro,
-        cwd,
-        windows_cwd,
-        extra_path,
-        output_adapter,
-        arguments @ ..,
-    ] = fields.as_slice()
-    else {
-        return Err(
-            "payload must contain protocol, distro, CWD, Windows CWD, extra path, adapter, and argv"
-                .to_owned(),
-        );
-    };
-    if protocol != "v2" {
-        return Err("payload must use WSL bridge protocol v2".to_owned());
-    }
-    if distro.is_empty() || !cwd.starts_with('/') {
-        return Err("payload must contain a WSL distro and an absolute Linux CWD".to_owned());
-    }
-    if !windows_cwd.is_empty() && windows_path_to_wsl_path(windows_cwd).is_none() {
-        return Err("payload Windows CWD must be a drive-qualified path when set".to_owned());
-    }
-    let output_adapter = OutputAdapterPreference::parse(output_adapter)?;
-    Ok(Some(WslBridgeRequest {
-        distro: distro.clone(),
-        cwd: cwd.clone(),
-        windows_cwd: (!windows_cwd.is_empty()).then(|| windows_cwd.clone()),
-        extra_path: (!extra_path.is_empty()).then(|| extra_path.clone()),
-        output_adapter,
-        arguments: arguments.iter().cloned().map(OsString::from).collect(),
-    }))
-}
-
-fn decode_wsl_bridge_fields(encoded: &str) -> Result<Vec<String>, String> {
-    let bytes = decode_base64(encoded)?;
-    if bytes.last() != Some(&0) {
-        return Err("payload must end with a NUL terminator".to_owned());
-    }
-    bytes[..bytes.len() - 1]
-        .split(|byte| *byte == 0)
-        .map(|argument| {
-            let argument = std::str::from_utf8(argument)
-                .map_err(|_| "payload contains non-UTF-8 argv".to_owned())?;
-            Ok(argument.to_owned())
-        })
-        .collect()
-}
-
-fn decode_base64(encoded: &str) -> Result<Vec<u8>, String> {
-    let compact = encoded
-        .bytes()
-        .filter(|byte| !byte.is_ascii_whitespace())
-        .collect::<Vec<_>>();
-    if compact.is_empty() || compact.len() % 4 != 0 {
-        return Err("payload is not padded base64".to_owned());
-    }
-    let mut decoded = Vec::with_capacity(compact.len() / 4 * 3);
-    for (index, quartet) in compact.chunks_exact(4).enumerate() {
-        let final_quartet = index == compact.len() / 4 - 1;
-        let padding = quartet
-            .iter()
-            .rev()
-            .take_while(|byte| **byte == b'=')
-            .count();
-        if padding > 2 || (!final_quartet && padding != 0) {
-            return Err("payload has invalid base64 padding".to_owned());
-        }
-        let values = quartet
-            .iter()
-            .enumerate()
-            .map(|(position, byte)| match byte {
-                b'A'..=b'Z' => Ok(byte - b'A'),
-                b'a'..=b'z' => Ok(byte - b'a' + 26),
-                b'0'..=b'9' => Ok(byte - b'0' + 52),
-                b'+' => Ok(62),
-                b'/' => Ok(63),
-                b'=' if position >= 2 => Ok(0),
-                _ => Err("payload contains non-base64 data".to_owned()),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        if quartet[2] == b'=' && quartet[3] != b'=' {
-            return Err("payload has invalid base64 padding".to_owned());
-        }
-        decoded.push((values[0] << 2) | (values[1] >> 4));
-        if padding < 2 {
-            decoded.push((values[1] << 4) | (values[2] >> 2));
-        }
-        if padding == 0 {
-            decoded.push((values[2] << 6) | values[3]);
-        }
-    }
-    Ok(decoded)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn default_config() -> Config {
         Config::from_lookup(|_| None).expect("default config is valid")
+    }
+
+    #[test]
+    fn version_commands_are_owned_by_the_dispatcher() {
+        for argument in [VERSION_ARGUMENT, "version", "-V"] {
+            assert!(
+                is_version_command(&[OsString::from(argument)]),
+                "{argument}"
+            );
+        }
+        assert!(!is_version_command(&[
+            OsString::from("go"),
+            OsString::from("version")
+        ]));
     }
 
     #[test]
@@ -5601,7 +5183,7 @@ mod tests {
             Route::Raw,
             resolution,
         ) {
-            ProviderDispatchDecision::UsePlan { plan, reason } => {
+            ProviderDispatchDecision::UsePlan { plan, reason, .. } => {
                 assert_eq!(execution_route(&plan.candidate), Route::Wsl2);
                 assert_eq!(plan.adapter.as_str(), "rtk");
                 assert!(matches!(
@@ -5671,7 +5253,7 @@ mod tests {
             Route::Raw,
             resolution,
         ) {
-            ProviderDispatchDecision::UsePlan { plan, reason } => {
+            ProviderDispatchDecision::UsePlan { plan, reason, .. } => {
                 assert_eq!(execution_route(&plan.candidate), Route::Wsl2);
                 assert_eq!(plan.adapter, dispatcher::OutputAdapter::Raw);
                 assert!(matches!(
@@ -5682,6 +5264,138 @@ mod tests {
                 assert!(reason.contains("raw output adapter"));
             }
             _ => panic!("expected the WSL-only raw Go provider"),
+        }
+    }
+
+    #[test]
+    fn unavailable_wsl1_is_eliminated_and_windows_raw_remains_a_valid_plan() {
+        let project_path = env::current_dir()
+            .expect("test project directory exists")
+            .to_string_lossy()
+            .to_string();
+        let resolution = resolve_tool_provider_from_discovery_with_user(
+            "go",
+            ProjectLocation {
+                kind: ProjectLocationKind::Windows,
+                path: project_path.clone(),
+                distro: None,
+                windows_path: None,
+            },
+            ProviderCacheEntry {
+                tool: "go".to_owned(),
+                observed_unix_seconds: 1,
+                context_signature: "fixture".to_owned(),
+                windows: WindowsToolProbe {
+                    executable: Some(r"C:\\Go\\bin\\go.exe".to_owned()),
+                    native_rtk: None,
+                    executable_version: Some("go1.fixture".to_owned()),
+                    executable_capabilities: vec!["version".to_owned()],
+                    executable_identity: None,
+                    native_rtk_identity: None,
+                },
+                wsl_probe_complete: true,
+                wsl: vec![WslToolProbe {
+                    distro: "Ubuntu-RTK-WSL1".to_owned(),
+                    wsl_version: Some(1),
+                    executable: None,
+                    rtk: None,
+                    executable_version: None,
+                    executable_capabilities: Vec::new(),
+                    executable_identity: None,
+                    rtk_identity: None,
+                }],
+            },
+            "miss",
+            None,
+        );
+
+        assert_eq!(resolution.candidates.len(), 1);
+        assert_eq!(resolution.availability.wsl[0].executable, None);
+        match provider_dispatch_decision_from_resolution(
+            &[OsString::from("go"), OsString::from("version")],
+            &default_config(),
+            Route::Wsl1,
+            resolution,
+        ) {
+            ProviderDispatchDecision::UsePlan {
+                plan, fallbacks, ..
+            } => {
+                assert!(matches!(
+                    plan.candidate,
+                    dispatcher::RouteCandidate::Windows { .. }
+                ));
+                assert_eq!(plan.adapter, dispatcher::OutputAdapter::Raw);
+                assert!(fallbacks.is_empty());
+            }
+            _ => panic!("an unavailable WSL1 provider must not block Windows raw execution"),
+        }
+    }
+
+    #[test]
+    fn provider_planning_retains_the_next_eligible_route_for_pre_start_fallback() {
+        let raw_config = Config::from_lookup(|name| match name {
+            "RTK_WAD_OUTPUT_ADAPTER" => Some("raw".to_owned()),
+            _ => None,
+        })
+        .expect("raw adapter configuration is valid");
+        let candidate = |distro: &str, version, executable: &str| ProviderCandidate {
+            kind: ProviderKind::WslRaw,
+            distro: Some(distro.to_owned()),
+            wsl_version: Some(version),
+            executable: executable.to_owned(),
+            rtk: None,
+            project_path: Some("/mnt/e/work".to_owned()),
+            usable: true,
+            reason: "fixture".to_owned(),
+        };
+        let resolution = ProviderResolution {
+            schema_version: PROVIDER_CACHE_SCHEMA_VERSION,
+            tool: "go".to_owned(),
+            cache: "miss",
+            project: ProjectLocation {
+                kind: ProjectLocationKind::Windows,
+                path: r"E:\\work".to_owned(),
+                distro: None,
+                windows_path: None,
+            },
+            availability: ProviderCacheEntry {
+                tool: "go".to_owned(),
+                observed_unix_seconds: 1,
+                context_signature: "fixture".to_owned(),
+                windows: WindowsToolProbe {
+                    executable: None,
+                    native_rtk: None,
+                    executable_version: None,
+                    executable_capabilities: Vec::new(),
+                    executable_identity: None,
+                    native_rtk_identity: None,
+                },
+                wsl_probe_complete: true,
+                wsl: Vec::new(),
+            },
+            candidates: vec![
+                candidate("Ubuntu-RTK-WSL1", 1, "/opt/go-wsl1/bin/go"),
+                candidate("Ubuntu", 2, "/opt/go-wsl2/bin/go"),
+            ],
+            recommended: Some(0),
+            diagnosis: "fixture".to_owned(),
+            install: "disabled_in_p7",
+        };
+
+        match provider_dispatch_decision_from_resolution(
+            &[OsString::from("go"), OsString::from("version")],
+            &raw_config,
+            Route::Raw,
+            resolution,
+        ) {
+            ProviderDispatchDecision::UsePlan {
+                plan, fallbacks, ..
+            } => {
+                assert_eq!(execution_route(&plan.candidate), Route::Wsl1);
+                assert_eq!(fallbacks.len(), 1);
+                assert_eq!(execution_route(&fallbacks[0].candidate), Route::Wsl2);
+            }
+            _ => panic!("the usable WSL2 candidate must remain available as fallback"),
         }
     }
 
@@ -5738,7 +5452,7 @@ mod tests {
             Route::Raw,
             resolution,
         ) {
-            ProviderDispatchDecision::UsePlan { plan, reason } => {
+            ProviderDispatchDecision::UsePlan { plan, reason, .. } => {
                 assert_eq!(execution_route(&plan.candidate), Route::Wsl2);
                 assert_eq!(plan.adapter, dispatcher::OutputAdapter::Raw);
                 assert!(matches!(
@@ -5800,7 +5514,7 @@ mod tests {
             Route::NativeRtk,
             resolution,
         ) {
-            ProviderDispatchDecision::UsePlan { plan, reason } => {
+            ProviderDispatchDecision::UsePlan { plan, reason, .. } => {
                 assert!(matches!(
                     plan.candidate,
                     dispatcher::RouteCandidate::Windows { ref executable, .. }

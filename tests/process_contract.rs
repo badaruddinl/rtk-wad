@@ -58,6 +58,29 @@ fn process_contract_guard() -> MutexGuard<'static, ()> {
 }
 
 #[test]
+fn dispatcher_owned_version_never_enters_environment_resolution() {
+    let _guard = process_contract_guard();
+    let output = Command::new(launcher())
+        .env("RTK_WSL_DISTRO", "missing-version-test-distro")
+        .env("RTK_WAD_ROUTE", "not-a-route")
+        .args(["--version"])
+        .output()
+        .expect("version command starts");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        format!("rtk-wad {}", env!("CARGO_PKG_VERSION"))
+    );
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
 fn preserves_stdout_stderr_exit_codes_and_literal_arguments() {
     let _guard = process_contract_guard();
     let literal = "space path/漢字;and&dollar$HOME\\tail";
