@@ -53,6 +53,12 @@ function Resolve-CommandPath {
 }
 
 $rtkManifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
+if ($rtkManifest.schema_version -lt 2 -or
+    $rtkManifest.adapter.name -ne "rtk" -or
+    $rtkManifest.adapter.protocol_version -ne 1 -or
+    -not $rtkManifest.adapter.version) {
+    throw "Command manifest does not declare a supported RTK adapter protocol."
+}
 $providerKind = $null
 $providerDescription = $null
 $versionResult = $null
@@ -75,7 +81,7 @@ if ($NativeRtk) {
     } catch {
         throw "XUVA returned invalid RTK provider evidence: $($_.Exception.Message)"
     }
-    if ($doctor.schema_version -lt 3 -or $doctor.tool -ne "rtk") {
+    if ($doctor.schema_version -lt 4 -or $doctor.tool -ne "rtk") {
         throw "XUVA returned an unsupported RTK provider-evidence schema."
     }
 
@@ -86,13 +92,15 @@ if ($NativeRtk) {
     }
     $candidateIndex = [int]$doctor.recommended
     $candidate = $candidates[$candidateIndex]
+    $candidateAdapters = @($candidate.adapters)
     if (-not [bool]$candidate.usable -or
-        $candidate.kind -notin @("windows_raw", "wsl_raw", "wsl_rtk") -or
+        $candidate.host -notin @("windows", "wsl1", "wsl2") -or
+        $candidateAdapters -notcontains "raw" -or
         -not $candidate.executable) {
         throw "XUVA recommended an unusable or unsupported RTK provider."
     }
 
-    if ($candidate.kind -eq "windows_raw") {
+    if ($candidate.host -eq "windows") {
         $evidence = $doctor.availability.windows
         if (-not $evidence.executable_identity -or -not $evidence.executable_version -or
             $evidence.executable -ne $candidate.executable) {
@@ -123,7 +131,7 @@ if ($NativeRtk) {
     if ($observedVersion.Count -ne 1 -or $observedVersion[0] -ne $evidence.executable_version) {
         throw "The executed RTK provider version does not match XUVA's verified provider evidence."
     }
-    $providerKind = "$($candidate.kind)"
+    $providerKind = "$($candidate.host)"
     $providerDescription = if ($candidate.distro) {
         "xuva candidate $candidateIndex ($($candidate.distro):$($candidate.executable))"
     } else {
@@ -133,6 +141,11 @@ if ($NativeRtk) {
 
 if ($versionResult.ExitCode -ne 0 -or -not @($versionResult.Lines | Where-Object { $_.Trim() })) {
     throw "Unable to read RTK version from $providerDescription."
+}
+$observedAdapterVersion = @($versionResult.Lines | Where-Object { $_.Trim() } | Select-Object -First 1)[0]
+$expectedAdapterVersion = "rtk $($rtkManifest.adapter.version)"
+if ($observedAdapterVersion -ne $expectedAdapterVersion) {
+    throw "RTK adapter version mismatch: expected '$expectedAdapterVersion', observed '$observedAdapterVersion'."
 }
 if ($helpResult.ExitCode -ne 0) {
     throw "Unable to read RTK help from $providerDescription."
@@ -147,7 +160,7 @@ $manifestCommands = [System.Collections.Generic.List[string]]::new()
 foreach ($command in $rtkManifest.native_structured) { $manifestCommands.Add([string]$command) }
 foreach ($command in $rtkManifest.raw_native) { $manifestCommands.Add([string]$command) }
 foreach ($command in $rtkManifest.wsl1_conservative) { $manifestCommands.Add([string]$command) }
-foreach ($command in $rtkManifest.wad_internal) {
+foreach ($command in $rtkManifest.core_internal) {
     if ($command -notmatch '^-' -and $command -ne "stats") { $manifestCommands.Add([string]$command) }
 }
 $manifestCommands = [string[]]@($manifestCommands.ToArray() | Sort-Object -Unique)

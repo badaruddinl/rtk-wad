@@ -4,53 +4,126 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing immutable version tag to build and attest
+        description: Existing immutable version tag to verify, build, and attest
         required: true
         type: string
 
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
-  build-attest:
-    runs-on: windows-latest
+  controlled-release-gate:
+    runs-on: [self-hosted, Windows, WSL]
     steps:
       - name: Check out requested tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify immutable tag, version, and source SHA
+        shell: powershell
+        run: |
+          $tag = '${{ inputs.tag }}'
+          if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') {
+            throw "Release input is not a version tag: $tag"
+          }
+          $cargoVersion = (Select-String Cargo.toml '^version = "([^"]+)"$').Matches.Groups[1].Value
+          if ($tag.TrimStart('v') -ne $cargoVersion) {
+            throw "Tag $tag does not match Cargo.toml version $cargoVersion"
+          }
+          $head = (& git rev-parse HEAD).Trim()
+          $tagSha = (& git rev-list -n 1 $tag).Trim()
+          if ($head -ne $tagSha) { throw "Checked out SHA $head differs from tag SHA $tagSha" }
+          "XUVA_RELEASE_SHA=$head" >> $env:GITHUB_ENV
+
+      - name: Require stable Windows Rust
+        shell: powershell
+        run: |
+          rustup.exe toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup.exe run stable cargo --version
+
+      - name: Provision checksum-pinned RTK verification adapter
+        shell: powershell
+        run: |
+          $url = 'https://github.com/rtk-ai/rtk/releases/download/v0.43.0/rtk-x86_64-pc-windows-msvc.zip'
+          $archive = Join-Path $env:RUNNER_TEMP 'rtk-0.43.0.zip'
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $expected = '7c5e4a2ef816a4d4ed947ddd74ca3df851fc39ea87d49a3ca2bf3abc515a016b'
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "RTK checksum mismatch: $actual" }
+          $root = Join-Path $env:RUNNER_TEMP 'rtk-0.43.0'
+          Expand-Archive $archive $root -Force
+          $rtk = Get-ChildItem $root -Filter rtk.exe -Recurse | Select-Object -First 1
+          if (-not $rtk) { throw 'RTK archive did not contain rtk.exe' }
+          "XUVA_RELEASE_RTK=$($rtk.FullName)" >> $env:GITHUB_ENV
+
+      - name: Run the complete release gate on the tagged SHA
+        shell: powershell
+        run: |
+          rustup.exe run stable cargo build --locked --release --bins
+          .\scripts\verify-release.ps1 -Cargo "$env:USERPROFILE\.cargo\bin\cargo.exe" -NativeRtk $env:XUVA_RELEASE_RTK
+
+  build-attest-publish:
+    needs: controlled-release-gate
+    runs-on: windows-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out the gated tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
 
       - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: rustfmt, clippy
 
-      - name: Build and verify release binary
+      - name: Revalidate tag and build release binary
         shell: pwsh
         run: |
-          cargo fmt --all --check
-          cargo clippy --all-targets -- -D warnings
-          cargo test --bins -- --test-threads=1
-          cargo build --release --bins
-          $dist = 'dist'
-          New-Item -ItemType Directory -Path $dist -Force | Out-Null
-          Copy-Item target\release\xuva.exe $dist\xuva.exe
-          Compress-Archive -Path $dist\xuva.exe -DestinationPath "$dist\xuva-${{ inputs.tag }}-windows-x86_64.zip" -Force
-          Get-FileHash "$dist\xuva-${{ inputs.tag }}-windows-x86_64.zip" -Algorithm SHA256 | ForEach-Object { $_.Hash + '  ' + $_.Path } | Set-Content "$dist\xuva-${{ inputs.tag }}-windows-x86_64.zip.sha256"
+          $tag = '${{ inputs.tag }}'
+          $cargoVersion = (Select-String Cargo.toml '^version = "([^"]+)"$').Matches.Groups[1].Value
+          if ($tag.TrimStart('v') -ne $cargoVersion) { throw 'Tag and Cargo version diverged.' }
+          if ((git rev-parse HEAD).Trim() -ne (git rev-list -n 1 $tag).Trim()) {
+            throw 'Tag and checked-out SHA diverged.'
+          }
+          cargo build --release --locked --bins
+          .\scripts\package-release.ps1 -Version $tag
 
-      - name: Attest release archive provenance
-        uses: actions/attest-build-provenance@v2
+      - name: Audit dependencies and generate CycloneDX SBOM
+        shell: pwsh
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit
+          cargo install cargo-cyclonedx --version 0.5.9 --locked
+          cargo cyclonedx --format json
+          $sbom = Get-ChildItem -Filter '*.cdx.json' | Select-Object -First 1
+          if (-not $sbom) { throw 'cargo cyclonedx did not create an SBOM.' }
+          Copy-Item $sbom.FullName dist\xuva-${{ inputs.tag }}.cdx.json
+
+      - name: Attest release archive and SBOM provenance
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
-          subject-path: dist/*.zip
+          subject-path: |
+            dist/*.zip
+            dist/*.cdx.json
 
-      - name: Upload attested release artifacts
-        uses: softprops/action-gh-release@v2
+      - name: Publish gated release artifacts
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ inputs.tag }}
           fail_on_unmatched_files: true
           files: |
             dist/*.zip
             dist/*.sha256
+            dist/*.cdx.json

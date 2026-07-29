@@ -1,17 +1,31 @@
+//! Versioned RTK adapter protocol and command vocabulary.
+//!
+//! The XUVA core consumes this adapter contract without hard-coding RTK's
+//! command list in routing code. Updating RTK therefore changes this module and
+//! its manifest contract, not the generic provider/execution abstractions.
+
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-const COMMAND_MANIFEST: &str = include_str!("../benchmarks/command-manifest.json");
+const COMMAND_MANIFEST: &str = include_str!("../../benchmarks/command-manifest.json");
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct CommandManifest {
     pub(crate) schema_version: u32,
-    pub(crate) upstream_rtk_version: String,
+    pub(crate) adapter: AdapterContract,
     native_structured: Vec<String>,
     raw_native: Vec<String>,
     wsl1_conservative: Vec<String>,
-    wad_internal: Vec<String>,
+    core_internal: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct AdapterContract {
+    pub(crate) name: String,
+    pub(crate) version: String,
+    pub(crate) protocol_version: u32,
+    pub(crate) capabilities: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -20,7 +34,7 @@ pub(crate) enum CommandSurface {
     NativeStructured,
     RawNative,
     Wsl1Conservative,
-    WadInternal,
+    CoreInternal,
     Unknown,
 }
 
@@ -30,7 +44,7 @@ impl CommandSurface {
             Self::NativeStructured => "native-structured",
             Self::RawNative => "raw-native",
             Self::Wsl1Conservative => "wsl1-conservative",
-            Self::WadInternal => "wad-internal",
+            Self::CoreInternal => "core-internal",
             Self::Unknown => "unknown",
         }
     }
@@ -40,7 +54,7 @@ impl CommandSurface {
             Self::NativeStructured => "native-rtk",
             Self::RawNative => "raw",
             Self::Wsl1Conservative | Self::Unknown => "wsl1",
-            Self::WadInternal => "internal",
+            Self::CoreInternal => "internal",
         }
     }
 }
@@ -55,7 +69,7 @@ pub(crate) struct CommandSurfaceRow {
 #[derive(Serialize)]
 pub(crate) struct CommandSurfaceReport {
     pub(crate) schema_version: u32,
-    pub(crate) upstream_rtk_version: String,
+    pub(crate) adapter: AdapterContract,
     pub(crate) upstream_command_count: usize,
     pub(crate) commands: Vec<CommandSurfaceRow>,
 }
@@ -84,8 +98,8 @@ pub(crate) fn command_surface(command: &str) -> CommandSurface {
         .any(|item| item == command)
     {
         CommandSurface::Wsl1Conservative
-    } else if manifest.wad_internal.iter().any(|item| item == command) {
-        CommandSurface::WadInternal
+    } else if manifest.core_internal.iter().any(|item| item == command) {
+        CommandSurface::CoreInternal
     } else {
         CommandSurface::Unknown
     }
@@ -98,7 +112,7 @@ pub(crate) fn command_surface_report() -> CommandSurfaceReport {
         .iter()
         .chain(&manifest.raw_native)
         .chain(&manifest.wsl1_conservative)
-        .chain(&manifest.wad_internal)
+        .chain(&manifest.core_internal)
         .filter(|command| !command.starts_with('-') && command.as_str() != "stats")
         .cloned()
         .collect::<Vec<_>>();
@@ -117,8 +131,16 @@ pub(crate) fn command_surface_report() -> CommandSurfaceReport {
         .collect::<Vec<_>>();
     CommandSurfaceReport {
         schema_version: manifest.schema_version,
-        upstream_rtk_version: manifest.upstream_rtk_version.clone(),
+        adapter: manifest.adapter.clone(),
         upstream_command_count: rows.len(),
         commands: rows,
     }
+}
+
+pub(crate) fn adapter_contract_id() -> String {
+    let adapter = &command_manifest().adapter;
+    format!(
+        "{}:{}:protocol-{}",
+        adapter.name, adapter.version, adapter.protocol_version
+    )
 }

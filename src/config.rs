@@ -27,13 +27,13 @@ pub(crate) enum WslBackend {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExecutableProfile {
-    Wad,
+    Xuva,
 }
 
 impl ExecutableProfile {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::Wad => "xuva",
+            Self::Xuva => "xuva",
         }
     }
 }
@@ -134,11 +134,12 @@ pub(crate) struct Config {
     pub(crate) bridge_windows_cwd: Option<String>,
     pub(crate) git_mode: GitMode,
     pub(crate) extra_path: Option<String>,
-    pub(crate) wad_route: Route,
+    pub(crate) route_preference: Route,
     pub(crate) environment: ExecutionEnvironment,
     pub(crate) native_rtk_path: String,
     pub(crate) output_adapter: OutputAdapterPreference,
     pub(crate) environment_allowlist: Vec<String>,
+    pub(crate) metrics_enabled: bool,
 }
 
 impl Config {
@@ -147,7 +148,7 @@ impl Config {
     }
 
     pub(crate) fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
-        let profile = ExecutableProfile::Wad;
+        let profile = ExecutableProfile::Xuva;
         let backend = match lookup("XUVA_WSL_BACKEND")
             .unwrap_or_else(|| WslBackend::Auto.as_str().to_owned())
             .as_str()
@@ -179,7 +180,7 @@ impl Config {
                 _ => return Err("XUVA_WSL_GIT_MODE must be auto, wsl, or native".to_owned()),
             };
         let extra_path = optional_linux_path_list(&lookup, "XUVA_WSL_EXTRA_PATH")?;
-        let wad_route = match lookup("XUVA_ROUTE") {
+        let route_preference = match lookup("XUVA_ROUTE") {
             Some(value) if value.trim().is_empty() => {
                 return Err("XUVA_ROUTE must not be empty when set".to_owned());
             }
@@ -206,6 +207,11 @@ impl Config {
         };
         let environment_allowlist =
             parse_environment_allowlist(lookup("XUVA_ENV_ALLOWLIST").as_deref())?;
+        let metrics_enabled = match lookup("XUVA_METRICS").as_deref() {
+            None | Some("local") | Some("on") => true,
+            Some("off") => false,
+            Some(_) => return Err("XUVA_METRICS must be local, on, or off".to_owned()),
+        };
 
         if lock_wait
             .parse::<u64>()
@@ -228,11 +234,12 @@ impl Config {
             bridge_windows_cwd: None,
             git_mode,
             extra_path,
-            wad_route,
+            route_preference,
             environment,
             native_rtk_path,
             output_adapter,
             environment_allowlist,
+            metrics_enabled,
         })
     }
 }

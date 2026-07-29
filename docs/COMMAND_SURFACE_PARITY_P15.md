@@ -1,7 +1,7 @@
 # Native RTK command-surface parity: P15
 
 P15 makes the complete upstream RTK command inventory a runtime contract for
-WAD. The embedded source of truth is
+XUVA. The embedded source of truth is
 `benchmarks/command-manifest.json`, currently pinned to RTK `0.43.0`.
 
 ```powershell
@@ -15,14 +15,14 @@ a provider, or modify local state.
 
 ## Classification policy
 
-| Classification | Default WAD behavior |
+| Classification | Default XUVA behavior |
 | --- | --- |
 | `native_structured` | Stock Windows RTK with structured argv. `git` remains subcommand-aware: read-only forms may use RTK; mutations use raw Git once. |
 | `raw_native` | Existing Windows toolchain directly, once. |
 | `wsl1_conservative` | Isolated WSL1 RTK until a command-specific Windows contract exists. |
-| `wad_internal` | Handled by WAD's own diagnostic/ledger interface. |
+| `core_internal` | Handled by XUVA's own diagnostic and ledger interface. |
 
-WAD-owned `dart` and `flutter` shims remain explicit Windows raw extensions;
+XUVA-owned `dart` and `flutter` shims remain explicit Windows raw extensions;
 they are not represented as upstream RTK commands. Unknown commands retain the
 conservative WSL1 route and are visibly classified as unknown rather than
 silently receiving native RTK treatment.
@@ -40,7 +40,7 @@ when a stock Windows `rtk.exe` is installed:
 ```
 
 This is inventory parity, not a claim that every external command has a live
-benchmark row. P18 supplies the reproducible raw/native/WAD benchmark evidence
+benchmark row. P18 supplies the reproducible raw/native/XUVA benchmark evidence
 required before a performance or token-saving claim is published.
 
 ## Relationship to provider execution

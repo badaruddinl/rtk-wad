@@ -1,16 +1,18 @@
 # Release provenance and Windows signing readiness
 
-`release-provenance.yml` builds an existing immutable tag on GitHub-hosted
-Windows, produces the two Windows compatibility executables in a ZIP, writes a
-SHA-256 sidecar, publishes the assets, and creates a GitHub build provenance
-attestation for the archive. It is manual so an ordinary branch build can never
-publish an artifact.
+`release-provenance.yml` accepts an existing immutable tag only. The tag and
+`Cargo.toml` version must match, the controlled Windows/WSL runner must pass the
+full release gate on that exact SHA, and the hosted Windows builder then creates
+the ZIP, SHA-256 sidecar, CycloneDX SBOM, and GitHub build-provenance
+attestation. It is manual so an ordinary branch build can never publish an
+artifact.
 
-For `v0.3.0`, the published archive is named
-`rtk-wad-v0.3.0-windows-x86_64.zip`; it contains only `rtk-wad.exe`. The
-release page, SHA-256 sidecar, and
-attestation are the authoritative distribution record. A source branch or an
-untagged workflow artifact is not a stable binary release.
+The current public archive is
+`xuva-v0.4.1-windows-x86_64.zip`. New archives contain `xuva.exe`, the
+installer, uninstaller, WSL shim, license, readme, and checksum record. The
+release page, SHA-256 sidecar, SBOM, and attestation are the authoritative
+distribution record. A source branch or an untagged workflow artifact is not a
+stable binary release.
 
 The project does not claim Authenticode signing until a maintainer supplies a
 trusted code-signing certificate and an appropriate protected GitHub

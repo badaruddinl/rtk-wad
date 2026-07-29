@@ -7,6 +7,7 @@
 use std::ffi::OsString;
 use std::process::Command;
 
+pub(crate) mod rtk;
 pub(crate) mod windows;
 pub(crate) mod wsl1;
 pub(crate) mod wsl2;

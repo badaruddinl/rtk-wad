@@ -13,7 +13,7 @@ pub(crate) struct TokenTotals {
     pub(crate) saved_tokens: i64,
 }
 
-pub(crate) fn wad_data_root() -> PathBuf {
+pub(crate) fn xuva_data_root() -> PathBuf {
     env::var_os("XUVA_STATE_DIR")
         .map(PathBuf::from)
         .or_else(|| {
@@ -24,12 +24,12 @@ pub(crate) fn wad_data_root() -> PathBuf {
         .unwrap_or_else(env::temp_dir)
 }
 
-pub(crate) struct WadMetrics {
+pub(crate) struct XuvaMetrics {
     ledger_path: PathBuf,
     scratch_path: PathBuf,
 }
 
-impl WadMetrics {
+impl XuvaMetrics {
     pub(crate) fn begin() -> Result<Self, String> {
         Self::begin_with_tracker(true)
     }
@@ -39,7 +39,7 @@ impl WadMetrics {
     }
 
     fn begin_with_tracker(with_tracker: bool) -> Result<Self, String> {
-        let root = wad_data_root();
+        let root = xuva_data_root();
         let scratch_directory = root.join("scratch");
         fs::create_dir_all(&scratch_directory)
             .map_err(|error| format!("unable to create local metrics directory: {error}"))?;
@@ -130,7 +130,7 @@ impl WadMetrics {
     }
 
     pub(crate) fn print_gain() -> Result<(), String> {
-        let root = wad_data_root();
+        let root = xuva_data_root();
         let ledger_path = root.join("metrics-v1.sqlite");
         if !ledger_path.exists() {
             println!("XUVA Measured Token Accounting\n\nNo RTK-measured commands yet.");

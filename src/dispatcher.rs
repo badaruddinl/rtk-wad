@@ -13,7 +13,14 @@ pub(crate) struct CommandSpec {
     pub(crate) arguments: Vec<OsString>,
     pub(crate) cwd: Option<PathBuf>,
     pub(crate) environment: Vec<(OsString, OsString)>,
+    pub(crate) environment_policy: EnvironmentPolicy,
     pub(crate) interactive: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EnvironmentPolicy {
+    Inherit,
+    Isolated,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,6 +93,7 @@ mod tests {
             arguments: vec![OsString::from("version"), OsString::from("$literal & text")],
             cwd: None,
             environment: Vec::new(),
+            environment_policy: EnvironmentPolicy::Isolated,
             interactive: false,
         };
         let plan = ExecutionPlan {

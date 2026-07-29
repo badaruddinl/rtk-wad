@@ -1,10 +1,24 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, ExitCode};
+use std::time::Duration;
 
+use crate::process::run_bounded;
 use crate::{PRODUCT_COMMAND, PRODUCT_NAME};
 
 const SUPPORTED_HOOKS: &[&str] = &["claude", "cursor", "gemini", "copilot"];
+const MAX_HOOK_INPUT_BYTES: usize = 1024 * 1024;
+const MAX_HOOK_OUTPUT_BYTES: usize = 1024 * 1024;
+const HOOK_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn hook_timeout() -> Duration {
+    std::env::var("XUVA_AGENT_HOOK_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (10..=HOOK_TIMEOUT.as_millis() as u64).contains(value))
+        .map(Duration::from_millis)
+        .unwrap_or(HOOK_TIMEOUT)
+}
 
 fn supported_hook(name: &str) -> bool {
     SUPPORTED_HOOKS.contains(&name)
@@ -46,40 +60,57 @@ fn rewrite_hook_payload(payload: &mut serde_json::Value) -> bool {
 
 fn hook(agent: &str, native_rtk_path: &str) -> ExitCode {
     let mut input = Vec::new();
-    if let Err(error) = std::io::stdin().read_to_end(&mut input) {
+    if let Err(error) = std::io::stdin()
+        .take((MAX_HOOK_INPUT_BYTES + 1) as u64)
+        .read_to_end(&mut input)
+    {
         eprintln!("{PRODUCT_COMMAND}: could not read {agent} hook input: {error}");
         return ExitCode::FAILURE;
     }
-    let mut command = Command::new(native_rtk_path);
-    command
-        .args(["hook", agent])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            eprintln!("{PRODUCT_COMMAND}: native RTK {agent} hook could not start: {error}");
-            return ExitCode::from(127);
-        }
-    };
-    if let Some(mut stdin) = child.stdin.take()
-        && let Err(error) = stdin.write_all(&input)
-    {
-        eprintln!("{PRODUCT_COMMAND}: could not forward Claude hook input: {error}");
+    if input.len() > MAX_HOOK_INPUT_BYTES {
+        eprintln!(
+            "{PRODUCT_COMMAND}: {agent} hook input exceeds the {} byte limit",
+            MAX_HOOK_INPUT_BYTES
+        );
         return ExitCode::FAILURE;
     }
-    let output = match child.wait_with_output() {
+    let mut command = Command::new(native_rtk_path);
+    command.args(["hook", agent]);
+    let output = match run_bounded(
+        &mut command,
+        Some(input),
+        hook_timeout(),
+        MAX_HOOK_OUTPUT_BYTES,
+    ) {
         Ok(output) => output,
         Err(error) => {
-            eprintln!("{PRODUCT_COMMAND}: native RTK {agent} hook did not complete: {error}");
-            return ExitCode::FAILURE;
+            let action = if error.kind() == std::io::ErrorKind::TimedOut {
+                "timed out"
+            } else {
+                "could not run"
+            };
+            eprintln!("{PRODUCT_COMMAND}: native RTK {agent} hook {action}: {error}");
+            return if error.kind() == std::io::ErrorKind::NotFound {
+                ExitCode::from(127)
+            } else {
+                ExitCode::FAILURE
+            };
         }
     };
+    let _ = std::io::stderr().write_all(&output.stderr);
+    if output.stdout_truncated || output.stderr_truncated {
+        eprintln!(
+            "{PRODUCT_COMMAND}: native RTK {agent} hook output exceeded the {} byte limit",
+            MAX_HOOK_OUTPUT_BYTES
+        );
+        return ExitCode::FAILURE;
+    }
     if !output.status.success() {
         let _ = std::io::stdout().write_all(&output.stdout);
-        let _ = std::io::stderr().write_all(&output.stderr);
         return ExitCode::from(output.status.code().unwrap_or(1) as u8);
+    }
+    if output.stdout.iter().all(u8::is_ascii_whitespace) {
+        return ExitCode::SUCCESS;
     }
     let mut payload: serde_json::Value = match serde_json::from_slice(&output.stdout) {
         Ok(payload) => payload,
@@ -208,5 +239,23 @@ mod tests {
         assert!(supported_hook("copilot"));
         assert!(!supported_hook("codex"));
         assert_eq!(initialization_command("gemini"), "rtk init -g --gemini");
+    }
+
+    #[test]
+    fn empty_and_whitespace_hook_output_are_valid_pass_through_responses() {
+        assert!(b"".iter().all(u8::is_ascii_whitespace));
+        assert!(b" \r\n\t".iter().all(u8::is_ascii_whitespace));
+        assert!(!br#"{"updatedInput":{}}"#.iter().all(u8::is_ascii_whitespace));
+    }
+
+    #[test]
+    fn invalid_json_is_not_mistaken_for_pass_through() {
+        assert!(serde_json::from_slice::<serde_json::Value>(b"not-json").is_err());
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(
+                br#"{"updatedInput":{"command":"git status"}}"#
+            )
+            .is_ok()
+        );
     }
 }

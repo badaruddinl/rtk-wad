@@ -2,7 +2,7 @@
 param(
     [string]$Root,
     [string]$Python,
-    [string]$Requirements = (Join-Path $PSScriptRoot "..\requirements\wad-tokenizer.txt"),
+    [string]$Requirements = (Join-Path $PSScriptRoot "..\requirements\xuva-tokenizer.txt"),
     [switch]$PlanPythonBootstrap,
     [switch]$InstallPython,
     [switch]$ConfirmPythonInstall,
@@ -66,7 +66,7 @@ function Get-PythonBootstrapPlan {
         source = "winget"
         executable = if ($resolvedWinget) { $resolvedWinget.Source } else { $WingetPath }
         arguments = @("install", "--id", "Python.Python.3.12", "--exact", "--source", "winget", "--accept-package-agreements", "--accept-source-agreements")
-        reason = if ($resolvedWinget) { "Python is needed only to provision the pinned WAD tokenizer dependency." } else { "winget is unavailable; WAD will not select an alternate installer automatically." }
+        reason = if ($resolvedWinget) { "Python is needed only to provision the pinned XUVA tokenizer dependency." } else { "winget is unavailable; XUVA will not select an alternate installer automatically." }
     }
 }
 
@@ -88,11 +88,11 @@ function Install-PythonRuntime {
     }
     & $Plan.executable @($Plan.arguments)
     if ($LASTEXITCODE -ne 0) {
-        throw "Python bootstrap failed with exit code $LASTEXITCODE. The WAD launcher was not activated."
+        throw "Python bootstrap failed with exit code $LASTEXITCODE. The XUVA launcher was not activated."
     }
     $runtime = Resolve-PythonRuntime
     if (-not $runtime) {
-        throw "Python installation completed but no usable runtime is visible in this process. Open a new terminal and rerun the WAD installer; the launcher was not activated."
+        throw "Python installation completed but no usable runtime is visible in this process. Open a new terminal and rerun the XUVA installer; the launcher was not activated."
     }
     return $runtime
 }
@@ -124,7 +124,7 @@ function Get-TokenizerDependency {
             }
     )
     if ($dependencyMatches.Count -ne 1) {
-        throw "The official WAD tokenizer manifest must declare exactly one tiktoken==<version> dependency."
+        throw "The official XUVA tokenizer manifest must declare exactly one tiktoken==<version> dependency."
     }
     return $dependencyMatches[0]
 }
@@ -174,7 +174,7 @@ try {
     $stagingPython = Join-Path $staging "Scripts\python.exe"
     $pipOutput = @(& $stagingPython -m pip install --disable-pip-version-check --no-input --requirement $requirementsPath 2>&1)
     if ($LASTEXITCODE -ne 0) {
-        throw "pip could not install the WAD tokenizer dependency: $($pipOutput | Select-Object -Last 1)"
+        throw "pip could not install the XUVA tokenizer dependency: $($pipOutput | Select-Object -Last 1)"
     }
     Assert-Tokenizer -PythonPath $stagingPython -ExpectedVersion $tokenizer.Version
     Move-Item -LiteralPath $staging -Destination $rootPath -ErrorAction Stop

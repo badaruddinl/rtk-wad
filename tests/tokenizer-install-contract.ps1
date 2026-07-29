@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Installer = (Join-Path $PSScriptRoot "..\scripts\install-tokenizer.ps1"),
-    [string]$Requirements = (Join-Path $PSScriptRoot "..\requirements\wad-tokenizer.txt"),
+    [string]$Requirements = (Join-Path $PSScriptRoot "..\requirements\xuva-tokenizer.txt"),
     [string]$Python
 )
 

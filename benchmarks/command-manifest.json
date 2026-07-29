@@ -1,6 +1,11 @@
 {
-  "schema_version": 1,
-  "upstream_rtk_version": "0.43.0",
+  "schema_version": 2,
+  "adapter": {
+    "name": "rtk",
+    "version": "0.43.0",
+    "protocol_version": 1,
+    "capabilities": ["command_surface", "structured_output", "agent_hooks"]
+  },
   "source": "rtk.exe --help",
   "native_structured": ["ls", "tree", "read", "git", "find", "diff", "grep", "rg", "cargo"],
   "raw_native": ["npm", "npx", "pnpm", "go", "dotnet"],
@@ -10,6 +15,6 @@
   "wsl1_conservative": [
     "smart", "gh", "glab", "aws", "psql", "err", "test", "json", "deps", "env", "log", "docker", "kubectl", "oc", "summary", "init", "wget", "wc", "cc-economics", "config", "jest", "vitest", "prisma", "tsc", "next", "lint", "prettier", "format", "playwright", "curl", "discover", "session", "telemetry", "learn", "run", "proxy", "pipe", "trust", "untrust", "verify", "ruff", "pytest", "mypy", "rake", "rubocop", "rspec", "pip", "gt", "golangci-lint", "gradlew", "mvn", "hook-audit", "rewrite", "hook"
   ],
-  "wad_internal": ["gain", "stats", "--adapter-info", "--explain-route"],
-  "coverage_rule": "Every command family needs a raw, stock-RTK, and WAD evidence row before release coverage is claimed."
+  "core_internal": ["gain", "stats", "--adapter-info", "--explain-route"],
+  "coverage_rule": "Every command family needs a raw, stock-RTK, and XUVA evidence row before release coverage is claimed."
 }

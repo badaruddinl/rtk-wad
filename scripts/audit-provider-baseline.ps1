@@ -355,7 +355,7 @@ $manifestCommands = if ($manifest) {
         $manifest.native_structured +
         $manifest.raw_native +
         $manifest.wsl1_conservative +
-        @($manifest.wad_internal | Where-Object { $_ -notmatch "^-" -and $_ -ne "stats" }) |
+        @($manifest.core_internal | Where-Object { $_ -notmatch "^-" -and $_ -ne "stats" }) |
             Sort-Object -Unique
     )
 } else {
@@ -483,7 +483,7 @@ $report = [pscustomobject]@{
     Wsl = @($wslProviders)
     Manifest = [pscustomobject]@{
         Path = if ($manifest) { (Resolve-Path -LiteralPath $ManifestPath).Path } else { $null }
-        UpstreamVersion = if ($manifest) { $manifest.upstream_rtk_version } else { $null }
+        UpstreamVersion = if ($manifest) { $manifest.adapter.version } else { $null }
         Coverage = @($rtkCommandCoverage)
         WindowsCoverage = @($windowsRtkCoverage)
     }

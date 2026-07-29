@@ -13,7 +13,7 @@
   <a href="https://github.com/badaruddinl/xuva/actions/workflows/windows-ci.yml"><img src="https://github.com/badaruddinl/xuva/actions/workflows/windows-ci.yml/badge.svg?branch=master" alt="Windows CI" /></a>
   <a href="https://github.com/badaruddinl/xuva/tags"><img src="https://img.shields.io/github/v/tag/badaruddinl/xuva?sort=semver&label=version" alt="Version tag" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0 license" /></a>
-  <a href="docs/RELEASE_GATE_P20.md"><img src="https://img.shields.io/badge/status-stable-success.svg" alt="Stable status" /></a>
+  <a href="docs/RELEASE_GATE_P20.md"><img src="https://img.shields.io/badge/status-public_beta-orange.svg" alt="Public beta status" /></a>
 </p>
 
 XUVA is an adaptive command dispatcher. For each command, it selects one
@@ -58,21 +58,21 @@ otherwise XUVA continues with raw or other verified provider routes.
 
 ## Download the verified Windows binary
 
-The Windows x86_64 archive contains `xuva.exe`. The historic `v0.3.0` archive
-is retained under its original filename and built from the immutable tag,
-published with a SHA-256 sidecar, and accompanied by a GitHub build-provenance
-attestation. It is not Authenticode-signed; see [release
+The current Windows x86_64 release is `v0.4.1`, using the XUVA product and
+archive names. Development after that release is versioned as a beta until the
+same source SHA completes the hosted and controlled Windows/WSL release gates.
+The archive is not Authenticode-signed; see [release
 provenance](docs/RELEASE_PROVENANCE.md) for the explicit trust boundary.
 
-- [Download the v0.3.0 Windows archive](https://github.com/badaruddinl/xuva/releases/download/v0.3.0/rtk-wad-v0.3.0-windows-x86_64.zip)
-- [Download its SHA-256 sidecar](https://github.com/badaruddinl/xuva/releases/download/v0.3.0/rtk-wad-v0.3.0-windows-x86_64.zip.sha256)
-- [Open the v0.3.0 release record](https://github.com/badaruddinl/xuva/releases/tag/v0.3.0)
+- [Download the v0.4.1 Windows archive](https://github.com/badaruddinl/xuva/releases/download/v0.4.1/xuva-v0.4.1-windows-x86_64.zip)
+- [Download its SHA-256 sidecar](https://github.com/badaruddinl/xuva/releases/download/v0.4.1/xuva-v0.4.1-windows-x86_64.zip.sha256)
+- [Open the v0.4.1 release record](https://github.com/badaruddinl/xuva/releases/tag/v0.4.1)
 
 Verify the archive after downloading it:
 
 ```powershell
-Get-FileHash .\rtk-wad-v0.3.0-windows-x86_64.zip -Algorithm SHA256
-Get-Content .\rtk-wad-v0.3.0-windows-x86_64.zip.sha256
+Get-FileHash .\xuva-v0.4.1-windows-x86_64.zip -Algorithm SHA256
+Get-Content .\xuva-v0.4.1-windows-x86_64.zip.sha256
 ```
 
 Every stable release also requires successful hosted quality gates and a
@@ -84,20 +84,28 @@ for the release commit.
 Build a release binary on Windows:
 
 ```powershell
-cargo build --release
+cargo build --release --locked --bins
 .\target\release\xuva.exe --version
 .\target\release\xuva.exe --explain-route rg -n "pattern" src
 ```
 
+Run this self-build through Cargo directly (or from a different XUVA binary).
+Windows cannot replace `target\release\xuva.exe` while that same executable is
+still acting as the dispatcher for the build.
+
 Install it for the current user:
 
 ```powershell
-.\scripts\install.ps1
+.\scripts\install.ps1 -AddToPath
 xuva gain
 xuva self-update --check
 ```
 
-The installer performs `xuva scan` after activating the binary. It
+Use `xuva install --status` to inspect the installation, `xuva rollback` to
+swap to the retained previous binary after the current process exits, and
+`xuva uninstall --remove-from-path` to remove the launcher and its PATH entry.
+The companion scripts expose the same operations for recovery when the binary
+cannot start. The installer performs `xuva scan` after activating the binary. It
 inventories every launchable executable on the Windows `PATH` and the WSL
 distros that actually exist, without executing those tools, installing a
 toolchain, or forcing WSL. The dispatcher resolves and caches any safe
@@ -111,7 +119,7 @@ Windows, while installation still requires a reviewed release or trusted
 checkout.
 
 The core installer has no Python or tokenizer dependency. The pinned
-[`tiktoken`](requirements/wad-tokenizer.txt) environment is optional and used
+[`tiktoken`](requirements/xuva-tokenizer.txt) environment is optional and used
 only to reproduce benchmark token counts. Install it explicitly when running a
 benchmark; it never alters the global Python environment. On a fresh PC without
 Python, inspect the plan first:
@@ -215,9 +223,9 @@ system, conversation, output, and model pricing all affect an eventual bill.
 
 - Exact argv forwarding handles spaces, quotes, Unicode, `&`, `;`, `$`, and
   backslashes without shell reconstruction.
-- Drive-qualified Windows arguments and standard `/mnt/<drive>/...` arguments
-  are translated as individual path argv when the verified provider is on the
-  other host.
+- Paths are translated only in command-defined path positions (`git -C`,
+  Cargo manifest/target flags, Go path flags, response files, and Git
+  pathspecs). Generic data that merely resembles a path remains unchanged.
 - Git operations in Windows worktrees use Git for Windows for NTFS object
   writes, credentials, and Windows DNS. Mutations never fall back to WSL.
 - POSIX utilities such as `find`, `head`, and `tail` use raw WSL executables;
@@ -247,6 +255,19 @@ safe set (`CI`, color controls, `TERM`, and `RUST_BACKTRACE`), boolean
 `*_RUN_*` feature gates such as `XPDE_RUN_TRAINING_E2E=1`, and names explicitly
 listed in the comma-separated `XUVA_ENV_ALLOWLIST`. Credential-like names are
 rejected even when they resemble a feature gate or appear in the allowlist.
+
+Local aggregate metrics are enabled by default and never leave the workstation.
+Set `XUVA_METRICS=off` for a zero-ledger fast path; XUVA then skips both the
+SQLite metrics write and local calibration updates for that invocation.
+
+Build identity is inspectable without WSL or provider discovery:
+
+```powershell
+xuva --version --verbose
+```
+
+It reports the package version, source commit, target, build profile, and
+provenance channel embedded at build time.
 
 ## Documentation
 

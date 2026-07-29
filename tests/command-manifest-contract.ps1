@@ -21,6 +21,7 @@ $ManifestPath = if ($ManifestPath) {
 $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("xuva-manifest-provider-" + [guid]::NewGuid())
 $previousManifest = $env:XUVA_MANIFEST_CONTRACT_PATH
 $previousUnverified = $env:XUVA_MANIFEST_CONTRACT_UNVERIFIED
+$previousHost = $env:XUVA_MANIFEST_CONTRACT_HOST
 try {
     New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
     $fakeXuva = Join-Path $temporaryRoot "xuva-provider-fixture.ps1"
@@ -44,24 +45,26 @@ if ($Arguments.Count -ge 3 -and
             size_bytes = 4096
         }
     }
+    $windows = $env:XUVA_MANIFEST_CONTRACT_HOST -eq "windows"
     [pscustomobject]@{
-        schema_version = 3
+        schema_version = 4
         tool = "rtk"
         recommended = 0
         candidates = @(
             [pscustomobject]@{
-                kind = "wsl_rtk"
-                distro = "Fixture-WSL2"
-                wsl_version = 2
-                executable = "/verified/rtk"
+                host = if ($windows) { "windows" } else { "wsl2" }
+                adapters = @("raw", "rtk")
+                distro = if ($windows) { $null } else { "Fixture-WSL2" }
+                wsl_version = if ($windows) { $null } else { 2 }
+                executable = if ($windows) { "C:\verified\rtk.exe" } else { "/verified/rtk" }
                 usable = $true
             }
         )
         availability = [pscustomobject]@{
             windows = [pscustomobject]@{
-                executable = $null
-                executable_identity = $null
-                executable_version = $null
+                executable = if ($windows) { "C:\verified\rtk.exe" } else { $null }
+                executable_identity = if ($windows) { $identity } else { $null }
+                executable_version = if ($windows) { "rtk 0.43.0" } else { $null }
             }
             wsl = @(
                 [pscustomobject]@{
@@ -91,7 +94,7 @@ if ($Arguments.Count -ge 7 -and
             $manifest.native_structured
             $manifest.raw_native
             $manifest.wsl1_conservative
-            @($manifest.wad_internal | Where-Object { $_ -notmatch "^-" -and $_ -ne "stats" })
+            @($manifest.core_internal | Where-Object { $_ -notmatch "^-" -and $_ -ne "stats" })
         ) | Sort-Object -Unique
         foreach ($command in $commands) {
             Write-Output "  $command  verified fixture command"
@@ -106,8 +109,9 @@ Write-Error "Unexpected fixture invocation: $($Arguments -join ' ')"
 
     $env:XUVA_MANIFEST_CONTRACT_PATH = (Resolve-Path -LiteralPath $ManifestPath).Path
     $env:XUVA_MANIFEST_CONTRACT_UNVERIFIED = "0"
+    $env:XUVA_MANIFEST_CONTRACT_HOST = "wsl"
     $verifiedOutput = @(& $VerifyScript -Xuva $fakeXuva -ManifestPath $ManifestPath)
-    if (-not ($verifiedOutput -contains "provider_kind=wsl_rtk")) {
+    if (-not ($verifiedOutput -contains "provider_kind=wsl2")) {
         throw "The manifest verifier did not report its verified WSL fallback route."
     }
     if (-not (@($verifiedOutput | Where-Object { $_ -eq "Command manifest covers 69 RTK command families." }))) {
@@ -125,10 +129,18 @@ Write-Error "Unexpected fixture invocation: $($Arguments -join ' ')"
         throw "The manifest verifier accepted a WSL provider without identity evidence."
     }
 
+    $env:XUVA_MANIFEST_CONTRACT_UNVERIFIED = "0"
+    $env:XUVA_MANIFEST_CONTRACT_HOST = "windows"
+    $windowsOutput = @(& $VerifyScript -Xuva $fakeXuva -ManifestPath $ManifestPath)
+    if (-not ($windowsOutput -contains "provider_kind=windows")) {
+        throw "The manifest verifier rejected the verified native Windows RTK provider."
+    }
+
     Write-Output "Command manifest provider fallback contract passed."
 } finally {
     $env:XUVA_MANIFEST_CONTRACT_PATH = $previousManifest
     $env:XUVA_MANIFEST_CONTRACT_UNVERIFIED = $previousUnverified
+    $env:XUVA_MANIFEST_CONTRACT_HOST = $previousHost
     if (Test-Path -LiteralPath $temporaryRoot) {
         Remove-Item -LiteralPath $temporaryRoot -Recurse -Force
     }

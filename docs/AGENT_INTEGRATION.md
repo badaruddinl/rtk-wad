@@ -6,7 +6,7 @@ or modifying agent configuration files.
 
 ## Supported hook protocols
 
-| Agent | WAD hook command | Stock RTK initialization command |
+| Agent | XUVA hook command | Stock RTK initialization command |
 | --- | --- | --- |
 | Claude Code | `xuva agent hook claude` | `rtk init -g` |
 | Cursor | `xuva agent hook cursor` | `rtk init -g --agent cursor` |
@@ -21,8 +21,10 @@ For a supported agent:
 3. Leave every other hook entry unchanged, restart the agent, and test a
    read-only command such as `git status`.
 
-`xuva agent hook <agent>` forwards stdin to `rtk hook <agent>` through a
-structured child process. On a successful JSON rewrite response, it changes
+`xuva agent hook <agent>` forwards at most 1 MiB of stdin to
+`rtk hook <agent>` through a structured child process with a bounded execution
+time and bounded output. A successful empty response is preserved as the
+upstream defer/deny decision. On a successful JSON rewrite response, it changes
 only the command field published by the agent protocol when it begins with
 `rtk ` or `rtk.exe `; the replacement is `xuva `. Supported output shapes
 are Claude/Copilot `updatedInput`, Cursor `updated_input`, Gemini
@@ -30,15 +32,16 @@ are Claude/Copilot `updatedInput`, Cursor `updated_input`, Gemini
 parses the original shell command, reconstructs argv, falls back to WSL, or
 replays a tool invocation.
 
-The adapter fails clearly when native RTK is missing or returns invalid hook
-JSON. It intentionally does not patch agent settings files itself: hook
+The adapter preserves upstream stderr and fails clearly when native RTK is
+missing, stalls, exceeds its bounds, or returns non-empty invalid JSON. It
+intentionally does not patch agent settings files itself: hook
 registries can contain third-party handlers, and a blanket rewrite would be an
 unsafe ownership violation. Use `xuva agent integration <agent>` to print
 the matching setup instructions without invoking a hook.
 
 Other agents continue to use their upstream RTK integrations until they have a
 separate protocol and process-contract proof. Prompt-only integrations, such as
-Codex CLI rules, do not expose a machine-readable hook boundary that WAD can
+Codex CLI rules, do not expose a machine-readable hook boundary that XUVA can
 adapt safely.
 
 ## Verification

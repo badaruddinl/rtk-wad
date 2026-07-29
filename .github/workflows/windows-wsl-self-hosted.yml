@@ -14,7 +14,7 @@ jobs:
     runs-on: [self-hosted, Windows, WSL]
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # The Rust action invokes bash.exe internally on Windows. That resolves
       # through the machine's default WSL distro, which may be Docker Desktop
@@ -43,4 +43,4 @@ jobs:
 
       - name: Run Windows/WSL process contract
         shell: powershell
-        run: rustup.exe run stable cargo test --test process_contract
+        run: rustup.exe run stable cargo test --locked --test process_contract

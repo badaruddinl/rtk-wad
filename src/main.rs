@@ -2,9 +2,8 @@ use std::collections::HashSet;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitCode, ExitStatus};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -13,29 +12,36 @@ use serde::{Deserialize, Serialize};
 mod adapters;
 mod agent;
 mod bridge;
-mod command_surface;
 mod config;
 mod dispatcher;
+mod lifecycle;
 mod metrics;
 mod paths;
+mod process;
+mod providers;
 
 pub(crate) const PRODUCT_NAME: &str = "XUVA";
 pub(crate) const PRODUCT_COMMAND: &str = "xuva";
 
+use adapters::rtk::{CommandSurface, adapter_contract_id, command_surface, command_surface_report};
 #[cfg(test)]
 use adapters::windows::apply_command_spec;
 #[cfg(test)]
 use bridge::decode_wsl_bridge_fields;
 use bridge::wsl_bridge_request;
-use command_surface::{CommandSurface, command_manifest, command_surface, command_surface_report};
 use config::{
     Config, DEFAULT_DISTRO, DEFAULT_WSL1_DISTRO, ExecutionEnvironment, OutputAdapterPreference,
     Route, WslBackend, is_sensitive_environment_name,
 };
 #[cfg(test)]
 use config::{ExecutableProfile, GitMode};
-use metrics::{TokenTotals, WadMetrics, wad_data_root};
-use paths::{windows_path_to_wsl_path, wsl_path_to_windows_path};
+use metrics::{TokenTotals, XuvaMetrics, xuva_data_root};
+use paths::{translate_arguments_for_provider, windows_path_to_wsl_path};
+use providers::model::{
+    AdapterKind, BinaryIdentity, InspectionLevel, ProbeStatus, ProjectLocation,
+    ProjectLocationKind, ProviderCacheEntry, ProviderCacheFile, ProviderCandidate, ProviderHost,
+    ProviderResolution, WindowsToolProbe, WslToolProbe,
+};
 
 const ADAPTER_INFO_ARGUMENT: &str = "--adapter-info";
 const VERSION_ARGUMENT: &str = "--version";
@@ -54,7 +60,7 @@ const HELP_ARGUMENT: &str = "--help";
 const SELF_UPDATE_ARGUMENT: &str = "self-update";
 const RELEASE_TAGS_URL: &str = "https://github.com/badaruddinl/xuva.git";
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
-const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 3;
+const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 4;
 const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
 const ROUTE_POLICY_SCHEMA_VERSION: u32 = 2;
 const CALIBRATION_SCHEMA_VERSION: u32 = 2;
@@ -267,7 +273,7 @@ struct PolicyContextReport {
 fn policy_context_report(config: &Config) -> PolicyContextReport {
     PolicyContextReport {
         schema_version: ROUTE_POLICY_SCHEMA_VERSION,
-        manifest_version: command_manifest().upstream_rtk_version.clone(),
+        manifest_version: adapter_contract_id(),
         context_signature: adaptive_context_signature(config),
     }
 }
@@ -276,7 +282,7 @@ impl RoutePolicyFile {
     fn route_for(&self, key: &str, context_signature: &str) -> Option<Route> {
         let evidence = self.evidence.iter().find(|evidence| evidence.key == key)?;
         if self.schema_version != ROUTE_POLICY_SCHEMA_VERSION
-            || self.manifest_version != command_manifest().upstream_rtk_version
+            || self.manifest_version != adapter_contract_id()
             || self.context_signature != context_signature
             || evidence.sample_count < 5
         {
@@ -381,22 +387,6 @@ fn select_adaptive_route(
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum ProjectLocationKind {
-    Windows,
-    Wsl,
-    Unknown,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-struct ProjectLocation {
-    kind: ProjectLocationKind,
-    path: String,
-    distro: Option<String>,
-    windows_path: Option<String>,
-}
-
 fn print_command_surface(arguments: &[OsString]) -> ExitCode {
     if arguments.len() > 2
         || arguments
@@ -423,8 +413,11 @@ fn print_command_surface(arguments: &[OsString]) -> ExitCode {
         };
     }
     println!(
-        "RTK {} command surface: {} upstream command families",
-        report.upstream_rtk_version, report.upstream_command_count
+        "{} {} protocol {} command surface: {} adapter command families",
+        report.adapter.name,
+        report.adapter.version,
+        report.adapter.protocol_version,
+        report.upstream_command_count
     );
     for row in report.commands {
         println!(
@@ -435,106 +428,6 @@ fn print_command_surface(arguments: &[OsString]) -> ExitCode {
         );
     }
     ExitCode::SUCCESS
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-struct WindowsToolProbe {
-    executable: Option<String>,
-    native_rtk: Option<String>,
-    #[serde(default)]
-    executable_version: Option<String>,
-    #[serde(default)]
-    executable_capabilities: Vec<String>,
-    #[serde(default)]
-    executable_identity: Option<BinaryIdentity>,
-    #[serde(default)]
-    native_rtk_identity: Option<BinaryIdentity>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-struct WslToolProbe {
-    distro: String,
-    wsl_version: Option<u8>,
-    executable: Option<String>,
-    rtk: Option<String>,
-    #[serde(default)]
-    executable_version: Option<String>,
-    #[serde(default)]
-    executable_capabilities: Vec<String>,
-    #[serde(default)]
-    executable_identity: Option<BinaryIdentity>,
-    #[serde(default)]
-    rtk_identity: Option<BinaryIdentity>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-struct BinaryIdentity {
-    path: String,
-    size_bytes: u64,
-    modified_unix_seconds: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-struct ProviderCacheEntry {
-    tool: String,
-    observed_unix_seconds: u64,
-    #[serde(default)]
-    context_signature: String,
-    windows: WindowsToolProbe,
-    #[serde(default)]
-    wsl_probe_complete: bool,
-    wsl: Vec<WslToolProbe>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-struct ProviderCacheFile {
-    schema_version: u32,
-    entries: Vec<ProviderCacheEntry>,
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum ProviderKind {
-    WindowsRaw,
-    WindowsRtk,
-    WslRaw,
-    WslRtk,
-}
-
-impl ProviderKind {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::WindowsRaw => "windows-raw",
-            Self::WindowsRtk => "windows-rtk",
-            Self::WslRaw => "wsl-raw",
-            Self::WslRtk => "wsl-rtk",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-struct ProviderCandidate {
-    kind: ProviderKind,
-    distro: Option<String>,
-    wsl_version: Option<u8>,
-    executable: String,
-    rtk: Option<String>,
-    project_path: Option<String>,
-    usable: bool,
-    reason: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct ProviderResolution {
-    schema_version: u32,
-    tool: String,
-    cache: &'static str,
-    project: ProjectLocation,
-    availability: ProviderCacheEntry,
-    candidates: Vec<ProviderCandidate>,
-    recommended: Option<usize>,
-    diagnosis: String,
-    install: &'static str,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -561,7 +454,7 @@ struct SetupTransaction {
 }
 
 fn provider_cache_path() -> PathBuf {
-    wad_data_root().join("provider-cache-v3.json")
+    xuva_data_root().join("provider-cache-v4.json")
 }
 
 fn unix_seconds() -> u64 {
@@ -583,7 +476,7 @@ fn load_provider_cache() -> ProviderCacheFile {
 }
 
 fn save_provider_cache(cache: &ProviderCacheFile) -> Result<(), String> {
-    let root = wad_data_root();
+    let root = xuva_data_root();
     fs::create_dir_all(&root)
         .map_err(|error| format!("unable to create provider cache directory: {error}"))?;
     let target = provider_cache_path();
@@ -603,23 +496,34 @@ fn cache_entry_is_fresh(
     entry: &ProviderCacheEntry,
     now: u64,
     context_signature: &str,
-    _validate_versions: bool,
+    validate_versions: bool,
 ) -> bool {
+    let required_level = if validate_versions {
+        InspectionLevel::Version
+    } else {
+        InspectionLevel::Identity
+    };
     now.saturating_sub(entry.observed_unix_seconds) <= PROVIDER_CACHE_TTL_SECONDS
         && entry.context_signature == context_signature
+        && entry.inspection_level >= required_level
 }
 
-fn discovery_context_signature(config: &Config, _require_wsl: bool) -> String {
+fn discovery_context_signature(config: &Config, require_wsl: bool) -> String {
     let path_value = env::var_os("PATH").unwrap_or_default();
     let path_ext_value = env::var_os("PATHEXT").unwrap_or_default();
     let path = path_value.to_string_lossy();
     let path_ext = path_ext_value.to_string_lossy();
     let configured = format!(
-        "{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}",
         config.distro,
         config.user.as_deref().unwrap_or_default(),
         config.native_rtk_path,
         config.extra_path.as_deref().unwrap_or_default(),
+        if require_wsl {
+            "wsl-inventory-required"
+        } else {
+            "windows-only"
+        },
     );
     stable_signature(&[&path, &path_ext, &configured])
 }
@@ -644,11 +548,11 @@ fn first_output_line(output: &[u8]) -> Option<String> {
 }
 
 fn first_windows_executable(name: &str) -> Option<String> {
-    Command::new("where.exe")
-        .arg(name)
-        .output()
+    let mut command = Command::new("where.exe");
+    command.arg(name);
+    process::run_probe(&mut command)
         .ok()
-        .filter(|output| output.status.success())
+        .filter(|output| output.status.success() && !output.stdout_truncated)
         .and_then(|output| {
             let rendered = String::from_utf8_lossy(&output.stdout);
             let candidates = rendered
@@ -703,21 +607,70 @@ fn windows_binary_identity(path: &str) -> Option<BinaryIdentity> {
     })
 }
 
-fn tool_version(executable: &str, wsl_distro: Option<&str>) -> Option<String> {
-    ["--version", "version"].into_iter().find_map(|argument| {
-        let output = match wsl_distro {
-            Some(distro) => Command::new("wsl.exe")
-                .args(["-d", distro, "--exec", executable, argument])
-                .output()
-                .ok(),
-            None => Command::new(executable).arg(argument).output().ok(),
-        }?;
-        output
-            .status
-            .success()
-            .then(|| first_output_line(&output.stdout))
-            .flatten()
-    })
+fn version_probe_arguments(tool: &str) -> Option<&'static [&'static str]> {
+    match tool.to_ascii_lowercase().as_str() {
+        "go" => Some(&["version"]),
+        "git" | "cargo" | "rustc" | "rustup" | "python" | "python3" | "node" | "npm" | "npx"
+        | "pnpm" | "dart" | "flutter" | "rtk" | "rg" | "fd" | "jq" => Some(&["--version"]),
+        _ => None,
+    }
+}
+
+struct VersionProbe {
+    version: Option<String>,
+    status: ProbeStatus,
+}
+
+fn tool_version(tool: &str, executable: &str, wsl_distro: Option<&str>) -> VersionProbe {
+    let Some(arguments) = version_probe_arguments(tool) else {
+        return VersionProbe {
+            version: None,
+            status: ProbeStatus::NotSupported,
+        };
+    };
+    let mut command = match wsl_distro {
+        Some(distro) => {
+            let mut command = Command::new("wsl.exe");
+            command.args(["-d", distro, "--exec", executable]);
+            command
+        }
+        None => Command::new(executable),
+    };
+    command.args(arguments);
+    let output = match process::run_probe(&mut command) {
+        Ok(output) => output,
+        Err(error) => {
+            return VersionProbe {
+                version: None,
+                status: if error.kind() == std::io::ErrorKind::TimedOut {
+                    ProbeStatus::Timeout
+                } else {
+                    ProbeStatus::Failed
+                },
+            };
+        }
+    };
+    if output.stdout_truncated || output.stderr_truncated {
+        return VersionProbe {
+            version: None,
+            status: ProbeStatus::OutputLimit,
+        };
+    }
+    if !output.status.success() {
+        return VersionProbe {
+            version: None,
+            status: ProbeStatus::Failed,
+        };
+    }
+    let version = first_output_line(&output.stdout).or_else(|| first_output_line(&output.stderr));
+    VersionProbe {
+        status: if version.is_some() {
+            ProbeStatus::Success
+        } else {
+            ProbeStatus::Failed
+        },
+        version,
+    }
 }
 
 fn version_capabilities(version: &Option<String>) -> Vec<String> {
@@ -769,11 +722,11 @@ fn is_eligible_wsl_distro(distro: &str) -> bool {
 }
 
 fn installed_wsl_distributions() -> Vec<(String, Option<u8>)> {
-    Command::new("wsl.exe")
-        .args(["--list", "--verbose"])
-        .output()
+    let mut command = Command::new("wsl.exe");
+    command.args(["--list", "--verbose"]);
+    process::run_probe(&mut command)
         .ok()
-        .filter(|output| output.status.success())
+        .filter(|output| output.status.success() && !output.stdout_truncated)
         .map(|output| {
             parse_wsl_distributions(&decode_wsl_output(&output.stdout))
                 .into_iter()
@@ -791,7 +744,8 @@ fn probe_wsl_tool(
     inspect_version: bool,
 ) -> WslToolProbe {
     let script = "if [ -n \"$2\" ]; then PATH=\"$2:$PATH\"; fi; tool_path=$(command -v \"$1\" 2>/dev/null || true); case \"$tool_path\" in /*) [ -f \"$tool_path\" ] && [ -x \"$tool_path\" ] || tool_path= ;; *) tool_path= ;; esac; rtk_path=$(command -v rtk 2>/dev/null || true); case \"$rtk_path\" in /*) [ -f \"$rtk_path\" ] && [ -x \"$rtk_path\" ] || rtk_path= ;; *) rtk_path= ;; esac; tool_identity=$(stat -Lc '%s:%Y' -- \"$tool_path\" 2>/dev/null || true); rtk_identity=$(stat -Lc '%s:%Y' -- \"$rtk_path\" 2>/dev/null || true); printf '%s\\n%s\\n%s\\n%s\\n' \"$tool_path\" \"$rtk_path\" \"$tool_identity\" \"$rtk_identity\"";
-    let output = Command::new("wsl.exe")
+    let mut command = Command::new("wsl.exe");
+    command
         .args([
             "-d",
             distro,
@@ -802,8 +756,8 @@ fn probe_wsl_tool(
             "xuva-provider-probe",
             tool,
         ])
-        .arg(extra_path.unwrap_or_default())
-        .output();
+        .arg(extra_path.unwrap_or_default());
+    let output = process::run_probe(&mut command);
     let (executable, rtk, executable_identity, rtk_identity) = output
         .ok()
         .filter(|result| result.status.success())
@@ -822,18 +776,27 @@ fn probe_wsl_tool(
             )
         })
         .unwrap_or((None, None, None, None));
-    let executable_version = inspect_version
-        .then(|| {
-            executable
-                .as_deref()
-                .and_then(|path| tool_version(path, Some(distro)))
-        })
-        .flatten();
+    let version_probe = if inspect_version {
+        executable.as_deref().map_or(
+            VersionProbe {
+                version: None,
+                status: ProbeStatus::Failed,
+            },
+            |path| tool_version(tool, path, Some(distro)),
+        )
+    } else {
+        VersionProbe {
+            version: None,
+            status: ProbeStatus::NotRequested,
+        }
+    };
+    let executable_version = version_probe.version;
     WslToolProbe {
         distro: distro.to_owned(),
         wsl_version,
         executable_capabilities: version_capabilities(&executable_version),
         executable_version,
+        version_probe_status: version_probe.status,
         executable,
         rtk,
         executable_identity,
@@ -905,16 +868,25 @@ fn discover_tool(
     let executable = if tool == "go" { "go.exe" } else { tool };
     let windows_executable = first_windows_executable(executable);
     let native_rtk = configured_windows_executable(&config.native_rtk_path);
-    let executable_version = inspect_versions
-        .then(|| {
-            windows_executable
-                .as_deref()
-                .and_then(|path| tool_version(path, None))
-        })
-        .flatten();
+    let version_probe = if inspect_versions {
+        windows_executable.as_deref().map_or(
+            VersionProbe {
+                version: None,
+                status: ProbeStatus::Failed,
+            },
+            |path| tool_version(tool, path, None),
+        )
+    } else {
+        VersionProbe {
+            version: None,
+            status: ProbeStatus::NotRequested,
+        }
+    };
+    let executable_version = version_probe.version;
     let windows = WindowsToolProbe {
         executable_capabilities: version_capabilities(&executable_version),
         executable_version,
+        version_probe_status: version_probe.status,
         executable_identity: windows_executable
             .as_deref()
             .and_then(windows_binary_identity),
@@ -955,6 +927,11 @@ fn discover_tool(
     ProviderCacheEntry {
         tool: tool.to_owned(),
         observed_unix_seconds: unix_seconds(),
+        inspection_level: if inspect_versions {
+            InspectionLevel::Version
+        } else {
+            InspectionLevel::Identity
+        },
         context_signature: discovery_context_signature(config, include_wsl),
         windows,
         wsl_probe_complete,
@@ -1020,11 +997,11 @@ fn mapped_windows_project_path(
     user: Option<&str>,
     windows_path: &str,
 ) -> Option<String> {
-    Command::new("wsl.exe")
-        .args(wsl_mapping_arguments_with_user(distro, user, windows_path))
-        .output()
+    let mut command = Command::new("wsl.exe");
+    command.args(wsl_mapping_arguments_with_user(distro, user, windows_path));
+    process::run_probe(&mut command)
         .ok()
-        .filter(|output| output.status.success())
+        .filter(|output| output.status.success() && !output.stdout_truncated)
         .and_then(|output| first_output_line(&output.stdout))
         .filter(|path| path.starts_with('/'))
 }
@@ -1045,29 +1022,28 @@ fn windows_mapping_arguments_with_user(
 }
 
 fn mapped_wsl_project_path(distro: &str, user: Option<&str>, linux_path: &str) -> Option<String> {
-    Command::new("wsl.exe")
-        .args(windows_mapping_arguments_with_user(
-            distro, user, linux_path,
-        ))
-        .output()
+    let mut command = Command::new("wsl.exe");
+    command.args(windows_mapping_arguments_with_user(
+        distro, user, linux_path,
+    ));
+    process::run_probe(&mut command)
         .ok()
-        .filter(|output| output.status.success())
+        .filter(|output| output.status.success() && !output.stdout_truncated)
         .and_then(|output| first_output_line(&output.stdout))
 }
 
 fn wsl_directory_exists(distro: &str, user: Option<&str>, path: &str) -> bool {
-    Command::new("wsl.exe")
-        .args({
-            let mut arguments = wsl_exec_prefix(distro, user);
-            arguments.extend([
-                OsString::from("test"),
-                OsString::from("-d"),
-                OsString::from(path),
-            ]);
-            arguments
-        })
-        .status()
-        .is_ok_and(|status| status.success())
+    let mut command = Command::new("wsl.exe");
+    command.args({
+        let mut arguments = wsl_exec_prefix(distro, user);
+        arguments.extend([
+            OsString::from("test"),
+            OsString::from("-d"),
+            OsString::from(path),
+        ]);
+        arguments
+    });
+    process::run_probe(&mut command).is_ok_and(|output| output.status.success())
 }
 
 fn is_windows_project_path_for_distro(path: &str, expected_distro: Option<&str>) -> bool {
@@ -1192,6 +1168,7 @@ fn resolve_tool_provider_from_discovery_with_user(
         && tool != "git")
         .then(|| discovery.windows.native_rtk.clone())
         .flatten();
+    let windows_raw_available = discovery.windows.executable.is_some();
     if let Some(executable) = discovery
         .windows
         .executable
@@ -1202,11 +1179,18 @@ fn resolve_tool_provider_from_discovery_with_user(
         let compatible = windows_provider_has_compatible_semantics(tool);
         let usable = project_path.is_some() && compatible;
         candidates.push(ProviderCandidate {
-            kind: if discovery.windows.native_rtk.is_some() {
-                ProviderKind::WindowsRtk
-            } else {
-                ProviderKind::WindowsRaw
-            },
+            host: ProviderHost::Windows,
+            adapters: [
+                windows_raw_available.then_some(AdapterKind::Raw),
+                discovery
+                    .windows
+                    .native_rtk
+                    .is_some()
+                    .then_some(AdapterKind::Rtk),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
             distro: None,
             wsl_version: None,
             executable,
@@ -1230,6 +1214,12 @@ fn resolve_tool_provider_from_discovery_with_user(
         });
     }
     for probe in discovery.wsl {
+        let host = match probe.wsl_version {
+            Some(1) => ProviderHost::Wsl1,
+            Some(2) => ProviderHost::Wsl2,
+            _ => continue,
+        };
+        let raw_available = probe.executable.is_some();
         let rtk_fallback = (command_surface(tool) == CommandSurface::NativeStructured)
             .then(|| probe.rtk.clone())
             .flatten();
@@ -1237,11 +1227,14 @@ fn resolve_tool_provider_from_discovery_with_user(
             let project_path = wsl_project_path(&project, &probe, user);
             let usable = project_path.is_some();
             candidates.push(ProviderCandidate {
-                kind: if probe.rtk.is_some() {
-                    ProviderKind::WslRtk
-                } else {
-                    ProviderKind::WslRaw
-                },
+                host,
+                adapters: [
+                    raw_available.then_some(AdapterKind::Raw),
+                    probe.rtk.is_some().then_some(AdapterKind::Rtk),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
                 distro: Some(probe.distro),
                 wsl_version: probe.wsl_version,
                 executable,
@@ -1319,12 +1312,153 @@ fn is_dispatchable_provider_tool(arguments: &[OsString]) -> bool {
         .is_some_and(is_safe_provider_tool_name)
 }
 
-fn wsl_route_for_version(version: Option<u8>) -> Option<Route> {
-    match version {
-        Some(1) => Some(Route::Wsl1),
-        Some(2) => Some(Route::Wsl2),
-        _ => None,
+fn looks_like_explicit_executable(value: &str) -> bool {
+    value.starts_with('/')
+        || value.starts_with("./")
+        || value.starts_with("../")
+        || value.starts_with(".\\")
+        || value.starts_with("..\\")
+        || (value.len() >= 3
+            && value.as_bytes()[1] == b':'
+            && matches!(value.as_bytes()[2], b'\\' | b'/'))
+}
+
+fn wsl_executable_exists(distro: &str, user: Option<&str>, path: &str) -> bool {
+    let mut command = Command::new("wsl.exe");
+    let mut arguments = wsl_exec_prefix(distro, user);
+    arguments.extend([
+        OsString::from("test"),
+        OsString::from("-f"),
+        OsString::from(path),
+        OsString::from("-a"),
+        OsString::from("-x"),
+        OsString::from(path),
+    ]);
+    command.args(arguments);
+    process::run_probe(&mut command).is_ok_and(|output| output.status.success())
+}
+
+fn explicit_executable_plan(
+    arguments: &[OsString],
+    config: &Config,
+) -> Result<Option<(dispatcher::ExecutionPlan, String)>, String> {
+    let Some(value) = arguments.first().and_then(|argument| argument.to_str()) else {
+        return Ok(None);
+    };
+    if !looks_like_explicit_executable(value) {
+        return Ok(None);
     }
+    let tool_arguments = &arguments[1..];
+    let windows_path = value.contains('\\')
+        || (value.len() >= 3 && value.as_bytes()[1] == b':')
+        || is_windows_launchable_path(value);
+    if windows_path {
+        let resolved = fs::canonicalize(value).map_err(|error| {
+            format!("explicit Windows executable `{value}` is unavailable: {error}")
+        })?;
+        if !resolved.is_file() || !is_windows_launchable_path(&resolved.to_string_lossy()) {
+            return Err(format!(
+                "explicit Windows executable `{value}` is not a launchable .exe, .com, .cmd, or .bat file"
+            ));
+        }
+        let cwd = config
+            .bridge_windows_cwd
+            .as_deref()
+            .map(PathBuf::from)
+            .or_else(|| env::current_dir().ok());
+        let executable = resolved.into_os_string();
+        let tool = Path::new(&executable)
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let request = dispatcher::CommandSpec {
+            executable: executable.clone(),
+            arguments: translate_arguments_for_provider(tool, tool_arguments, true),
+            cwd: cwd.clone(),
+            environment: forwarded_environment(config),
+            environment_policy: if config.bridge_windows_cwd.is_some() {
+                dispatcher::EnvironmentPolicy::Isolated
+            } else {
+                dispatcher::EnvironmentPolicy::Inherit
+            },
+            interactive: false,
+        };
+        return Ok(Some((
+            dispatcher::ExecutionPlan {
+                request,
+                candidate: dispatcher::RouteCandidate::Windows { executable, cwd },
+                adapter: dispatcher::OutputAdapter::Raw,
+                explanation: vec![dispatcher::DecisionReason(
+                    "explicit Windows executable path pins the Windows host".to_owned(),
+                )],
+            },
+            "explicit Windows executable path".to_owned(),
+        )));
+    }
+
+    let executable = if value.starts_with('/') {
+        value.to_owned()
+    } else {
+        let cwd = config.cwd.as_deref().ok_or_else(|| {
+            "relative Linux executable paths require a WSL-origin working directory".to_owned()
+        })?;
+        format!("{}/{}", cwd.trim_end_matches('/'), value)
+    };
+    if !wsl_executable_exists(&config.distro, config.user.as_deref(), &executable) {
+        return Err(format!(
+            "explicit WSL executable `{executable}` is missing or not executable in {}",
+            config.distro
+        ));
+    }
+    let cwd = config
+        .cwd
+        .clone()
+        .or_else(|| {
+            env::current_dir().ok().and_then(|path| {
+                mapped_windows_project_path(
+                    &config.distro,
+                    config.user.as_deref(),
+                    &path.to_string_lossy(),
+                )
+            })
+        })
+        .ok_or_else(|| "unable to map the current directory into WSL".to_owned())?;
+    let tool = executable.rsplit('/').next().unwrap_or_default();
+    let request = dispatcher::CommandSpec {
+        executable: OsString::from(&executable),
+        arguments: translate_arguments_for_provider(tool, tool_arguments, false),
+        cwd: Some(PathBuf::from(&cwd)),
+        environment: forwarded_environment(config),
+        environment_policy: dispatcher::EnvironmentPolicy::Isolated,
+        interactive: false,
+    };
+    let candidate = match installed_wsl_distributions()
+        .into_iter()
+        .find(|(distro, _)| distro == &config.distro)
+        .and_then(|(_, version)| version)
+    {
+        Some(1) => dispatcher::RouteCandidate::Wsl1 {
+            distro: config.distro.clone(),
+            executable: OsString::from(&executable),
+            cwd: PathBuf::from(&cwd),
+        },
+        _ => dispatcher::RouteCandidate::Wsl2 {
+            distro: config.distro.clone(),
+            executable: OsString::from(&executable),
+            cwd: PathBuf::from(&cwd),
+        },
+    };
+    Ok(Some((
+        dispatcher::ExecutionPlan {
+            request,
+            candidate,
+            adapter: dispatcher::OutputAdapter::Raw,
+            explanation: vec![dispatcher::DecisionReason(
+                "explicit Linux executable path pins the configured WSL host".to_owned(),
+            )],
+        },
+        "explicit WSL executable path".to_owned(),
+    )))
 }
 
 fn windows_tool_is_usable(
@@ -1420,12 +1554,10 @@ fn provider_dispatch_decision_from_resolution(
         && !is_verified_read_only_git(arguments);
     let eligible = |candidate: &&ProviderCandidate| {
         candidate.usable
-            && (!pin_windows_git || candidate.distro.is_none())
-            && match candidate.distro.as_deref() {
-                None => true,
-                Some(_) => wsl_route_for_version(candidate.wsl_version).is_some(),
-            }
-            && (config.output_adapter != OutputAdapterPreference::Rtk || candidate.rtk.is_some())
+            && candidate.has_consistent_location()
+            && (!pin_windows_git || candidate.is_windows())
+            && (config.output_adapter != OutputAdapterPreference::Rtk
+                || candidate.supports_adapter(AdapterKind::Rtk))
     };
     let preferred_wsl = resolution.project.distro.as_deref();
     let ordered_candidates: Vec<&ProviderCandidate> = if resolution.project.kind
@@ -1437,14 +1569,14 @@ fn provider_dispatch_decision_from_resolution(
             .filter(|candidate| eligible(candidate) && candidate.distro.as_deref() == preferred_wsl)
             .chain(resolution.candidates.iter().filter(|candidate| {
                 eligible(candidate)
-                    && candidate.distro.is_some()
+                    && candidate.is_wsl()
                     && candidate.distro.as_deref() != preferred_wsl
             }))
             .chain(
                 resolution
                     .candidates
                     .iter()
-                    .filter(|candidate| eligible(candidate) && candidate.distro.is_none()),
+                    .filter(|candidate| eligible(candidate) && candidate.is_windows()),
             )
             .collect()
     } else {
@@ -1477,21 +1609,25 @@ fn provider_dispatch_decision_from_resolution(
         .map(|(_, plan)| plan)
         .collect();
     let adapter_name = plan.adapter.as_str();
-    let location = candidate
-        .distro
-        .as_deref()
-        .map_or_else(|| "Windows".to_owned(), |distro| format!("WSL {distro}"));
-    let reason = if resolution.tool == "git" && candidate.distro.is_none() {
+    let location = if candidate.is_windows() {
+        "Windows".to_owned()
+    } else {
+        format!(
+            "WSL {}",
+            candidate.distro.as_deref().unwrap_or("unknown-distro")
+        )
+    };
+    let reason = if resolution.tool == "git" && candidate.is_windows() {
         format!(
             "native Git on Windows owns the NTFS worktree, object writes, credentials, and Windows DNS; selected {} with {} output",
-            candidate.kind.as_str(),
+            candidate.host.as_str(),
             adapter_name,
         )
     } else {
         format!(
             "on-demand {} discovery selected {} on {} with a verified project path and {} output adapter",
             resolution.tool,
-            candidate.kind.as_str(),
+            candidate.host.as_str(),
             location,
             adapter_name,
         )
@@ -1575,7 +1711,7 @@ fn print_provider_resolution(
             .unwrap_or("missing")
     );
     println!(
-        "windows_{}_identity={};version={};capabilities={}",
+        "windows_{}_identity={};version={};probe_status={:?};capabilities={}",
         resolution.tool,
         binary_identity_display(resolution.availability.windows.executable_identity.as_ref()),
         resolution
@@ -1584,6 +1720,7 @@ fn print_provider_resolution(
             .executable_version
             .as_deref()
             .unwrap_or("unknown"),
+        resolution.availability.windows.version_probe_status,
         resolution
             .availability
             .windows
@@ -1596,7 +1733,7 @@ fn print_provider_resolution(
     );
     for probe in &resolution.availability.wsl {
         println!(
-            "inspected_distro={};wsl_version={};{}_path={};{}_identity={};version={};capabilities={};rtk_path={};rtk_identity={}",
+            "inspected_distro={};wsl_version={};{}_path={};{}_identity={};version={};probe_status={:?};capabilities={};rtk_path={};rtk_identity={}",
             probe.distro,
             probe
                 .wsl_version
@@ -1606,6 +1743,7 @@ fn print_provider_resolution(
             resolution.tool,
             binary_identity_display(probe.executable_identity.as_ref()),
             probe.executable_version.as_deref().unwrap_or("unknown"),
+            probe.version_probe_status,
             probe.executable_capabilities.join(","),
             probe.rtk.as_deref().unwrap_or("missing"),
             binary_identity_display(probe.rtk_identity.as_ref())
@@ -1625,8 +1763,9 @@ fn print_provider_resolution(
     }
     for (index, candidate) in resolution.candidates.iter().enumerate() {
         println!(
-            "candidate_{index}={:?};distro={};usable={};executable={};reason={}",
-            candidate.kind,
+            "candidate_{index}={:?};adapters={:?};distro={};usable={};executable={};reason={}",
+            candidate.host,
+            candidate.adapters,
             candidate.distro.as_deref().unwrap_or("windows"),
             candidate.usable,
             candidate.executable,
@@ -1789,7 +1928,7 @@ fn provider_scan_command(arguments: &[OsString], config: &Config) -> ExitCode {
         let recommended = resolution
             .recommended
             .and_then(|index| resolution.candidates.get(index))
-            .map_or("missing", |candidate| candidate.kind.as_str());
+            .map_or("missing", |candidate| candidate.host.as_str());
         println!(
             "tool={tool}; cache={}; candidates={}; recommended={recommended}",
             resolution.cache,
@@ -1807,9 +1946,7 @@ fn has_complete_go_provider(resolution: &ProviderResolution) -> bool {
         return true;
     }
     resolution.candidates.iter().any(|candidate| {
-        candidate.usable
-            && candidate.distro.is_some()
-            && wsl_route_for_version(candidate.wsl_version).is_some()
+        candidate.usable && candidate.is_wsl() && candidate.has_consistent_location()
     })
 }
 
@@ -1910,7 +2047,7 @@ fn setup_generic_plan_from_resolution(resolution: &ProviderResolution) -> SetupP
         mode: "diagnostic-only",
         status: "blocked",
         reason: format!(
-            "{}; WAD will not guess an installer, package manager, or dependency chain for a generic tool",
+            "{}; XUVA will not guess an installer, package manager, or dependency chain for a generic tool",
             resolution.diagnosis
         ),
         proposed_provider: None,
@@ -1952,7 +2089,7 @@ fn print_setup_plan(plan: &SetupPlan, json: bool) -> ExitCode {
 }
 
 fn setup_transaction_path() -> PathBuf {
-    wad_data_root().join("setup-transaction-v1.json")
+    xuva_data_root().join("setup-transaction-v1.json")
 }
 
 fn load_setup_transaction() -> Option<SetupTransaction> {
@@ -2201,14 +2338,14 @@ fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
     apply_setup_plan(&plan, config, json)
 }
 
-fn wad_policy_path() -> PathBuf {
+fn policy_path() -> PathBuf {
     env::var_os("XUVA_POLICY_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|| wad_data_root().join("route-policy-v2.json"))
+        .unwrap_or_else(|| xuva_data_root().join("route-policy-v2.json"))
 }
 
 fn load_route_policy() -> Option<RoutePolicyFile> {
-    let path = wad_policy_path();
+    let path = policy_path();
     let contents = fs::read_to_string(path).ok()?;
     let policy = serde_json::from_str(&contents).ok()?;
     validate_route_policy(&policy).ok()?;
@@ -2217,7 +2354,7 @@ fn load_route_policy() -> Option<RoutePolicyFile> {
 
 fn validate_route_policy(policy: &RoutePolicyFile) -> Result<(), String> {
     if policy.schema_version != ROUTE_POLICY_SCHEMA_VERSION
-        || policy.manifest_version != command_manifest().upstream_rtk_version
+        || policy.manifest_version != adapter_contract_id()
         || policy.context_signature.len() != 16
         || policy.evidence.is_empty()
     {
@@ -2282,7 +2419,7 @@ fn import_route_policy(source: &Path, config: &Config) -> Result<(), String> {
     if incoming.context_signature != expected_context {
         return Err("policy evidence was measured for a different local adapter context; run `xuva policy context` and re-benchmark".to_owned());
     }
-    let destination = wad_policy_path();
+    let destination = policy_path();
     let existing = if destination.exists() {
         let contents = fs::read_to_string(&destination)
             .map_err(|error| format!("unable to read existing route policy: {error}"))?;
@@ -2312,7 +2449,7 @@ fn import_route_policy(source: &Path, config: &Config) -> Result<(), String> {
 }
 
 fn calibration_path() -> PathBuf {
-    wad_data_root().join("calibration-v2.json")
+    xuva_data_root().join("calibration-v2.json")
 }
 
 fn validate_calibration(file: &CalibrationFile) -> Result<(), String> {
@@ -2323,7 +2460,7 @@ fn validate_calibration(file: &CalibrationFile) -> Result<(), String> {
     for entry in &file.entries {
         if entry.signature.len() != 16
             || entry.key.trim().is_empty()
-            || entry.manifest_version != command_manifest().upstream_rtk_version
+            || entry.manifest_version != adapter_contract_id()
             || entry.context_signature.len() != 16
             || entry.native_input_tokens < 0
             || entry.native_saved_tokens < 0
@@ -2340,6 +2477,25 @@ fn validate_calibration(file: &CalibrationFile) -> Result<(), String> {
     Ok(())
 }
 
+fn calibration_for_current_contract(mut file: CalibrationFile) -> Result<CalibrationFile, String> {
+    if file.schema_version == 1 {
+        return Ok(CalibrationFile {
+            schema_version: CALIBRATION_SCHEMA_VERSION,
+            entries: Vec::new(),
+        });
+    }
+    if file.schema_version != CALIBRATION_SCHEMA_VERSION {
+        return Err("calibration state uses an unsupported schema version".to_owned());
+    }
+
+    // Adapter upgrades intentionally invalidate measurements made against the
+    // previous contract. They are stale evidence, not corrupt user state.
+    file.entries
+        .retain(|entry| entry.manifest_version == adapter_contract_id());
+    validate_calibration(&file)?;
+    Ok(file)
+}
+
 fn load_calibration() -> Result<CalibrationFile, String> {
     let path = calibration_path();
     if !path.exists() {
@@ -2352,14 +2508,7 @@ fn load_calibration() -> Result<CalibrationFile, String> {
         .map_err(|error| format!("unable to read local calibration state: {error}"))?;
     let file: CalibrationFile = serde_json::from_str(&contents)
         .map_err(|error| format!("local calibration state is invalid: {error}"))?;
-    if file.schema_version == 1 {
-        return Ok(CalibrationFile {
-            schema_version: CALIBRATION_SCHEMA_VERSION,
-            entries: Vec::new(),
-        });
-    }
-    validate_calibration(&file)?;
-    Ok(file)
+    calibration_for_current_contract(file)
 }
 
 fn save_calibration(file: &CalibrationFile) -> Result<(), String> {
@@ -2379,7 +2528,7 @@ fn save_calibration(file: &CalibrationFile) -> Result<(), String> {
 }
 
 fn calibration_key(arguments: &[OsString]) -> Option<&'static str> {
-    match wad_command_family(arguments) {
+    match command_family(arguments) {
         "git" if is_verified_read_only_git(arguments) => Some("git:read-only"),
         "rg" => Some("rg"),
         "npm" if is_verified_npm_run_list_operation(arguments) => Some("npm:run-list"),
@@ -2411,7 +2560,7 @@ fn adaptive_context_signature(config: &Config) -> String {
             hash = hash.wrapping_mul(0x100000001b3);
         }
     };
-    append(&command_manifest().upstream_rtk_version);
+    append(&adapter_contract_id());
     append(config.environment.as_str());
     append(&config.native_rtk_path);
     append(&env::var_os("PATH").unwrap_or_default().to_string_lossy());
@@ -2453,7 +2602,7 @@ fn calibration_plan(
     Ok(Some(CalibrationPlan {
         signature,
         key: key.to_owned(),
-        manifest_version: command_manifest().upstream_rtk_version.clone(),
+        manifest_version: adapter_contract_id(),
         context_signature: context_signature.to_owned(),
         route,
         reason,
@@ -2466,7 +2615,7 @@ fn calibration_entry_matches(
     context_signature: &str,
 ) -> bool {
     entry.signature == signature
-        && entry.manifest_version == command_manifest().upstream_rtk_version
+        && entry.manifest_version == adapter_contract_id()
         && entry.context_signature == context_signature
 }
 
@@ -2997,10 +3146,9 @@ fn terminate_dedicated_wsl1_distro(config: &Config) {
         "terminating dedicated WSL1 distro {} after cancellation",
         config.distro
     ));
-    match Command::new("wsl.exe")
-        .args(["--terminate", &config.distro])
-        .output()
-    {
+    let mut command = Command::new("wsl.exe");
+    command.args(["--terminate", &config.distro]);
+    match process::run_probe(&mut command) {
         Ok(output) if output.status.success() => {}
         Ok(output) => trace(format!(
             "WSL1 terminate returned {}: {}{}",
@@ -3066,7 +3214,7 @@ fn wait_for_wsl1_child(mut child: Child, config: &Config) -> std::io::Result<Exi
     }
 }
 
-fn wad_command_family(arguments: &[OsString]) -> &str {
+fn command_family(arguments: &[OsString]) -> &str {
     arguments
         .first()
         .and_then(|argument| argument.to_str())
@@ -3135,7 +3283,7 @@ fn is_verified_go_test_all_operation(arguments: &[OsString]) -> bool {
 }
 
 fn route_policy_key(arguments: &[OsString]) -> Option<String> {
-    match wad_command_family(arguments) {
+    match command_family(arguments) {
         "git" => git_subcommand(arguments).map(|subcommand| format!("git:{subcommand}")),
         "rg" => Some("rg".to_owned()),
         "cargo" => arguments
@@ -3149,15 +3297,15 @@ fn route_policy_key(arguments: &[OsString]) -> Option<String> {
 }
 
 #[cfg(test)]
-fn auto_wad_route(
+fn auto_route(
     arguments: &[OsString],
     current_directory: Option<&str>,
     policy: Option<&RoutePolicyFile>,
 ) -> (Route, &'static str) {
-    auto_wad_route_with_context(arguments, current_directory, policy, None)
+    auto_route_with_context(arguments, current_directory, policy, None)
 }
 
-fn auto_wad_route_with_context(
+fn auto_route_with_context(
     arguments: &[OsString],
     current_directory: Option<&str>,
     policy: Option<&RoutePolicyFile>,
@@ -3179,14 +3327,14 @@ fn auto_wad_route_with_context(
     }) {
         let permitted = match route {
             Route::Raw => {
-                wad_command_family(arguments) == "rg"
+                command_family(arguments) == "rg"
                     || is_verified_read_only_git(arguments)
                     || is_verified_cargo_operation(arguments)
                     || is_verified_npm_run_list_operation(arguments)
                     || is_verified_go_test_all_operation(arguments)
             }
             Route::NativeRtk => {
-                wad_command_family(arguments) == "rg"
+                command_family(arguments) == "rg"
                     || is_verified_read_only_git(arguments)
                     || is_verified_cargo_operation(arguments)
                     || is_verified_npm_run_list_operation(arguments)
@@ -3205,12 +3353,12 @@ fn auto_wad_route_with_context(
             );
         }
     }
-    match command_surface(wad_command_family(arguments)) {
+    match command_surface(command_family(arguments)) {
         CommandSurface::RawNative => (
             Route::Raw,
             "command manifest selects the validated Windows raw provider",
         ),
-        CommandSurface::NativeStructured if wad_command_family(arguments) == "git" => {
+        CommandSurface::NativeStructured if command_family(arguments) == "git" => {
             if is_verified_read_only_git(arguments) {
                 (
                     Route::NativeRtk,
@@ -3231,14 +3379,14 @@ fn auto_wad_route_with_context(
             Route::Wsl1,
             "command manifest retains the conservative isolated Linux RTK contract",
         ),
-        CommandSurface::WadInternal => (
+        CommandSurface::CoreInternal => (
             Route::Wsl1,
-            "RTK command is internal to WAD only when invoked through its dedicated interface",
+            "RTK command is internal to XUVA only when invoked through its dedicated interface",
         ),
-        CommandSurface::Unknown => match wad_command_family(arguments) {
+        CommandSurface::Unknown => match command_family(arguments) {
             "dart" | "flutter" => (
                 Route::Raw,
-                "WAD-owned Windows SDK shim executes once without an RTK adapter",
+                "XUVA-owned Windows SDK shim executes once without an RTK adapter",
             ),
             _ => (
                 Route::Wsl1,
@@ -3280,7 +3428,7 @@ fn is_rtk_meta_command(command: &str) -> bool {
     )
 }
 
-fn auto_wad_route_for_environment(
+fn auto_route_for_environment(
     arguments: &[OsString],
     current_directory: Option<&str>,
     policy: Option<&RoutePolicyFile>,
@@ -3288,16 +3436,11 @@ fn auto_wad_route_for_environment(
     environment: ExecutionEnvironment,
 ) -> (Route, &'static str) {
     if environment == ExecutionEnvironment::Adaptive {
-        return auto_wad_route_with_context(
-            arguments,
-            current_directory,
-            policy,
-            context_signature,
-        );
+        return auto_route_with_context(arguments, current_directory, policy, context_signature);
     }
 
-    let command = wad_command_family(arguments);
-    if is_rtk_meta_command(command) || command_surface(command) == CommandSurface::WadInternal {
+    let command = command_family(arguments);
+    if is_rtk_meta_command(command) || command_surface(command) == CommandSurface::CoreInternal {
         return (
             Route::NativeRtk,
             "windows-only environment requires native RTK for an RTK meta command",
@@ -3320,7 +3463,7 @@ fn auto_wad_route_for_environment(
             Route::Raw,
             "windows-only environment disables automatic WSL routing and uses the native command",
         ),
-        CommandSurface::WadInternal => unreachable!("WAD internal commands were handled above"),
+        CommandSurface::CoreInternal => unreachable!("XUVA core commands were handled above"),
     }
 }
 
@@ -3348,7 +3491,7 @@ fn print_adapter_info(config: &Config) {
     println!("adapter={PRODUCT_COMMAND}");
     println!("command={PRODUCT_COMMAND}");
     println!("profile={}", config.profile.as_str());
-    println!("route_preference={}", config.wad_route.as_str());
+    println!("route_preference={}", config.route_preference.as_str());
     println!("environment={}", config.environment.as_str());
     println!(
         "environment_allowlist={}",
@@ -3360,13 +3503,41 @@ fn print_adapter_info(config: &Config) {
     );
     println!("environment_boolean_feature_gates=automatic");
     println!("native_rtk_path={}", config.native_rtk_path);
-    println!("metrics=local-aggregate-only");
+    println!(
+        "metrics={}",
+        if config.metrics_enabled {
+            "local-aggregate-only"
+        } else {
+            "off"
+        }
+    );
+}
+
+fn begin_invocation_metrics(
+    config: &Config,
+    adapter: &dispatcher::OutputAdapter,
+) -> Option<XuvaMetrics> {
+    if !config.metrics_enabled {
+        return None;
+    }
+    let result = if matches!(adapter, dispatcher::OutputAdapter::Raw) {
+        XuvaMetrics::begin_unmeasured()
+    } else {
+        XuvaMetrics::begin()
+    };
+    match result {
+        Ok(metrics) => Some(metrics),
+        Err(error) => {
+            eprintln!("xuva: metrics disabled for this invocation: {error}");
+            None
+        }
+    }
 }
 
 fn run_native_rtk(
     arguments: &[OsString],
     config: &Config,
-    metrics: Option<&WadMetrics>,
+    metrics: Option<&XuvaMetrics>,
 ) -> std::io::Result<ExitStatus> {
     adapters::windows::run_rtk_at(&config.native_rtk_path, arguments, None, metrics)
 }
@@ -3384,17 +3555,39 @@ fn provider_adapter(
     preference: OutputAdapterPreference,
 ) -> Result<dispatcher::OutputAdapter, std::io::Error> {
     match (preference, candidate.rtk.as_deref()) {
-        (OutputAdapterPreference::Raw, _) | (OutputAdapterPreference::Auto, None) => {
+        (OutputAdapterPreference::Raw, _) if candidate.supports_adapter(AdapterKind::Raw) => {
             Ok(dispatcher::OutputAdapter::Raw)
         }
-        (OutputAdapterPreference::Auto | OutputAdapterPreference::Rtk, Some(executable)) => {
+        (OutputAdapterPreference::Raw, _) => Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "raw output was requested but this provider has no raw tool executable",
+        )),
+        (OutputAdapterPreference::Auto, None) if candidate.supports_adapter(AdapterKind::Raw) => {
+            Ok(dispatcher::OutputAdapter::Raw)
+        }
+        (OutputAdapterPreference::Auto, None) => Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "this provider has neither a raw executable nor a usable output adapter",
+        )),
+        (OutputAdapterPreference::Auto | OutputAdapterPreference::Rtk, Some(executable))
+            if candidate.supports_adapter(AdapterKind::Rtk) =>
+        {
             Ok(dispatcher::OutputAdapter::Rtk {
                 executable: OsString::from(executable),
             })
         }
-        (OutputAdapterPreference::Rtk, None) => Err(std::io::Error::new(
+        (OutputAdapterPreference::Rtk, _) => Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "RTK output adapter was requested but this provider has no RTK executable",
+        )),
+        (OutputAdapterPreference::Auto, Some(_))
+            if candidate.supports_adapter(AdapterKind::Raw) =>
+        {
+            Ok(dispatcher::OutputAdapter::Raw)
+        }
+        (OutputAdapterPreference::Auto, Some(_)) => Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "the configured adapter is not usable and no raw tool executable exists",
         )),
     }
 }
@@ -3444,13 +3637,26 @@ fn execution_plan_for_provider_candidate(
             "provider candidate has no verified project directory",
         )
     })?;
-    let adapter = if (tool == "git" && candidate.distro.is_none())
+    if !candidate.has_consistent_location() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "provider host, distribution, and WSL version are inconsistent",
+        ));
+    }
+    let raw_required = (tool == "git" && candidate.is_windows())
         || requires_raw_posix_provider(tool)
         || (config.output_adapter == OutputAdapterPreference::Auto
             && matches!(
                 command_surface(tool),
                 CommandSurface::RawNative | CommandSurface::Unknown
-            )) {
+            ));
+    let adapter = if raw_required {
+        if !candidate.supports_adapter(AdapterKind::Raw) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "this command requires raw semantics but the provider has no raw tool executable",
+            ));
+        }
         // Git for Windows owns NTFS worktrees, object creation, credentials,
         // and Windows network configuration. Keep it raw so an output adapter
         // cannot turn a successful native operation into a failed WSL one.
@@ -3458,39 +3664,41 @@ fn execution_plan_for_provider_candidate(
     } else {
         provider_adapter(candidate, config.output_adapter)?
     };
-    let route_is_windows = candidate.distro.is_none();
-    let translated_arguments = arguments
-        .iter()
-        .map(|argument| translate_argument_for_provider(argument, route_is_windows))
-        .collect();
+    let route_is_windows = candidate.is_windows();
+    let translated_arguments = translate_arguments_for_provider(tool, arguments, route_is_windows);
     let request = dispatcher::CommandSpec {
         executable: OsString::from(tool),
         arguments: translated_arguments,
         cwd: Some(PathBuf::from(cwd)),
         environment: forwarded_environment(config),
+        environment_policy: if candidate.is_windows() && config.bridge_windows_cwd.is_some() {
+            dispatcher::EnvironmentPolicy::Isolated
+        } else {
+            dispatcher::EnvironmentPolicy::Inherit
+        },
         interactive: false,
     };
-    let route = match (candidate.distro.as_deref(), candidate.wsl_version) {
-        (None, _) => dispatcher::RouteCandidate::Windows {
+    let route = match candidate.host {
+        ProviderHost::Windows => dispatcher::RouteCandidate::Windows {
             executable: OsString::from(&candidate.executable),
             cwd: Some(PathBuf::from(cwd)),
         },
-        (Some(distro), Some(1)) => dispatcher::RouteCandidate::Wsl1 {
-            distro: distro.to_owned(),
+        ProviderHost::Wsl1 => dispatcher::RouteCandidate::Wsl1 {
+            distro: candidate
+                .distro
+                .clone()
+                .expect("consistent WSL1 candidates have a distro"),
             executable: OsString::from(&candidate.executable),
             cwd: PathBuf::from(cwd),
         },
-        (Some(distro), Some(2)) => dispatcher::RouteCandidate::Wsl2 {
-            distro: distro.to_owned(),
+        ProviderHost::Wsl2 => dispatcher::RouteCandidate::Wsl2 {
+            distro: candidate
+                .distro
+                .clone()
+                .expect("consistent WSL2 candidates have a distro"),
             executable: OsString::from(&candidate.executable),
             cwd: PathBuf::from(cwd),
         },
-        (Some(_), _) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "WSL provider has no supported WSL version",
-            ));
-        }
     };
     Ok(dispatcher::ExecutionPlan {
         request,
@@ -3518,21 +3726,6 @@ fn is_shell_operator_command(arguments: &[OsString]) -> bool {
         arguments.first().and_then(|argument| argument.to_str()),
         Some("|" | "||" | "&&" | ";" | "<" | ">" | ">>")
     )
-}
-
-fn translate_argument_for_provider(argument: &OsString, windows: bool) -> OsString {
-    let Some(value) = argument.to_str() else {
-        return argument.clone();
-    };
-    if windows {
-        wsl_path_to_windows_path(value)
-            .map(OsString::from)
-            .unwrap_or_else(|| argument.clone())
-    } else {
-        windows_path_to_wsl_path(value)
-            .map(OsString::from)
-            .unwrap_or_else(|| argument.clone())
-    }
 }
 
 fn forwarded_environment(config: &Config) -> Vec<(OsString, OsString)> {
@@ -3577,7 +3770,7 @@ fn should_forward_environment(
 fn run_execution_plan(
     plan: &dispatcher::ExecutionPlan,
     config: &Config,
-    metrics: Option<&WadMetrics>,
+    metrics: Option<&XuvaMetrics>,
 ) -> std::io::Result<ExitStatus> {
     let rtk_arguments = || {
         let mut forwarded = Vec::with_capacity(plan.request.arguments.len() + 1);
@@ -3694,17 +3887,7 @@ fn provider_exec_command(arguments: &[OsString], config: &Config) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let started = Instant::now();
-    let metrics = match if matches!(plan.adapter, dispatcher::OutputAdapter::Raw) {
-        WadMetrics::begin_unmeasured()
-    } else {
-        WadMetrics::begin()
-    } {
-        Ok(metrics) => Some(metrics),
-        Err(error) => {
-            eprintln!("xuva: metrics disabled for this invocation: {error}");
-            None
-        }
-    };
+    let metrics = begin_invocation_metrics(config, &plan.adapter);
     let result = run_execution_plan(&plan, config, metrics.as_ref());
     if needs_console_handler {
         console::uninstall();
@@ -3715,7 +3898,11 @@ fn provider_exec_command(arguments: &[OsString], config: &Config) -> ExitCode {
         .and_then(|status| status.code())
         .unwrap_or(1);
     if let Some(metrics) = metrics {
-        let command_family = format!("provider:{}", candidate.kind.as_str());
+        let command_family = format!(
+            "provider:{}:{}",
+            candidate.host.as_str(),
+            plan.adapter.as_str()
+        );
         if let Err(error) = metrics.finish(
             route.as_str(),
             &command_family,
@@ -3739,7 +3926,7 @@ fn run_wsl_route(
     arguments: Vec<OsString>,
     config: &Config,
     route: Route,
-    metrics: Option<&WadMetrics>,
+    metrics: Option<&XuvaMetrics>,
 ) -> std::io::Result<ExitStatus> {
     let metrics_path = metrics.and_then(|metrics| {
         windows_path_to_wsl_path(&metrics.scratch_windows_path().to_string_lossy())
@@ -3772,7 +3959,7 @@ fn run_wsl_execution_plan(
     environment: &[(OsString, OsString)],
     config: &Config,
     route: Route,
-    metrics: Option<&WadMetrics>,
+    metrics: Option<&XuvaMetrics>,
 ) -> std::io::Result<ExitStatus> {
     let metrics_path = metrics.and_then(|metrics| {
         windows_path_to_wsl_path(&metrics.scratch_windows_path().to_string_lossy())
@@ -3808,7 +3995,7 @@ fn run_wsl_execution_plan(
     }
 }
 
-fn parse_wad_options(
+fn parse_options(
     mut arguments: Vec<OsString>,
     configured: Route,
     configured_environment: ExecutionEnvironment,
@@ -3849,6 +4036,23 @@ fn is_version_command(arguments: &[OsString]) -> bool {
         )
 }
 
+fn is_verbose_version_command(arguments: &[OsString]) -> bool {
+    arguments
+        == [
+            OsString::from(VERSION_ARGUMENT),
+            OsString::from("--verbose"),
+        ]
+}
+
+fn print_verbose_version() {
+    println!("{PRODUCT_COMMAND} {}", env!("CARGO_PKG_VERSION"));
+    println!("commit={}", env!("XUVA_BUILD_COMMIT"));
+    println!("target={}", env!("XUVA_BUILD_TARGET"));
+    println!("profile={}", env!("XUVA_BUILD_PROFILE"));
+    println!("provenance={}", env!("XUVA_BUILD_PROVENANCE"));
+    println!("provider_cache_schema={PROVIDER_CACHE_SCHEMA_VERSION}");
+}
+
 fn print_help() {
     println!("XUVA {}", env!("CARGO_PKG_VERSION"));
     println!("usage: xuva [--explain-route] <command> [<argv>...]");
@@ -3859,18 +4063,45 @@ fn print_help() {
     println!("  xuva self-update --check");
     println!("  xuva surface");
     println!();
+    println!("lifecycle:");
+    println!("  xuva install --status");
+    println!("  xuva rollback");
+    println!("  xuva uninstall [--remove-from-path]");
+    println!();
     println!(
         "Shell operators are owned by the invoking shell. XUVA preserves argv and never rebuilds a pipeline."
     );
 }
 
-fn parsed_stable_version(value: &str) -> Option<(u64, u64, u64)> {
+fn parsed_version(value: &str) -> Option<((u64, u64, u64), bool)> {
     let value = value.trim().trim_start_matches('v');
-    let mut fields = value.split('.');
+    let (core, prerelease) = match value.split_once('-') {
+        Some((core, suffix)) if !suffix.trim().is_empty() => (core, true),
+        Some(_) => return None,
+        None => (value, false),
+    };
+    let mut fields = core.split('.');
     let major = fields.next()?.parse().ok()?;
     let minor = fields.next()?.parse().ok()?;
     let patch = fields.next()?.parse().ok()?;
-    fields.next().is_none().then_some((major, minor, patch))
+    fields
+        .next()
+        .is_none()
+        .then_some(((major, minor, patch), prerelease))
+}
+
+fn parsed_stable_version(value: &str) -> Option<(u64, u64, u64)> {
+    parsed_version(value)
+        .filter(|(_, prerelease)| !prerelease)
+        .map(|(version, _)| version)
+}
+
+fn stable_release_is_newer(latest: &str, current: &str) -> bool {
+    parsed_stable_version(latest)
+        .zip(parsed_version(current))
+        .is_some_and(|(latest, (current, prerelease))| {
+            latest > current || (latest == current && prerelease)
+        })
 }
 
 fn latest_release_from_ls_remote(output: &str) -> Option<String> {
@@ -3887,38 +4118,19 @@ fn native_git_output_with_timeout(
     arguments: &[&str],
     timeout: Duration,
 ) -> std::io::Result<(ExitStatus, String, String)> {
-    let mut child = Command::new("git.exe")
-        .args(arguments)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let started = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait()? {
-            let mut stdout = Vec::new();
-            let mut stderr = Vec::new();
-            if let Some(mut pipe) = child.stdout.take() {
-                pipe.read_to_end(&mut stdout)?;
-            }
-            if let Some(mut pipe) = child.stderr.take() {
-                pipe.read_to_end(&mut stderr)?;
-            }
-            return Ok((
-                status,
-                String::from_utf8_lossy(&stdout).into_owned(),
-                String::from_utf8_lossy(&stderr).into_owned(),
-            ));
-        }
-        if started.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "native Git release check timed out after 10 seconds",
-            ));
-        }
-        thread::sleep(Duration::from_millis(25));
+    let mut command = Command::new("git.exe");
+    command.args(arguments);
+    let output = process::run_bounded(&mut command, None, timeout, process::PROBE_OUTPUT_LIMIT)?;
+    if output.stdout_truncated || output.stderr_truncated {
+        return Err(std::io::Error::other(
+            "native Git release check exceeded the output limit",
+        ));
     }
+    Ok((
+        output.status,
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
 }
 
 fn self_update_command(arguments: &[OsString]) -> ExitCode {
@@ -3968,9 +4180,7 @@ fn self_update_command(arguments: &[OsString]) -> ExitCode {
         eprintln!("xuva: update check returned no stable vMAJOR.MINOR.PATCH release tags");
         return ExitCode::FAILURE;
     };
-    let update_available = parsed_stable_version(&latest)
-        .zip(parsed_stable_version(current))
-        .is_some_and(|(latest, current)| latest > current);
+    let update_available = stable_release_is_newer(&latest, current);
     println!("current={current}");
     println!("latest={}", latest.trim_start_matches('v'));
     println!(
@@ -3985,7 +4195,11 @@ fn self_update_command(arguments: &[OsString]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
+fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
+    if is_verbose_version_command(&arguments) {
+        print_verbose_version();
+        return ExitCode::SUCCESS;
+    }
     if is_version_command(&arguments) {
         println!("{PRODUCT_COMMAND} {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
@@ -3994,6 +4208,9 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     {
         print_help();
         return ExitCode::SUCCESS;
+    }
+    if let Some(result) = lifecycle::command(&arguments) {
+        return result;
     }
     if arguments
         .first()
@@ -4130,7 +4347,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if arguments.len() == 1 && (arguments[0] == "gain" || arguments[0] == "stats") {
-        return match WadMetrics::print_gain() {
+        return match XuvaMetrics::print_gain() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("xuva: {error}");
@@ -4139,7 +4356,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         };
     }
     let (arguments, requested_route, environment, explain) =
-        match parse_wad_options(arguments, config.wad_route, config.environment) {
+        match parse_options(arguments, config.route_preference, config.environment) {
             Ok(options) => options,
             Err(error) => {
                 eprintln!("xuva: {error}");
@@ -4166,7 +4383,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     let adaptive_context = adaptive_context_signature(&invocation_config);
     let policy = load_route_policy();
     let (initial_route, initial_reason) = if requested_route == Route::Auto {
-        auto_wad_route_for_environment(
+        auto_route_for_environment(
             &arguments,
             current_directory.as_deref().and_then(|path| path.to_str()),
             policy.as_ref(),
@@ -4210,7 +4427,19 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
             }
         }
     };
-    if requested_route == Route::Auto && environment == ExecutionEnvironment::Adaptive {
+    let explicit_plan = match explicit_executable_plan(&arguments, &invocation_config) {
+        Ok(plan) => plan,
+        Err(error) => {
+            eprintln!("xuva: {error}");
+            return ExitCode::from(127);
+        }
+    };
+    if let Some((plan, explicit_reason)) = explicit_plan {
+        route = execution_route(&plan.candidate);
+        selected_adapter = dispatcher::OutputAdapter::Raw;
+        execution_plan = Some(plan);
+        reason = explicit_reason;
+    } else if requested_route == Route::Auto && environment == ExecutionEnvironment::Adaptive {
         match provider_dispatch_decision(&arguments, &invocation_config, route) {
             ProviderDispatchDecision::KeepStaticRoute => {}
             ProviderDispatchDecision::UsePlan {
@@ -4236,7 +4465,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         println!("route={}", route.as_str());
         println!("output_adapter={}", selected_adapter.as_str());
         println!("reason={reason}");
-        println!("command_family={}", wad_command_family(&arguments));
+        println!("command_family={}", command_family(&arguments));
         return if provider_missing.is_some() {
             ExitCode::from(127)
         } else {
@@ -4255,17 +4484,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     } else if needs_console_handler {
         console_installed = true;
     }
-    let metrics = match if matches!(selected_adapter, dispatcher::OutputAdapter::Raw) {
-        WadMetrics::begin_unmeasured()
-    } else {
-        WadMetrics::begin()
-    } {
-        Ok(metrics) => Some(metrics),
-        Err(error) => {
-            eprintln!("xuva: metrics disabled for this invocation: {error}");
-            None
-        }
-    };
+    let metrics = begin_invocation_metrics(&invocation_config, &selected_adapter);
     let mut executed_route = route;
     let result = if let Some(plan) = execution_plan.as_ref() {
         let mut result = run_execution_plan(plan, &invocation_config, metrics.as_ref());
@@ -4347,7 +4566,7 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     let totals = if let Some(metrics) = metrics {
         match metrics.finish(
             executed_route.as_str(),
-            wad_command_family(&arguments),
+            command_family(&arguments),
             elapsed,
             exit_code,
         ) {
@@ -4360,7 +4579,8 @@ fn wad_main(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     } else {
         TokenTotals::default()
     };
-    if let Some(plan) = &calibration
+    if invocation_config.metrics_enabled
+        && let Some(plan) = &calibration
         && let Err(error) = record_calibration(plan, executed_route, elapsed, exit_code, totals)
     {
         eprintln!("xuva: local calibration was not recorded: {error}");
@@ -4383,9 +4603,19 @@ fn main() -> ExitCode {
     // This is intentionally before bridge decoding and environment parsing:
     // a local version query must remain instant even when WSL is unavailable
     // or a caller has an invalid dispatcher configuration.
+    if is_verbose_version_command(&original_arguments) {
+        print_verbose_version();
+        return ExitCode::SUCCESS;
+    }
     if is_version_command(&original_arguments) {
         println!("{PRODUCT_COMMAND} {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
+    }
+    // Lifecycle recovery must remain available even when a stale environment
+    // contains invalid routing configuration. WSL bridge requests are decoded
+    // below and receive the same handling inside `run_cli`.
+    if let Some(result) = lifecycle::command(&original_arguments) {
+        return result;
     }
     let bridge = match wsl_bridge_request(&original_arguments) {
         Ok(bridge) => bridge,
@@ -4411,7 +4641,7 @@ fn main() -> ExitCode {
     } else {
         original_arguments
     };
-    wad_main(arguments, &config)
+    run_cli(arguments, &config)
 }
 
 #[cfg(test)]
@@ -4430,6 +4660,10 @@ mod tests {
                 "{argument}"
             );
         }
+        assert!(is_verbose_version_command(&[
+            OsString::from("--version"),
+            OsString::from("--verbose")
+        ]));
         assert!(!is_version_command(&[
             OsString::from("go"),
             OsString::from("version")
@@ -4539,6 +4773,7 @@ mod tests {
             arguments: vec![OsString::from("space value"), OsString::from("$literal")],
             cwd: Some(PathBuf::from(r"E:\work")),
             environment: vec![(OsString::from("P7_OVERLAY"), OsString::from("enabled"))],
+            environment_policy: dispatcher::EnvironmentPolicy::Isolated,
             interactive: true,
         };
         let mut command = Command::new("fixture.exe");
@@ -4725,7 +4960,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_wsl1_backend_selects_the_isolated_distro_without_affecting_default_wad() {
+    fn explicit_wsl1_backend_selects_the_isolated_distro_without_affecting_default_xuva() {
         let default = default_config();
         assert_eq!(default.backend, WslBackend::Auto);
         assert_eq!(default.distro, DEFAULT_DISTRO);
@@ -4740,7 +4975,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_backend_and_distro_select_the_wad_wsl_provider() {
+    fn explicit_backend_and_distro_select_the_xuva_wsl_provider() {
         let config = Config::from_lookup(|name| match name {
             "XUVA_WSL_BACKEND" => Some("wsl2".to_owned()),
             "XUVA_WSL_DISTRO" => Some("Ubuntu-24.04".to_owned()),
@@ -4758,18 +4993,30 @@ mod tests {
     }
 
     #[test]
-    fn canonical_wad_configuration_is_adaptive_by_default() {
-        let wad = default_config();
-        assert_eq!(wad.profile, ExecutableProfile::Wad);
-        assert_eq!(wad.backend, WslBackend::Auto);
-        assert_eq!(wad.wad_route, Route::Auto);
+    fn canonical_xuva_configuration_is_adaptive_by_default() {
+        let xuva = default_config();
+        assert_eq!(xuva.profile, ExecutableProfile::Xuva);
+        assert_eq!(xuva.backend, WslBackend::Auto);
+        assert_eq!(xuva.route_preference, Route::Auto);
+        assert!(xuva.metrics_enabled);
+
+        let metrics_off =
+            Config::from_lookup(|name| (name == "XUVA_METRICS").then(|| "off".to_owned()))
+                .expect("metrics can be disabled explicitly");
+        assert!(!metrics_off.metrics_enabled);
+        assert!(
+            Config::from_lookup(|name| { (name == "XUVA_METRICS").then(|| "remote".to_owned()) })
+                .is_err()
+        );
     }
 
     #[test]
     fn embedded_command_surface_is_complete_and_non_overlapping() {
         let report = command_surface_report();
-        assert_eq!(report.schema_version, 1);
-        assert_eq!(report.upstream_rtk_version, "0.43.0");
+        assert_eq!(report.schema_version, 2);
+        assert_eq!(report.adapter.name, "rtk");
+        assert_eq!(report.adapter.version, "0.43.0");
+        assert_eq!(report.adapter.protocol_version, 1);
         assert_eq!(report.upstream_command_count, 69);
         let names = report
             .commands
@@ -4786,27 +5033,24 @@ mod tests {
         assert_eq!(command_surface("git"), CommandSurface::NativeStructured);
         assert_eq!(command_surface("go"), CommandSurface::RawNative);
         assert_eq!(command_surface("proxy"), CommandSurface::Wsl1Conservative);
-        assert_eq!(command_surface("gain"), CommandSurface::WadInternal);
+        assert_eq!(command_surface("gain"), CommandSurface::CoreInternal);
     }
 
     #[test]
-    fn wad_auto_route_keeps_mutations_raw_and_read_only_commands_structured() {
+    fn xuva_auto_route_keeps_mutations_raw_and_read_only_commands_structured() {
         let mutation = vec![
             OsString::from("git"),
             OsString::from("commit"),
             OsString::from("-m"),
         ];
-        assert_eq!(
-            auto_wad_route(&mutation, Some(r"E:\work"), None).0,
-            Route::Raw
-        );
+        assert_eq!(auto_route(&mutation, Some(r"E:\work"), None).0, Route::Raw);
 
         let clone = vec![
             OsString::from("git"),
             OsString::from("clone"),
             OsString::from("https://example.invalid/repo"),
         ];
-        assert_eq!(auto_wad_route(&clone, Some(r"E:\work"), None).0, Route::Raw);
+        assert_eq!(auto_route(&clone, Some(r"E:\work"), None).0, Route::Raw);
 
         let read_only = vec![
             OsString::from("git"),
@@ -4814,7 +5058,7 @@ mod tests {
             OsString::from("-1"),
         ];
         assert_eq!(
-            auto_wad_route(&read_only, Some(r"E:\work"), None).0,
+            auto_route(&read_only, Some(r"E:\work"), None).0,
             Route::NativeRtk
         );
 
@@ -4824,36 +5068,36 @@ mod tests {
             OsString::from("--version"),
         ];
         assert_eq!(
-            auto_wad_route(&cargo, Some(r"E:\work"), None).0,
+            auto_route(&cargo, Some(r"E:\work"), None).0,
             Route::NativeRtk
         );
 
         assert_eq!(
-            auto_wad_route(&[OsString::from("npm")], Some(r"E:\work"), None).0,
+            auto_route(&[OsString::from("npm")], Some(r"E:\work"), None).0,
             Route::Raw
         );
         assert_eq!(
-            auto_wad_route(&[OsString::from("npx")], Some(r"E:\work"), None).0,
+            auto_route(&[OsString::from("npx")], Some(r"E:\work"), None).0,
             Route::Raw
         );
         assert_eq!(
-            auto_wad_route(&[OsString::from("pnpm")], Some(r"E:\work"), None).0,
+            auto_route(&[OsString::from("pnpm")], Some(r"E:\work"), None).0,
             Route::Raw
         );
         assert_eq!(
-            auto_wad_route(&[OsString::from("go")], Some(r"E:\work"), None).0,
+            auto_route(&[OsString::from("go")], Some(r"E:\work"), None).0,
             Route::Raw
         );
         assert_eq!(
-            auto_wad_route(&[OsString::from("dotnet")], Some(r"E:\work"), None).0,
+            auto_route(&[OsString::from("dotnet")], Some(r"E:\work"), None).0,
             Route::Raw
         );
         assert_eq!(
-            auto_wad_route(&[OsString::from("dart")], Some(r"E:\work"), None).0,
+            auto_route(&[OsString::from("dart")], Some(r"E:\work"), None).0,
             Route::Raw
         );
         assert_eq!(
-            auto_wad_route(&[OsString::from("flutter")], Some(r"E:\work"), None).0,
+            auto_route(&[OsString::from("flutter")], Some(r"E:\work"), None).0,
             Route::Raw
         );
 
@@ -4862,10 +5106,7 @@ mod tests {
             OsString::from("/usr/bin/printf"),
             OsString::from("$HOME; &"),
         ];
-        assert_eq!(
-            auto_wad_route(&literal, Some(r"E:\work"), None).0,
-            Route::Wsl1
-        );
+        assert_eq!(auto_route(&literal, Some(r"E:\work"), None).0, Route::Wsl1);
     }
 
     #[test]
@@ -4873,7 +5114,7 @@ mod tests {
         let context = adaptive_context_signature(&default_config());
         let policy = RoutePolicyFile {
             schema_version: ROUTE_POLICY_SCHEMA_VERSION,
-            manifest_version: command_manifest().upstream_rtk_version.clone(),
+            manifest_version: adapter_contract_id(),
             context_signature: context.clone(),
             evidence: vec![
                 RoutePolicyEvidence {
@@ -4914,7 +5155,7 @@ mod tests {
             ],
         };
         assert_eq!(
-            auto_wad_route_with_context(
+            auto_route_with_context(
                 &[OsString::from("git"), OsString::from("status")],
                 Some(r"E:\work"),
                 Some(&policy),
@@ -4924,7 +5165,7 @@ mod tests {
             Route::Raw
         );
         assert_eq!(
-            auto_wad_route_with_context(
+            auto_route_with_context(
                 &[OsString::from("rg"), OsString::from("needle")],
                 Some(r"E:\work"),
                 Some(&policy),
@@ -4934,7 +5175,7 @@ mod tests {
             Route::NativeRtk
         );
         assert_eq!(
-            auto_wad_route_with_context(
+            auto_route_with_context(
                 &[OsString::from("cargo"), OsString::from("check")],
                 Some(r"E:\work"),
                 Some(&policy),
@@ -4944,7 +5185,7 @@ mod tests {
             Route::Raw
         );
         assert_eq!(
-            auto_wad_route_with_context(
+            auto_route_with_context(
                 &[OsString::from("npm"), OsString::from("run")],
                 Some(r"E:\work"),
                 Some(&policy),
@@ -4954,7 +5195,7 @@ mod tests {
             Route::NativeRtk
         );
         assert_eq!(
-            auto_wad_route_with_context(
+            auto_route_with_context(
                 &[
                     OsString::from("go"),
                     OsString::from("test"),
@@ -4968,7 +5209,7 @@ mod tests {
             Route::NativeRtk
         );
         assert_eq!(
-            auto_wad_route(
+            auto_route(
                 &[OsString::from("go"), OsString::from("test")],
                 Some(r"E:\work"),
                 Some(&policy)
@@ -4977,7 +5218,7 @@ mod tests {
             Route::Raw
         );
         assert_eq!(
-            auto_wad_route(
+            auto_route(
                 &[
                     OsString::from("npm"),
                     OsString::from("run"),
@@ -4990,7 +5231,7 @@ mod tests {
             Route::Raw
         );
         assert_eq!(
-            auto_wad_route(
+            auto_route(
                 &[
                     OsString::from("git"),
                     OsString::from("clone"),
@@ -5008,7 +5249,7 @@ mod tests {
     fn policy_import_merge_preserves_other_evidence_and_replaces_same_key() {
         let existing = RoutePolicyFile {
             schema_version: ROUTE_POLICY_SCHEMA_VERSION,
-            manifest_version: command_manifest().upstream_rtk_version.clone(),
+            manifest_version: adapter_contract_id(),
             context_signature: "0123456789abcdef".to_owned(),
             evidence: vec![
                 RoutePolicyEvidence {
@@ -5029,7 +5270,7 @@ mod tests {
         };
         let incoming = RoutePolicyFile {
             schema_version: ROUTE_POLICY_SCHEMA_VERSION,
-            manifest_version: command_manifest().upstream_rtk_version.clone(),
+            manifest_version: adapter_contract_id(),
             context_signature: "0123456789abcdef".to_owned(),
             evidence: vec![
                 RoutePolicyEvidence {
@@ -5083,7 +5324,7 @@ mod tests {
 
         let policy = RoutePolicyFile {
             schema_version: ROUTE_POLICY_SCHEMA_VERSION,
-            manifest_version: command_manifest().upstream_rtk_version.clone(),
+            manifest_version: adapter_contract_id(),
             context_signature: context.clone(),
             evidence: vec![RoutePolicyEvidence {
                 key: "rg".to_owned(),
@@ -5099,7 +5340,7 @@ mod tests {
         let entry = CalibrationEntry {
             signature: "fedcba9876543210".to_owned(),
             key: "rg".to_owned(),
-            manifest_version: command_manifest().upstream_rtk_version.clone(),
+            manifest_version: adapter_contract_id(),
             context_signature: context.clone(),
             raw_samples_ms: vec![1.0],
             native_samples_ms: vec![2.0],
@@ -5119,8 +5360,8 @@ mod tests {
     }
 
     #[test]
-    fn wad_route_options_are_explicit_and_validate_values() {
-        let (arguments, route, environment, explain) = parse_wad_options(
+    fn xuva_route_options_are_explicit_and_validate_values() {
+        let (arguments, route, environment, explain) = parse_options(
             vec![
                 OsString::from("--route"),
                 OsString::from("native-rtk"),
@@ -5136,7 +5377,7 @@ mod tests {
         assert!(explain);
         assert_eq!(arguments, vec![OsString::from("rg")]);
         assert!(
-            parse_wad_options(
+            parse_options(
                 vec![OsString::from("--route"), OsString::from("unsafe")],
                 Route::Auto,
                 ExecutionEnvironment::Adaptive,
@@ -5144,7 +5385,7 @@ mod tests {
             .is_err()
         );
 
-        let (arguments, route, environment, explain) = parse_wad_options(
+        let (arguments, route, environment, explain) = parse_options(
             vec![
                 OsString::from("--environment"),
                 OsString::from("windows-only"),
@@ -5159,7 +5400,7 @@ mod tests {
         assert_eq!(environment, ExecutionEnvironment::WindowsOnly);
         assert!(!explain);
         assert!(
-            parse_wad_options(
+            parse_options(
                 vec![OsString::from("--environment"), OsString::from("hybrid")],
                 Route::Auto,
                 ExecutionEnvironment::Adaptive,
@@ -5171,7 +5412,7 @@ mod tests {
     #[test]
     fn windows_only_routes_external_commands_raw_and_keeps_rtk_meta_native() {
         assert_eq!(
-            auto_wad_route_for_environment(
+            auto_route_for_environment(
                 &[OsString::from("pytest"), OsString::from("-q")],
                 Some(r"E:\work"),
                 None,
@@ -5182,7 +5423,7 @@ mod tests {
             Route::Raw
         );
         assert_eq!(
-            auto_wad_route_for_environment(
+            auto_route_for_environment(
                 &[OsString::from("init"), OsString::from("-g")],
                 Some(r"E:\work"),
                 None,
@@ -5193,7 +5434,7 @@ mod tests {
             Route::NativeRtk
         );
         assert_eq!(
-            auto_wad_route_for_environment(
+            auto_route_for_environment(
                 &[
                     OsString::from("git"),
                     OsString::from("commit"),
@@ -5282,11 +5523,13 @@ mod tests {
         let entry = ProviderCacheEntry {
             tool: "go".to_owned(),
             observed_unix_seconds: 100,
+            inspection_level: InspectionLevel::Version,
             context_signature: "fixture".to_owned(),
             windows: WindowsToolProbe {
                 executable: None,
                 native_rtk: None,
                 executable_version: None,
+                version_probe_status: ProbeStatus::NotRequested,
                 executable_capabilities: Vec::new(),
                 executable_identity: None,
                 native_rtk_identity: None,
@@ -5310,6 +5553,48 @@ mod tests {
             "fixture",
             true
         ));
+        let mut identity_only = entry.clone();
+        identity_only.inspection_level = InspectionLevel::Identity;
+        assert!(cache_entry_is_fresh(&identity_only, 100, "fixture", false));
+        assert!(
+            !cache_entry_is_fresh(&identity_only, 100, "fixture", true),
+            "doctor/version verification must upgrade an identity-only cache entry"
+        );
+    }
+
+    #[test]
+    fn version_probe_registry_never_executes_unknown_tools() {
+        assert_eq!(version_probe_arguments("git"), Some(&["--version"][..]));
+        assert_eq!(version_probe_arguments("go"), Some(&["version"][..]));
+        assert_eq!(version_probe_arguments("user-defined-tool"), None);
+    }
+
+    #[test]
+    fn explicit_windows_executable_paths_bypass_provider_discovery() {
+        let fixture = env::temp_dir().join(format!(
+            "xuva-explicit-path-{}-{}.cmd",
+            std::process::id(),
+            unix_seconds()
+        ));
+        fs::write(&fixture, "@exit /b 0\r\n").expect("explicit fixture is written");
+        let arguments = vec![
+            fixture.clone().into_os_string(),
+            OsString::from("literal argument"),
+        ];
+        let (plan, reason) = explicit_executable_plan(&arguments, &default_config())
+            .expect("explicit path is valid")
+            .expect("explicit path creates a plan");
+        assert!(matches!(
+            plan.candidate,
+            dispatcher::RouteCandidate::Windows { .. }
+        ));
+        assert_eq!(plan.adapter, dispatcher::OutputAdapter::Raw);
+        assert_eq!(
+            plan.request.arguments,
+            vec![OsString::from("literal argument")]
+        );
+        assert!(reason.contains("explicit Windows"));
+        fs::remove_file(fixture).expect("explicit fixture is removed");
     }
 
     #[test]
@@ -5335,6 +5620,7 @@ mod tests {
             executable: Some("/usr/bin/go".to_owned()),
             rtk: Some("/home/test/.local/bin/rtk".to_owned()),
             executable_version: None,
+            version_probe_status: ProbeStatus::NotRequested,
             executable_capabilities: Vec::new(),
             executable_identity: None,
             rtk_identity: None,
@@ -5541,11 +5827,13 @@ mod tests {
             availability: ProviderCacheEntry {
                 tool: "go".to_owned(),
                 observed_unix_seconds: 1,
+                inspection_level: InspectionLevel::Identity,
                 context_signature: "fixture".to_owned(),
                 windows: WindowsToolProbe {
                     executable: None,
                     native_rtk: None,
                     executable_version: None,
+                    version_probe_status: ProbeStatus::NotRequested,
                     executable_capabilities: Vec::new(),
                     executable_identity: None,
                     native_rtk_identity: None,
@@ -5554,7 +5842,8 @@ mod tests {
                 wsl: Vec::new(),
             },
             candidates: vec![ProviderCandidate {
-                kind: ProviderKind::WslRtk,
+                host: ProviderHost::Wsl2,
+                adapters: vec![AdapterKind::Raw, AdapterKind::Rtk],
                 distro: Some("Ubuntu-22.04".to_owned()),
                 wsl_version: Some(2),
                 executable: "/usr/local/go/bin/go".to_owned(),
@@ -5607,11 +5896,13 @@ mod tests {
             availability: ProviderCacheEntry {
                 tool: "go".to_owned(),
                 observed_unix_seconds: 1,
+                inspection_level: InspectionLevel::Identity,
                 context_signature: "fixture".to_owned(),
                 windows: WindowsToolProbe {
                     executable: None,
                     native_rtk: None,
                     executable_version: None,
+                    version_probe_status: ProbeStatus::NotRequested,
                     executable_capabilities: Vec::new(),
                     executable_identity: None,
                     native_rtk_identity: None,
@@ -5620,7 +5911,8 @@ mod tests {
                 wsl: Vec::new(),
             },
             candidates: vec![ProviderCandidate {
-                kind: ProviderKind::WslRaw,
+                host: ProviderHost::Wsl2,
+                adapters: vec![AdapterKind::Raw],
                 distro: Some("Ubuntu".to_owned()),
                 wsl_version: Some(2),
                 executable: "/usr/local/go/bin/go".to_owned(),
@@ -5674,11 +5966,13 @@ mod tests {
             ProviderCacheEntry {
                 tool: "nvm".to_owned(),
                 observed_unix_seconds: 1,
+                inspection_level: InspectionLevel::Identity,
                 context_signature: "fixture".to_owned(),
                 windows: WindowsToolProbe {
                     executable: Some(r"C:\\Users\\test\\AppData\\Local\\nvm\\nvm.exe".to_owned()),
                     native_rtk: None,
                     executable_version: Some("1.2.2".to_owned()),
+                    version_probe_status: ProbeStatus::Success,
                     executable_capabilities: vec!["version".to_owned()],
                     executable_identity: None,
                     native_rtk_identity: None,
@@ -5690,6 +5984,7 @@ mod tests {
                     executable: None,
                     rtk: None,
                     executable_version: None,
+                    version_probe_status: ProbeStatus::NotRequested,
                     executable_capabilities: Vec::new(),
                     executable_identity: None,
                     rtk_identity: None,
@@ -5731,7 +6026,12 @@ mod tests {
         })
         .expect("raw adapter configuration is valid");
         let candidate = |distro: &str, version, executable: &str| ProviderCandidate {
-            kind: ProviderKind::WslRaw,
+            host: if version == 1 {
+                ProviderHost::Wsl1
+            } else {
+                ProviderHost::Wsl2
+            },
+            adapters: vec![AdapterKind::Raw],
             distro: Some(distro.to_owned()),
             wsl_version: Some(version),
             executable: executable.to_owned(),
@@ -5753,11 +6053,13 @@ mod tests {
             availability: ProviderCacheEntry {
                 tool: "go".to_owned(),
                 observed_unix_seconds: 1,
+                inspection_level: InspectionLevel::Identity,
                 context_signature: "fixture".to_owned(),
                 windows: WindowsToolProbe {
                     executable: None,
                     native_rtk: None,
                     executable_version: None,
+                    version_probe_status: ProbeStatus::NotRequested,
                     executable_capabilities: Vec::new(),
                     executable_identity: None,
                     native_rtk_identity: None,
@@ -5811,11 +6113,13 @@ mod tests {
             availability: ProviderCacheEntry {
                 tool: "cargo".to_owned(),
                 observed_unix_seconds: 1,
+                inspection_level: InspectionLevel::Identity,
                 context_signature: "fixture".to_owned(),
                 windows: WindowsToolProbe {
                     executable: None,
                     native_rtk: None,
                     executable_version: None,
+                    version_probe_status: ProbeStatus::NotRequested,
                     executable_capabilities: Vec::new(),
                     executable_identity: None,
                     native_rtk_identity: None,
@@ -5824,7 +6128,8 @@ mod tests {
                 wsl: Vec::new(),
             },
             candidates: vec![ProviderCandidate {
-                kind: ProviderKind::WslRaw,
+                host: ProviderHost::Wsl2,
+                adapters: vec![AdapterKind::Raw],
                 distro: Some("Ubuntu".to_owned()),
                 wsl_version: Some(2),
                 executable: "/home/test/.cargo/bin/cargo".to_owned(),
@@ -5873,11 +6178,13 @@ mod tests {
             availability: ProviderCacheEntry {
                 tool: "cargo".to_owned(),
                 observed_unix_seconds: 1,
+                inspection_level: InspectionLevel::Identity,
                 context_signature: "fixture".to_owned(),
                 windows: WindowsToolProbe {
                     executable: Some(r"C:\Users\test\.cargo\bin\cargo.exe".to_owned()),
                     native_rtk: None,
                     executable_version: None,
+                    version_probe_status: ProbeStatus::NotRequested,
                     executable_capabilities: Vec::new(),
                     executable_identity: None,
                     native_rtk_identity: None,
@@ -5886,7 +6193,8 @@ mod tests {
                 wsl: Vec::new(),
             },
             candidates: vec![ProviderCandidate {
-                kind: ProviderKind::WindowsRaw,
+                host: ProviderHost::Windows,
+                adapters: vec![AdapterKind::Raw],
                 distro: None,
                 wsl_version: None,
                 executable: r"C:\Users\test\.cargo\bin\cargo.exe".to_owned(),
@@ -5950,12 +6258,10 @@ mod tests {
     }
 
     #[test]
-    fn execution_plan_uses_location_and_adapter_capability_not_legacy_provider_label() {
+    fn execution_plan_rejects_inconsistent_provider_host_metadata() {
         let candidate = ProviderCandidate {
-            // This intentionally contradictory legacy label proves that the
-            // executor derives its route from provider location and its
-            // adapter from the RTK capability, not from this display label.
-            kind: ProviderKind::WindowsRtk,
+            host: ProviderHost::Windows,
+            adapters: vec![AdapterKind::Raw, AdapterKind::Rtk],
             distro: Some("Ubuntu".to_owned()),
             wsl_version: Some(2),
             executable: "/usr/local/go/bin/go".to_owned(),
@@ -5964,25 +6270,21 @@ mod tests {
             usable: true,
             reason: "fixture".to_owned(),
         };
-        let plan = execution_plan_for_provider_candidate(
+        let error = execution_plan_for_provider_candidate(
             "go",
             &[OsString::from("version")],
             &default_config(),
             &candidate,
         )
-        .expect("an auto plan can use raw output when RTK is absent");
-        assert_eq!(plan.adapter, dispatcher::OutputAdapter::Raw);
-        assert!(matches!(
-            plan.candidate,
-            dispatcher::RouteCandidate::Wsl2 { ref distro, ref executable, .. }
-                if distro == "Ubuntu" && executable == &OsString::from("/usr/local/go/bin/go")
-        ));
+        .expect_err("host and WSL metadata must not contradict each other");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 
     #[test]
     fn requested_rtk_adapter_does_not_silently_downgrade_to_raw() {
         let candidate = ProviderCandidate {
-            kind: ProviderKind::WslRaw,
+            host: ProviderHost::Wsl2,
+            adapters: vec![AdapterKind::Raw],
             distro: Some("Ubuntu".to_owned()),
             wsl_version: Some(2),
             executable: "/usr/local/go/bin/go".to_owned(),
@@ -5992,6 +6294,23 @@ mod tests {
             reason: "fixture".to_owned(),
         };
         assert!(provider_adapter(&candidate, OutputAdapterPreference::Rtk).is_err());
+
+        let adapter_only = ProviderCandidate {
+            host: ProviderHost::Windows,
+            adapters: vec![AdapterKind::Rtk],
+            distro: None,
+            wsl_version: None,
+            executable: r"C:\tools\rtk.exe".to_owned(),
+            rtk: Some(r"C:\tools\rtk.exe".to_owned()),
+            project_path: Some(r"E:\work".to_owned()),
+            usable: true,
+            reason: "fixture".to_owned(),
+        };
+        assert!(provider_adapter(&adapter_only, OutputAdapterPreference::Raw).is_err());
+        assert!(matches!(
+            provider_adapter(&adapter_only, OutputAdapterPreference::Auto),
+            Ok(dispatcher::OutputAdapter::Rtk { .. })
+        ));
     }
 
     #[test]
@@ -6009,11 +6328,13 @@ mod tests {
             availability: ProviderCacheEntry {
                 tool: "go".to_owned(),
                 observed_unix_seconds: 1,
+                inspection_level: InspectionLevel::Identity,
                 context_signature: "fixture".to_owned(),
                 windows: WindowsToolProbe {
                     executable: None,
                     native_rtk: None,
                     executable_version: None,
+                    version_probe_status: ProbeStatus::NotRequested,
                     executable_capabilities: Vec::new(),
                     executable_identity: None,
                     native_rtk_identity: None,
@@ -6055,11 +6376,13 @@ mod tests {
             availability: ProviderCacheEntry {
                 tool: "go".to_owned(),
                 observed_unix_seconds: 1,
+                inspection_level: InspectionLevel::Identity,
                 context_signature: "fixture".to_owned(),
                 windows: WindowsToolProbe {
                     executable: None,
                     native_rtk: Some(r"C:\tools\rtk.exe".to_owned()),
                     executable_version: None,
+                    version_probe_status: ProbeStatus::NotRequested,
                     executable_capabilities: Vec::new(),
                     executable_identity: None,
                     native_rtk_identity: None,
@@ -6107,11 +6430,13 @@ mod tests {
             availability: ProviderCacheEntry {
                 tool: "go".to_owned(),
                 observed_unix_seconds: 1,
+                inspection_level: InspectionLevel::Identity,
                 context_signature: "fixture".to_owned(),
                 windows: WindowsToolProbe {
                     executable: Some(r"C:\Go\bin\go.exe".to_owned()),
                     native_rtk: None,
                     executable_version: None,
+                    version_probe_status: ProbeStatus::NotRequested,
                     executable_capabilities: Vec::new(),
                     executable_identity: None,
                     native_rtk_identity: None,
@@ -6135,6 +6460,7 @@ mod tests {
                     executable: None,
                     native_rtk: None,
                     executable_version: None,
+                    version_probe_status: ProbeStatus::NotRequested,
                     executable_capabilities: Vec::new(),
                     executable_identity: None,
                     native_rtk_identity: None,
@@ -6166,6 +6492,7 @@ mod tests {
             executable: Some(r"C:\Program Files\Go\bin\go.exe".to_owned()),
             native_rtk: None,
             executable_version: None,
+            version_probe_status: ProbeStatus::NotRequested,
             executable_capabilities: Vec::new(),
             executable_identity: None,
             native_rtk_identity: None,
@@ -6206,7 +6533,7 @@ mod tests {
         let mut entry = CalibrationEntry {
             signature: "0123456789abcdef".to_owned(),
             key: "rg".to_owned(),
-            manifest_version: command_manifest().upstream_rtk_version.clone(),
+            manifest_version: adapter_contract_id(),
             context_signature: "0123456789abcdef".to_owned(),
             raw_samples_ms: Vec::new(),
             native_samples_ms: vec![30.0],
@@ -6226,11 +6553,33 @@ mod tests {
     }
 
     #[test]
+    fn local_calibration_discards_stale_adapter_contract_without_failing() {
+        let stale = CalibrationFile {
+            schema_version: CALIBRATION_SCHEMA_VERSION,
+            entries: vec![CalibrationEntry {
+                signature: "0123456789abcdef".to_owned(),
+                key: "rg".to_owned(),
+                manifest_version: "wad:0.42.0:protocol-1".to_owned(),
+                context_signature: "fedcba9876543210".to_owned(),
+                raw_samples_ms: vec![1.0],
+                native_samples_ms: vec![2.0],
+                native_input_tokens: 10,
+                native_saved_tokens: 5,
+            }],
+        };
+
+        let migrated =
+            calibration_for_current_contract(stale).expect("stale evidence is safely ignored");
+        assert_eq!(migrated.schema_version, CALIBRATION_SCHEMA_VERSION);
+        assert!(migrated.entries.is_empty());
+    }
+
+    #[test]
     fn local_calibration_prioritizes_measured_token_savings() {
         let entry = CalibrationEntry {
             signature: "0123456789abcdef".to_owned(),
             key: "rg".to_owned(),
-            manifest_version: command_manifest().upstream_rtk_version.clone(),
+            manifest_version: adapter_contract_id(),
             context_signature: "0123456789abcdef".to_owned(),
             raw_samples_ms: vec![10.0, 11.0],
             native_samples_ms: vec![30.0, 31.0],
@@ -6315,12 +6664,12 @@ mod tests {
     }
 
     #[test]
-    fn hot_provider_fingerprint_does_not_depend_on_wsl_or_git_subprocesses() {
+    fn provider_fingerprint_separates_partial_and_complete_wsl_inventory() {
         let config = default_config();
-        assert_eq!(
+        assert_ne!(
             discovery_context_signature(&config, false),
             discovery_context_signature(&config, true),
-            "a warm native lookup must be able to reuse a complete WSL cache entry"
+            "a Windows-only cache must not satisfy a complete WSL inventory request"
         );
     }
 
@@ -6350,7 +6699,8 @@ mod tests {
     #[test]
     fn execution_plans_translate_only_cross_host_absolute_path_arguments() {
         let windows = ProviderCandidate {
-            kind: ProviderKind::WindowsRaw,
+            host: ProviderHost::Windows,
+            adapters: vec![AdapterKind::Raw],
             distro: None,
             wsl_version: None,
             executable: r"C:\Program Files\Git\cmd\git.exe".to_owned(),
@@ -6379,7 +6729,8 @@ mod tests {
         );
 
         let wsl = ProviderCandidate {
-            kind: ProviderKind::WslRtk,
+            host: ProviderHost::Wsl2,
+            adapters: vec![AdapterKind::Raw, AdapterKind::Rtk],
             distro: Some("Ubuntu".to_owned()),
             wsl_version: Some(2),
             executable: "/usr/local/bin/rtk".to_owned(),
@@ -6464,11 +6815,13 @@ mod tests {
             availability: ProviderCacheEntry {
                 tool: "git".to_owned(),
                 observed_unix_seconds: 1,
+                inspection_level: InspectionLevel::Identity,
                 context_signature: "fixture".to_owned(),
                 windows: WindowsToolProbe {
                     executable: Some(r"C:\Program Files\Git\cmd\git.exe".to_owned()),
                     native_rtk: None,
                     executable_version: None,
+                    version_probe_status: ProbeStatus::NotRequested,
                     executable_capabilities: Vec::new(),
                     executable_identity: None,
                     native_rtk_identity: None,
@@ -6478,7 +6831,8 @@ mod tests {
             },
             candidates: vec![
                 ProviderCandidate {
-                    kind: ProviderKind::WindowsRaw,
+                    host: ProviderHost::Windows,
+                    adapters: vec![AdapterKind::Raw],
                     distro: None,
                     wsl_version: None,
                     executable: r"C:\Program Files\Git\cmd\git.exe".to_owned(),
@@ -6488,7 +6842,8 @@ mod tests {
                     reason: "fixture".to_owned(),
                 },
                 ProviderCandidate {
-                    kind: ProviderKind::WslRtk,
+                    host: ProviderHost::Wsl2,
+                    adapters: vec![AdapterKind::Raw, AdapterKind::Rtk],
                     distro: Some("Ubuntu".to_owned()),
                     wsl_version: Some(2),
                     executable: "/usr/bin/git".to_owned(),
@@ -6547,5 +6902,9 @@ mod tests {
         );
         assert_eq!(parsed_stable_version("v1.2.3"), Some((1, 2, 3)));
         assert_eq!(parsed_stable_version("v1.2.3-rc1"), None);
+        assert!(stable_release_is_newer("v1.2.3", "1.2.3-beta.1"));
+        assert!(stable_release_is_newer("v1.2.4", "1.2.3-beta.1"));
+        assert!(!stable_release_is_newer("v1.2.2", "1.2.3-beta.1"));
+        assert!(!stable_release_is_newer("v1.2.3", "1.2.3"));
     }
 }

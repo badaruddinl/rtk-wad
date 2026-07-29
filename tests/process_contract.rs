@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 const CTRL_BREAK_EVENT: u32 = 1;
-static WAD_LAUNCHER_NONCE: AtomicU64 = AtomicU64::new(0);
+static XUVA_LAUNCHER_NONCE: AtomicU64 = AtomicU64::new(0);
 // Every contract test probes and controls the same WSL host. Serializing the
 // external boundary keeps `cargo test` deterministic without changing the
 // application's own process-concurrency behavior.
@@ -39,16 +39,16 @@ fn command(program: &str) -> Command {
     command
 }
 
-fn wad_launcher() -> (PathBuf, PathBuf) {
-    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+fn xuva_launcher() -> (PathBuf, PathBuf) {
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
         "xuva-process-contract-{}-{nonce}",
         std::process::id()
     ));
-    std::fs::create_dir_all(&directory).expect("temporary WAD directory is created");
-    let wad = directory.join("xuva.exe");
-    std::fs::copy(launcher(), &wad).expect("test launcher is copied under the WAD command name");
-    (wad, directory)
+    std::fs::create_dir_all(&directory).expect("temporary XUVA directory is created");
+    let xuva = directory.join("xuva.exe");
+    std::fs::copy(launcher(), &xuva).expect("test launcher is copied under the XUVA command name");
+    (xuva, directory)
 }
 
 fn process_contract_guard() -> MutexGuard<'static, ()> {
@@ -58,7 +58,7 @@ fn process_contract_guard() -> MutexGuard<'static, ()> {
 }
 
 fn unique_temp_directory(label: &str) -> PathBuf {
-    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!("xuva-{label}-{}-{nonce}", std::process::id()))
 }
 
@@ -83,6 +83,59 @@ fn dispatcher_owned_version_never_enters_environment_resolution() {
         format!("xuva {}", env!("CARGO_PKG_VERSION"))
     );
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn lifecycle_status_remains_available_with_invalid_routing_configuration() {
+    let _guard = process_contract_guard();
+    let output = Command::new(launcher())
+        .env("XUVA_ROUTE", "not-a-route")
+        .args(["install", "--status"])
+        .output()
+        .expect("lifecycle status starts");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("status output is valid JSON");
+    let executable = status["executable"]
+        .as_str()
+        .expect("status has an executable path");
+    assert_eq!(
+        PathBuf::from(executable)
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("xuva.exe")
+    );
+    assert!(PathBuf::from(executable).is_file());
+}
+
+#[test]
+fn metrics_opt_out_keeps_explicit_raw_execution_ledger_free() {
+    let _guard = process_contract_guard();
+    let state = unique_temp_directory("metrics-off-state");
+    let system_root = std::env::var_os("SYSTEMROOT").expect("Windows has SYSTEMROOT");
+    let cmd = PathBuf::from(system_root).join("System32").join("cmd.exe");
+    let output = Command::new(launcher())
+        .env("XUVA_STATE_DIR", &state)
+        .env("XUVA_METRICS", "off")
+        .arg(&cmd)
+        .args(["/d", "/c", "exit", "0"])
+        .output()
+        .expect("explicit raw command starts");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!state.join("metrics-v1.sqlite").exists());
+    let _ = std::fs::remove_dir_all(state);
 }
 
 #[test]
@@ -239,7 +292,7 @@ fn routes_git_from_a_windows_worktree_to_native_git_with_structured_arguments() 
 #[test]
 fn dispatches_wsl_only_go_raw_from_a_windows_shell() {
     let _guard = process_contract_guard();
-    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let fixture = format!("/tmp/xuva-p7-go-{}-{nonce}", std::process::id());
     assert!(
         fixture.starts_with("/tmp/xuva-p7-go-"),
@@ -299,7 +352,7 @@ fn dispatches_wsl_only_go_raw_from_a_windows_shell() {
 #[test]
 fn dispatches_wsl_only_go_from_powershell_cmd_and_git_bash() {
     let _guard = process_contract_guard();
-    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let fixture = format!(
         "/tmp/xuva-p7-go-shell-matrix-{}-{nonce}",
         std::process::id()
@@ -460,7 +513,7 @@ fn dispatches_wsl_only_go_from_powershell_cmd_and_git_bash() {
 #[test]
 fn wsl_shim_preserves_same_distro_context_and_literal_argv() {
     let _guard = process_contract_guard();
-    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let fixture = format!("/tmp/xuva-p7-wsl-shim-{}-{nonce}", std::process::id());
     assert!(fixture.starts_with("/tmp/xuva-p7-wsl-shim-"));
     let setup = Command::new("wsl.exe")
@@ -532,7 +585,7 @@ fn wsl_shim_preserves_same_distro_context_and_literal_argv() {
 #[test]
 fn wsl_shim_maps_a_windows_backed_project_to_another_distro() {
     let _guard = process_contract_guard();
-    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let fixture = format!(
         "/tmp/xuva-p7-cross-distro-shim-{}-{nonce}",
         std::process::id()
@@ -677,7 +730,7 @@ fn wsl_shim_uses_a_compatible_windows_go_from_a_windows_backed_project() {
         .expect("WSL shim explains compatible Windows Go");
     assert!(explained.status.success());
     assert!(
-        String::from_utf8_lossy(&explained.stdout).contains("selected windows-raw"),
+        String::from_utf8_lossy(&explained.stdout).contains("selected windows"),
         "explanation: {}",
         String::from_utf8_lossy(&explained.stdout)
     );
@@ -686,7 +739,7 @@ fn wsl_shim_uses_a_compatible_windows_go_from_a_windows_backed_project() {
 #[test]
 fn wsl_provider_version_changes_require_explicit_refresh_within_ttl() {
     let _guard = process_contract_guard();
-    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let fixture = format!(
         "/tmp/xuva-p7-go-version-cache-{}-{nonce}",
         std::process::id()
@@ -699,7 +752,7 @@ fn wsl_provider_version_changes_require_explicit_refresh_within_ttl() {
             "--exec",
             "sh",
             "-c",
-            r###"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'if [ "$1" = "--version" ]; then printf "go version fixture-v1\n"; else printf "fixture command\n"; fi' > "$1/go"; chmod 755 "$1/go""###,
+            r###"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'if [ "$1" = "version" ]; then printf "go version fixture-v1\n"; else printf "fixture command\n"; fi' > "$1/go"; chmod 755 "$1/go""###,
             "xuva-p7-go-version-cache-fixture",
             &fixture,
         ])
@@ -739,7 +792,7 @@ fn wsl_provider_version_changes_require_explicit_refresh_within_ttl() {
             "--exec",
             "sh",
             "-c",
-            r###"before=$(stat -Lc '%s:%Y' -- "$1/go") || exit 1; timestamp=$(printf '%s' "$before" | cut -d: -f2); printf '%s\n' '#!/bin/sh' 'if [ "$1" = "--version" ]; then printf "go version fixture-v2\n"; else printf "fixture command\n"; fi' > "$1/go"; touch -d "@$timestamp" "$1/go"; after=$(stat -Lc '%s:%Y' -- "$1/go") || exit 1; test "$before" = "$after""###,
+            r###"before=$(stat -Lc '%s:%Y' -- "$1/go") || exit 1; timestamp=$(printf '%s' "$before" | cut -d: -f2); printf '%s\n' '#!/bin/sh' 'if [ "$1" = "version" ]; then printf "go version fixture-v2\n"; else printf "fixture command\n"; fi' > "$1/go"; touch -d "@$timestamp" "$1/go"; after=$(stat -Lc '%s:%Y' -- "$1/go") || exit 1; test "$before" = "$after""###,
             "xuva-p7-go-version-cache-mutate",
             &fixture,
         ])
@@ -792,7 +845,7 @@ fn wsl_provider_version_changes_require_explicit_refresh_within_ttl() {
 #[test]
 fn provider_cache_ignores_project_revision_until_explicit_refresh() {
     let _guard = process_contract_guard();
-    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
         "xuva-p7-git-revision-cache-{}-{nonce}",
         std::process::id()
@@ -882,7 +935,7 @@ fn provider_cache_ignores_project_revision_until_explicit_refresh() {
 #[test]
 fn invalidates_provider_cache_when_path_or_configured_distro_changes() {
     let _guard = process_contract_guard();
-    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
         "xuva-p7-path-distro-cache-{}-{nonce}",
         std::process::id()
@@ -949,7 +1002,7 @@ fn invalidates_provider_cache_when_path_or_configured_distro_changes() {
 #[test]
 fn dispatches_wsl_only_cargo_raw_from_a_windows_shell() {
     let _guard = process_contract_guard();
-    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let fixture = format!("/tmp/xuva-p7-cargo-{}-{nonce}", std::process::id());
     assert!(
         fixture.starts_with("/tmp/xuva-p7-cargo-"),
@@ -1010,7 +1063,7 @@ fn dispatches_wsl_only_cargo_raw_from_a_windows_shell() {
 #[test]
 fn dispatches_each_remaining_supported_wsl_only_toolchain_raw() {
     let _guard = process_contract_guard();
-    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let fixture = format!(
         "/tmp/xuva-p7-generic-toolchain-{}-{nonce}",
         std::process::id()
@@ -1080,7 +1133,7 @@ fn dispatches_each_remaining_supported_wsl_only_toolchain_raw() {
 #[test]
 fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
     let _guard = process_contract_guard();
-    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let fixture = format!("/tmp/xuva-p7-go-contract-{}-{nonce}", std::process::id());
     assert!(fixture.starts_with("/tmp/xuva-p7-go-contract-"));
     let setup = Command::new("wsl.exe")
@@ -1198,7 +1251,9 @@ fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
     assert!(doctor_stdout.contains("tool=go"));
     assert!(doctor_stdout.contains("inspected_distro=Ubuntu;wsl_version=2"));
     assert!(doctor_stdout.contains(&format!("go_path={fixture}/go")));
-    assert!(doctor_stdout.contains("candidate_0=WslRtk;distro=Ubuntu;usable=true"));
+    assert!(
+        doctor_stdout.contains("candidate_0=Wsl2;adapters=[Raw, Rtk];distro=Ubuntu;usable=true")
+    );
     assert!(doctor_stdout.contains(&format!("candidate_0_project_path={expected_cwd}")));
     assert!(doctor_stdout.contains("diagnosis=candidate 0 is verified"));
     assert!(which_after_mutation.status.success());
@@ -1218,22 +1273,22 @@ fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
 }
 
 #[test]
-fn wad_profile_selects_one_route_and_uses_a_local_gain_ledger() {
+fn xuva_profile_selects_one_route_and_uses_a_local_gain_ledger() {
     let _guard = process_contract_guard();
-    let (launcher, directory) = wad_launcher();
+    let (launcher, directory) = xuva_launcher();
     let local_app_data = directory.join("local-app-data");
 
     let info = Command::new(&launcher)
         .arg("--adapter-info")
         .output()
-        .expect("WAD diagnostics start");
+        .expect("XUVA diagnostics start");
     assert!(info.status.success());
     assert!(String::from_utf8_lossy(&info.stdout).contains("adapter=xuva"));
 
     let explained = Command::new(&launcher)
         .args(["--explain-route", "git", "commit", "-m", "contract"])
         .output()
-        .expect("WAD route diagnostics start");
+        .expect("XUVA route diagnostics start");
     assert!(explained.status.success());
     assert!(String::from_utf8_lossy(&explained.stdout).contains("route=raw"));
 
@@ -1241,12 +1296,12 @@ fn wad_profile_selects_one_route_and_uses_a_local_gain_ledger() {
         .env("LOCALAPPDATA", &local_app_data)
         .args(["--route", "raw", "git", "--version"])
         .output()
-        .expect("WAD raw route starts");
+        .expect("XUVA raw route starts");
     assert!(raw.status.success());
     assert!(String::from_utf8_lossy(&raw.stdout).starts_with("git version "));
     let scratch = local_app_data.join("xuva").join("scratch");
     let scratch_files = std::fs::read_dir(&scratch)
-        .expect("WAD scratch directory exists")
+        .expect("XUVA scratch directory exists")
         .count();
     assert_eq!(
         scratch_files, 0,
@@ -1257,19 +1312,19 @@ fn wad_profile_selects_one_route_and_uses_a_local_gain_ledger() {
         .env("LOCALAPPDATA", &local_app_data)
         .arg("gain")
         .output()
-        .expect("WAD gain starts");
+        .expect("XUVA gain starts");
     assert!(gain.status.success());
     let gain_stdout = String::from_utf8_lossy(&gain.stdout);
     assert!(gain_stdout.contains("XUVA Measured Token Accounting"));
     assert!(gain_stdout.contains("Invocations: 1"));
 
-    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+    std::fs::remove_dir_all(directory).expect("temporary XUVA directory is removed");
 }
 
 #[test]
-fn wad_calibrates_safe_commands_across_natural_invocations() {
+fn xuva_calibrates_safe_commands_across_natural_invocations() {
     let _guard = process_contract_guard();
-    let (launcher, directory) = wad_launcher();
+    let (launcher, directory) = xuva_launcher();
     let state = directory.join("state");
     let fake_rtk = directory.join("fake-rtk.cmd");
     std::fs::write(
@@ -1315,20 +1370,109 @@ fn wad_calibrates_safe_commands_across_natural_invocations() {
     assert!(inspection.status.success());
     assert!(String::from_utf8_lossy(&inspection.stdout).contains("phase=stable"));
 
-    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+    std::fs::remove_dir_all(directory).expect("temporary XUVA directory is removed");
 }
 
 #[test]
-fn wad_rejects_unsafe_generic_provider_names_before_discovery() {
+fn agent_hook_preserves_rewrite_defer_deny_and_invalid_json_contracts() {
     let _guard = process_contract_guard();
-    let (launcher, directory) = wad_launcher();
+    let (launcher, directory) = xuva_launcher();
+    let fake_rtk = directory.join("agent-rtk.cmd");
+    std::fs::write(
+        &fake_rtk,
+        concat!(
+            "@echo off\r\n",
+            "if \"%XUVA_HOOK_MODE%\"==\"rewrite\" (echo {\"updatedInput\":{\"command\":\"rtk git status\"}} & exit /b 0)\r\n",
+            "if \"%XUVA_HOOK_MODE%\"==\"invalid\" (echo not-json & exit /b 0)\r\n",
+            "if \"%XUVA_HOOK_MODE%\"==\"stderr\" (echo upstream-note 1>&2 & exit /b 0)\r\n",
+            "if \"%XUVA_HOOK_MODE%\"==\"stall\" (ping -n 30 127.0.0.1 >nul & exit /b 0)\r\n",
+            "exit /b 0\r\n",
+        ),
+    )
+    .expect("fake RTK hook is written");
+
+    let rewrite = Command::new(&launcher)
+        .env("XUVA_NATIVE_RTK_PATH", &fake_rtk)
+        .env("XUVA_HOOK_MODE", "rewrite")
+        .args(["agent", "hook", "claude"])
+        .output()
+        .expect("rewrite hook starts");
+    assert!(rewrite.status.success());
+    assert!(String::from_utf8_lossy(&rewrite.stdout).contains("xuva git status"));
+
+    for agent in ["claude", "cursor", "gemini", "copilot"] {
+        let empty = Command::new(&launcher)
+            .env("XUVA_NATIVE_RTK_PATH", &fake_rtk)
+            .env("XUVA_HOOK_MODE", "empty")
+            .args(["agent", "hook", agent])
+            .output()
+            .expect("pass-through hook starts");
+        assert!(empty.status.success(), "{agent}");
+        assert!(empty.stdout.is_empty(), "{agent}");
+    }
+
+    let stderr = Command::new(&launcher)
+        .env("XUVA_NATIVE_RTK_PATH", &fake_rtk)
+        .env("XUVA_HOOK_MODE", "stderr")
+        .args(["agent", "hook", "claude"])
+        .output()
+        .expect("stderr hook starts");
+    assert!(stderr.status.success());
+    assert!(String::from_utf8_lossy(&stderr.stderr).contains("upstream-note"));
+
+    let invalid = Command::new(&launcher)
+        .env("XUVA_NATIVE_RTK_PATH", &fake_rtk)
+        .env("XUVA_HOOK_MODE", "invalid")
+        .args(["agent", "hook", "claude"])
+        .output()
+        .expect("invalid hook starts");
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("invalid JSON"));
+
+    let stalled = Command::new(&launcher)
+        .env("XUVA_NATIVE_RTK_PATH", &fake_rtk)
+        .env("XUVA_HOOK_MODE", "stall")
+        .env("XUVA_AGENT_HOOK_TIMEOUT_MS", "50")
+        .args(["agent", "hook", "claude"])
+        .output()
+        .expect("stalled hook starts");
+    assert!(!stalled.status.success());
+    assert!(String::from_utf8_lossy(&stalled.stderr).contains("timed out"));
+
+    let mut oversized = Command::new(&launcher)
+        .env("XUVA_NATIVE_RTK_PATH", &fake_rtk)
+        .args(["agent", "hook", "claude"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("oversized hook starts");
+    oversized
+        .stdin
+        .take()
+        .expect("hook stdin is piped")
+        .write_all(&vec![b'x'; 1024 * 1024 + 1])
+        .expect("oversized fixture is written");
+    let oversized = oversized
+        .wait_with_output()
+        .expect("oversized hook completes");
+    assert!(!oversized.status.success());
+    assert!(String::from_utf8_lossy(&oversized.stderr).contains("exceeds"));
+
+    std::fs::remove_dir_all(directory).expect("temporary XUVA directory is removed");
+}
+
+#[test]
+fn xuva_rejects_unsafe_generic_provider_names_before_discovery() {
+    let _guard = process_contract_guard();
+    let (launcher, directory) = xuva_launcher();
     let output = Command::new(&launcher)
         .args(["resolve", "tool;not-run"])
         .output()
         .expect("provider validation starts");
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("tool names must contain only ASCII"));
-    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+    std::fs::remove_dir_all(directory).expect("temporary XUVA directory is removed");
 }
 
 fn resolved_windows_candidate(output: &std::process::Output) -> serde_json::Value {
@@ -1344,19 +1488,15 @@ fn resolved_windows_candidate(output: &std::process::Output) -> serde_json::Valu
         .as_array()
         .expect("provider resolution lists candidates")
         .iter()
-        .find(|candidate| {
-            candidate["kind"]
-                .as_str()
-                .is_some_and(|kind| kind.starts_with("windows_"))
-        })
+        .find(|candidate| candidate["host"] == "windows")
         .expect("Windows Git provider is discovered")
         .clone()
 }
 
 #[test]
-fn wad_resolve_verifies_wsl_project_paths_for_windows_providers() {
+fn xuva_resolve_verifies_wsl_project_paths_for_windows_providers() {
     let _guard = process_contract_guard();
-    let (launcher, directory) = wad_launcher();
+    let (launcher, directory) = xuva_launcher();
     let state = directory.join("state");
     let project_directory = std::env::current_dir().expect("test project directory is available");
     let expected_project_path = project_directory.to_string_lossy().to_string();
@@ -1438,12 +1578,12 @@ fn wad_resolve_verifies_wsl_project_paths_for_windows_providers() {
             .expect("temporary native WSL project cleanup starts");
         assert!(removed.success());
     }
-    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+    std::fs::remove_dir_all(directory).expect("temporary XUVA directory is removed");
 }
 
 fn available_provider_candidate_index(
     resolution: &serde_json::Value,
-    kind: &str,
+    host: &str,
     distro: Option<&str>,
 ) -> Option<usize> {
     resolution["candidates"]
@@ -1451,16 +1591,16 @@ fn available_provider_candidate_index(
         .expect("provider resolution lists candidates")
         .iter()
         .position(|candidate| {
-            candidate["kind"] == kind
+            candidate["host"] == host
                 && distro.is_none_or(|distro| candidate["distro"] == distro)
                 && candidate["usable"] == true
         })
 }
 
 #[test]
-fn wad_provider_exec_runs_each_available_verified_provider_without_replay() {
+fn xuva_provider_exec_runs_each_available_verified_provider_without_replay() {
     let _guard = process_contract_guard();
-    let (launcher, directory) = wad_launcher();
+    let (launcher, directory) = xuva_launcher();
     let state = directory.join("state");
     let native_state = directory.join("native-state");
     let fake_tool = directory.join("p14-tool.cmd");
@@ -1522,11 +1662,11 @@ fn wad_provider_exec_runs_each_available_verified_provider_without_replay() {
     let resolution: serde_json::Value =
         serde_json::from_slice(&resolution.stdout).expect("Git provider resolution is JSON");
     assert!(
-        available_provider_candidate_index(&resolution, "windows_raw", None).is_some(),
+        available_provider_candidate_index(&resolution, "windows", None).is_some(),
         "a missing WSL/RTK fixture must leave the verified Windows raw provider usable"
     );
     if let Some(wsl_rtk_index) =
-        available_provider_candidate_index(&resolution, "wsl_rtk", Some("Ubuntu"))
+        available_provider_candidate_index(&resolution, "wsl2", Some("Ubuntu"))
     {
         let wsl_rtk = Command::new(&launcher)
             .env("XUVA_STATE_DIR", &state)
@@ -1547,7 +1687,7 @@ fn wad_provider_exec_runs_each_available_verified_provider_without_replay() {
     }
 
     if let Some(wsl_raw_index) =
-        available_provider_candidate_index(&resolution, "wsl_raw", Some("Ubuntu-RTK-WSL1"))
+        available_provider_candidate_index(&resolution, "wsl1", Some("Ubuntu-RTK-WSL1"))
     {
         let wsl_raw = Command::new(&launcher)
             .env("XUVA_STATE_DIR", &state)
@@ -1601,13 +1741,13 @@ fn wad_provider_exec_runs_each_available_verified_provider_without_replay() {
         );
     }
 
-    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+    std::fs::remove_dir_all(directory).expect("temporary XUVA directory is removed");
 }
 
 #[test]
-fn wad_surface_matches_the_live_wsl_rtk_command_inventory_when_provider_is_available() {
+fn xuva_surface_matches_the_live_wsl_rtk_command_inventory_when_provider_is_available() {
     let _guard = process_contract_guard();
-    let (launcher, directory) = wad_launcher();
+    let (launcher, directory) = xuva_launcher();
     let surface = Command::new(&launcher)
         .args(["surface", "--json"])
         .output()
@@ -1615,9 +1755,11 @@ fn wad_surface_matches_the_live_wsl_rtk_command_inventory_when_provider_is_avail
     assert!(surface.status.success());
     let surface: serde_json::Value =
         serde_json::from_slice(&surface.stdout).expect("surface report is JSON");
-    assert_eq!(surface["upstream_rtk_version"], "0.43.0");
+    assert_eq!(surface["adapter"]["name"], "rtk");
+    assert_eq!(surface["adapter"]["version"], "0.43.0");
+    assert_eq!(surface["adapter"]["protocol_version"], 1);
     assert_eq!(surface["upstream_command_count"], 69);
-    let wad_commands = surface["commands"]
+    let xuva_commands = surface["commands"]
         .as_array()
         .expect("surface report contains commands")
         .iter()
@@ -1635,7 +1777,7 @@ fn wad_surface_matches_the_live_wsl_rtk_command_inventory_when_provider_is_avail
         .output()
         .expect("live WSL RTK help starts");
     if !help.status.success() {
-        std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+        std::fs::remove_dir_all(directory).expect("temporary XUVA directory is removed");
         return;
     }
     let live_commands = String::from_utf8_lossy(&help.stdout)
@@ -1656,14 +1798,14 @@ fn wad_surface_matches_the_live_wsl_rtk_command_inventory_when_provider_is_avail
         })
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(live_commands.len(), 69);
-    assert_eq!(wad_commands, live_commands);
-    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+    assert_eq!(xuva_commands, live_commands);
+    std::fs::remove_dir_all(directory).expect("temporary XUVA directory is removed");
 }
 
 #[test]
-fn wad_policy_requires_a_matching_local_adapter_context() {
+fn xuva_policy_requires_a_matching_local_adapter_context() {
     let _guard = process_contract_guard();
-    let (launcher, directory) = wad_launcher();
+    let (launcher, directory) = xuva_launcher();
     let state = directory.join("state");
     let context = Command::new(&launcher)
         .env("XUVA_STATE_DIR", &state)
@@ -1678,11 +1820,11 @@ fn wad_policy_requires_a_matching_local_adapter_context() {
         .expect("opaque context signature")
         .to_owned();
     assert_eq!(signature.len(), 16);
-    assert_eq!(context["manifest_version"], "0.43.0");
+    assert_eq!(context["manifest_version"], "rtk:0.43.0:protocol-1");
 
     let policy = serde_json::json!({
         "schema_version": 2,
-        "manifest_version": "0.43.0",
+        "manifest_version": "rtk:0.43.0:protocol-1",
         "context_signature": signature,
         "evidence": [{
             "key": "rg",
@@ -1725,13 +1867,13 @@ fn wad_policy_requires_a_matching_local_adapter_context() {
     assert!(invalidated.status.success());
     assert!(String::from_utf8_lossy(&invalidated.stdout).contains("route=native-rtk"));
 
-    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+    std::fs::remove_dir_all(directory).expect("temporary XUVA directory is removed");
 }
 
 #[test]
-fn wad_generic_setup_is_diagnostic_only_and_never_creates_an_install_transaction() {
+fn xuva_generic_setup_is_diagnostic_only_and_never_creates_an_install_transaction() {
     let _guard = process_contract_guard();
-    let (launcher, directory) = wad_launcher();
+    let (launcher, directory) = xuva_launcher();
     let state = directory.join("state");
 
     let ready = Command::new(&launcher)
@@ -1788,7 +1930,7 @@ fn wad_generic_setup_is_diagnostic_only_and_never_creates_an_install_transaction
     assert!(String::from_utf8_lossy(&forced.stderr).contains("diagnostic-only"));
     assert!(!state.join("setup-transaction-v1.json").exists());
 
-    std::fs::remove_dir_all(directory).expect("temporary WAD directory is removed");
+    std::fs::remove_dir_all(directory).expect("temporary XUVA directory is removed");
 }
 
 #[test]
@@ -1986,7 +2128,7 @@ fn ctrl_break_cancels_a_raw_windows_node_child() {
     let ready_file = std::env::temp_dir().join(format!(
         "xuva-p7-raw-node-ready-{}-{}",
         std::process::id(),
-        WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed)
+        XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed)
     ));
     let node_program =
         "require('fs').writeFileSync(process.env.P7_READY, 'ready'); setInterval(() => {}, 1000)";
@@ -2196,7 +2338,7 @@ fn wsl_provider_receives_only_safe_forwarded_environment() {
     let fixture = format!(
         "/tmp/xuva-env-contract-{}-{}",
         std::process::id(),
-        WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed)
+        XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed)
     );
     assert!(fixture.starts_with("/tmp/xuva-env-contract-"));
     let setup = Command::new("wsl.exe")

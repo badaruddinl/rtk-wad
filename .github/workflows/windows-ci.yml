@@ -15,10 +15,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: rustfmt, clippy
 
@@ -26,10 +26,16 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --bins -- --test-threads=1
+        run: cargo test --locked --bins -- --test-threads=1
+
+      - name: Audit locked dependencies
+        shell: pwsh
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit
 
       - name: Detect Ubuntu WSL distro
         id: wsl
@@ -40,7 +46,7 @@ jobs:
 
       - name: Test WSL process contract
         if: steps.wsl.outputs.available == 'true'
-        run: cargo test --test process_contract -- --test-threads=1
+        run: cargo test --locked --test process_contract -- --test-threads=1
 
       - name: Report WSL runner capability gap
         if: steps.wsl.outputs.available != 'true'
@@ -48,10 +54,10 @@ jobs:
         run: Write-Warning 'Ubuntu WSL distro is unavailable on this hosted runner; local WSL process-contract evidence remains required.'
 
       - name: Release build
-        run: cargo build --release --bins
+        run: cargo build --locked --release --bins
 
       - name: Package
-        run: cargo package --allow-dirty
+        run: cargo package --locked --allow-dirty
 
       - name: Audit package archive
         shell: pwsh
@@ -66,18 +72,18 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Install Python for WAD tokenizer contracts
-        uses: actions/setup-python@v5
+      - name: Install Python for XUVA tokenizer contracts
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
       - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Build release launcher
-        run: cargo build --release --bins
+        run: cargo build --locked --release --bins
 
       - name: Run tokenizer dependency contracts
         shell: pwsh
