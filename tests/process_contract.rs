@@ -57,6 +57,11 @@ fn process_contract_guard() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn unique_temp_directory(label: &str) -> PathBuf {
+    let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("xuva-{label}-{}-{nonce}", std::process::id()))
+}
+
 #[test]
 fn dispatcher_owned_version_never_enters_environment_resolution() {
     let _guard = process_contract_guard();
@@ -78,6 +83,57 @@ fn dispatcher_owned_version_never_enters_environment_resolution() {
         format!("xuva {}", env!("CARGO_PKG_VERSION"))
     );
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn local_front_door_commands_have_a_bounded_latency_budget() {
+    let _guard = process_contract_guard();
+    let state = unique_temp_directory("latency-state");
+    let started = Instant::now();
+    let output = Command::new(launcher())
+        .env("XUVA_STATE_DIR", &state)
+        .args(["--explain-route", "git", "status", "--short"])
+        .output()
+        .expect("cold native Git route explanation starts");
+    let elapsed = started.elapsed();
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "cold native route explanation exceeded the 5 second budget: {elapsed:?}"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("route=raw"), "{stdout}");
+    let _ = std::fs::remove_dir_all(state);
+}
+
+#[test]
+fn help_update_and_shell_syntax_have_local_actionable_ux() {
+    let _guard = process_contract_guard();
+    let help = Command::new(launcher())
+        .arg("--help")
+        .output()
+        .expect("help starts");
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("never rebuilds a pipeline"));
+
+    let update = Command::new(launcher())
+        .arg("self-update")
+        .output()
+        .expect("self-update diagnosis starts");
+    assert!(update.status.success());
+    assert!(String::from_utf8_lossy(&update.stdout).contains("self-update --check"));
+
+    let operator = Command::new(launcher())
+        .arg("&&")
+        .output()
+        .expect("shell syntax diagnosis starts");
+    assert_eq!(operator.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&operator.stderr).contains("shell syntax"));
 }
 
 #[test]
@@ -628,7 +684,7 @@ fn wsl_shim_uses_a_compatible_windows_go_from_a_windows_backed_project() {
 }
 
 #[test]
-fn invalidates_wsl_provider_cache_when_version_changes_without_identity_change() {
+fn wsl_provider_version_changes_require_explicit_refresh_within_ttl() {
     let _guard = process_contract_guard();
     let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let fixture = format!(
@@ -701,6 +757,12 @@ fn invalidates_wsl_provider_cache_when_version_changes_without_identity_change()
         .args(["which", "go"])
         .output()
         .expect("version-changed Go lookup starts");
+    let mut refreshed = Command::new(launcher());
+    configure(&mut refreshed);
+    let refreshed = refreshed
+        .args(["which", "go", "--refresh"])
+        .output()
+        .expect("refreshed Go lookup starts");
     let cleanup = Command::new("wsl.exe")
         .args(["-d", "Ubuntu", "--exec", "rm", "-rf", "--", &fixture])
         .status()
@@ -710,14 +772,25 @@ fn invalidates_wsl_provider_cache_when_version_changes_without_identity_change()
 
     assert!(after_version_change.status.success());
     assert!(
-        String::from_utf8_lossy(&after_version_change.stdout).contains("cache=miss"),
-        "a changed tool version must invalidate a same-identity cache entry: {}",
+        String::from_utf8_lossy(&after_version_change.stdout).contains("cache=hit"),
+        "warm lookups must honor the bounded TTL without a version subprocess: {}",
         String::from_utf8_lossy(&after_version_change.stdout)
+    );
+    assert!(refreshed.status.success());
+    assert!(
+        String::from_utf8_lossy(&refreshed.stdout).contains("cache=miss"),
+        "explicit refresh must observe the changed provider version: {}",
+        String::from_utf8_lossy(&refreshed.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&refreshed.stdout).contains("fixture-v2"),
+        "refreshed provider evidence must include the new version: {}",
+        String::from_utf8_lossy(&refreshed.stdout)
     );
 }
 
 #[test]
-fn invalidates_provider_cache_when_the_project_git_revision_changes() {
+fn provider_cache_ignores_project_revision_until_explicit_refresh() {
     let _guard = process_contract_guard();
     let nonce = WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
@@ -772,6 +845,12 @@ fn invalidates_provider_cache_when_the_project_git_revision_changes() {
         "second",
     ]);
     let after_revision_change = which();
+    let refreshed = Command::new(launcher())
+        .env("XUVA_STATE_DIR", &state)
+        .current_dir(&directory)
+        .args(["which", "go", "--refresh"])
+        .output()
+        .expect("refreshed provider lookup starts");
     std::fs::remove_dir_all(&directory).expect("temporary Git project is removed");
 
     assert!(first.status.success());
@@ -788,9 +867,15 @@ fn invalidates_provider_cache_when_the_project_git_revision_changes() {
     );
     assert!(after_revision_change.status.success());
     assert!(
-        String::from_utf8_lossy(&after_revision_change.stdout).contains("cache=miss"),
-        "a changed Git revision must invalidate provider discovery: {}",
+        String::from_utf8_lossy(&after_revision_change.stdout).contains("cache=hit"),
+        "unrelated Git revisions must not put a subprocess on the provider hot path: {}",
         String::from_utf8_lossy(&after_revision_change.stdout)
+    );
+    assert!(refreshed.status.success());
+    assert!(
+        String::from_utf8_lossy(&refreshed.stdout).contains("cache=miss"),
+        "explicit refresh must revalidate provider discovery: {}",
+        String::from_utf8_lossy(&refreshed.stdout)
     );
 }
 
@@ -1113,13 +1198,13 @@ fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
     assert!(doctor_stdout.contains("tool=go"));
     assert!(doctor_stdout.contains("inspected_distro=Ubuntu;wsl_version=2"));
     assert!(doctor_stdout.contains(&format!("go_path={fixture}/go")));
-    assert!(doctor_stdout.contains("candidate_0=WslRaw;distro=Ubuntu;usable=true"));
+    assert!(doctor_stdout.contains("candidate_0=WslRtk;distro=Ubuntu;usable=true"));
     assert!(doctor_stdout.contains(&format!("candidate_0_project_path={expected_cwd}")));
     assert!(doctor_stdout.contains("diagnosis=candidate 0 is verified"));
     assert!(which_after_mutation.status.success());
     assert!(
-        String::from_utf8_lossy(&which_after_mutation.stdout).contains("cache=miss"),
-        "changed WSL binary identity must invalidate the cached discovery: {}",
+        String::from_utf8_lossy(&which_after_mutation.stdout).contains("cache=hit"),
+        "warm lookup must remain bounded by TTL; use doctor --refresh for identity revalidation: {}",
         String::from_utf8_lossy(&which_after_mutation.stdout)
     );
     assert_eq!(execution.status.code(), Some(42));
@@ -1481,7 +1566,13 @@ fn wad_provider_exec_runs_each_available_verified_provider_without_replay() {
         assert!(wsl_raw.status.success());
         assert!(String::from_utf8_lossy(&wsl_raw.stdout).starts_with("git version "));
 
-        let rejected = Command::new(&launcher)
+        let windows_project = env!("CARGO_MANIFEST_DIR");
+        let rendered = windows_project.replace('\\', "/");
+        let (drive, remainder) = rendered
+            .split_once(':')
+            .expect("manifest directory has a Windows drive");
+        let expected_wsl_project = format!("/mnt/{}{}", drive.to_ascii_lowercase(), remainder);
+        let translated = Command::new(&launcher)
             .env("XUVA_STATE_DIR", &state)
             .env("XUVA_WSL_DISTRO", "Ubuntu")
             .args([
@@ -1491,14 +1582,22 @@ fn wad_provider_exec_runs_each_available_verified_provider_without_replay() {
                 "--candidate",
                 &wsl_raw_index.to_string(),
                 "--",
-                r"E:\foreign\path",
+                "-C",
+                windows_project,
+                "rev-parse",
+                "--show-toplevel",
             ])
             .output()
-            .expect("foreign-path rejection starts");
-        assert!(!rejected.status.success());
+            .expect("foreign-path translation starts");
         assert!(
-            String::from_utf8_lossy(&rejected.stderr)
-                .contains("does not translate foreign absolute arguments")
+            translated.status.success(),
+            "stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&translated.stdout),
+            String::from_utf8_lossy(&translated.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&translated.stdout).trim(),
+            expected_wsl_project
         );
     }
 
@@ -1927,4 +2026,233 @@ fn ctrl_break_cancels_a_raw_windows_node_child() {
         "raw launcher unexpectedly succeeded after Ctrl+Break: stderr={stderr}"
     );
     std::fs::remove_file(&ready_file).expect("temporary raw Node readiness file is removed");
+}
+
+#[test]
+fn native_git_creates_commit_objects_in_an_ntfs_worktree() {
+    let _guard = process_contract_guard();
+    let directory = unique_temp_directory("ntfs-git");
+    std::fs::create_dir_all(&directory).expect("temporary NTFS worktree is created");
+    let init = Command::new("git.exe")
+        .args(["init", "--quiet"])
+        .arg(&directory)
+        .status()
+        .expect("Git for Windows starts");
+    assert!(init.success());
+    for (key, value) in [
+        ("user.name", "XUVA Contract"),
+        ("user.email", "xuva-contract@example.invalid"),
+    ] {
+        let status = Command::new("git.exe")
+            .arg("-C")
+            .arg(&directory)
+            .args(["config", key, value])
+            .status()
+            .expect("Git for Windows configuration starts");
+        assert!(status.success());
+    }
+    std::fs::write(directory.join("fixture.txt"), "native object write\n")
+        .expect("fixture file writes");
+    let state = directory.join("state");
+    for arguments in [
+        vec![
+            "git",
+            "-C",
+            directory.to_str().unwrap(),
+            "add",
+            "fixture.txt",
+        ],
+        vec![
+            "git",
+            "-C",
+            directory.to_str().unwrap(),
+            "commit",
+            "--quiet",
+            "-m",
+            "NTFS object contract",
+        ],
+    ] {
+        let output = Command::new(launcher())
+            .env("XUVA_STATE_DIR", &state)
+            .args(arguments)
+            .output()
+            .expect("XUVA Git mutation starts");
+        assert!(
+            output.status.success(),
+            "stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let verify = Command::new("git.exe")
+        .arg("-C")
+        .arg(&directory)
+        .args(["rev-parse", "--verify", "HEAD^{commit}"])
+        .output()
+        .expect("native Git commit verification starts");
+    assert!(
+        verify.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+
+    let explain = Command::new(launcher())
+        .env("XUVA_STATE_DIR", &state)
+        .args(["--explain-route", "git", "push", "origin", "HEAD"])
+        .output()
+        .expect("Git network route explanation starts");
+    let stdout = String::from_utf8_lossy(&explain.stdout);
+    assert!(explain.status.success(), "{stdout}");
+    assert!(stdout.contains("route=raw"), "{stdout}");
+    assert!(stdout.contains("Windows DNS"), "{stdout}");
+    std::fs::remove_dir_all(&directory).expect("temporary NTFS worktree is removed");
+}
+
+#[test]
+fn read_accepts_relative_windows_and_wsl_drive_paths() {
+    let _guard = process_contract_guard();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest = root.join("Cargo.toml");
+    let rendered = manifest.to_string_lossy();
+    let bytes = rendered.as_bytes();
+    assert!(bytes.len() > 3 && bytes[1] == b':');
+    let wsl_path = format!(
+        "/mnt/{}/{}",
+        (bytes[0] as char).to_ascii_lowercase(),
+        rendered[3..].replace('\\', "/")
+    );
+    let state = unique_temp_directory("read-state");
+    for argument in ["Cargo.toml".to_owned(), rendered.into_owned(), wsl_path] {
+        let output = Command::new(launcher())
+            .current_dir(&root)
+            .env("XUVA_STATE_DIR", &state)
+            .args(["read", &argument])
+            .output()
+            .expect("XUVA read starts");
+        assert!(
+            output.status.success(),
+            "argument={argument}; stdout={}; stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("name = \"xuva\""));
+    }
+    let _ = std::fs::remove_dir_all(state);
+}
+
+#[test]
+fn posix_find_head_and_tail_use_raw_wsl_semantics() {
+    let _guard = process_contract_guard();
+    let state = unique_temp_directory("find-state");
+    let explain = Command::new(launcher())
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("XUVA_STATE_DIR", &state)
+        .args(["--explain-route", "find", ".", "-maxdepth", "0", "-print"])
+        .output()
+        .expect("find route explanation starts");
+    let stdout = String::from_utf8_lossy(&explain.stdout);
+    assert!(explain.status.success(), "{stdout}");
+    assert!(stdout.contains("output_adapter=raw"), "{stdout}");
+    assert!(stdout.contains("WSL Ubuntu"), "{stdout}");
+
+    let output = Command::new(launcher())
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("XUVA_STATE_DIR", &state)
+        .args(["find", ".", "-maxdepth", "0", "-print"])
+        .output()
+        .expect("POSIX find starts");
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), ".");
+
+    for (arguments, expected) in [
+        (["head", "-n", "1", "Cargo.toml"], "[package]"),
+        (["tail", "-n", "1", "Cargo.toml"], "serde_json = \"1\""),
+    ] {
+        let output = Command::new(launcher())
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .env("XUVA_STATE_DIR", &state)
+            .args(arguments)
+            .output()
+            .expect("POSIX line utility starts");
+        assert!(
+            output.status.success(),
+            "argv={arguments:?}; stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected);
+    }
+    let _ = std::fs::remove_dir_all(state);
+}
+
+#[test]
+fn wsl_provider_receives_only_safe_forwarded_environment() {
+    let _guard = process_contract_guard();
+    let fixture = format!(
+        "/tmp/xuva-env-contract-{}-{}",
+        std::process::id(),
+        WAD_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed)
+    );
+    assert!(fixture.starts_with("/tmp/xuva-env-contract-"));
+    let setup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "sh", "-c"])
+        .arg(
+            r#"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'exec /usr/bin/printenv "$@"' > "$1/xuva-env-contract"; chmod 755 "$1/xuva-env-contract""#,
+        )
+        .arg("xuva-env-fixture")
+        .arg(&fixture)
+        .status()
+        .expect("WSL environment fixture setup starts");
+    assert!(setup.success());
+
+    let state = unique_temp_directory("env-state");
+    let run = |name: &str, value: &str, allowlist: Option<&str>| {
+        let mut command = Command::new(launcher());
+        command
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .env("XUVA_STATE_DIR", &state)
+            .env("XUVA_WSL_DISTRO", "Ubuntu")
+            .env("XUVA_WSL_EXTRA_PATH", &fixture)
+            .env(name, value)
+            .args(["xuva-env-contract", name]);
+        if let Some(allowlist) = allowlist {
+            command.env("XUVA_ENV_ALLOWLIST", allowlist);
+        }
+        command.output().expect("environment fixture starts")
+    };
+
+    let automatic = run("XPDE_RUN_TRAINING_E2E", "1", None);
+    assert!(
+        automatic.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&automatic.stdout),
+        String::from_utf8_lossy(&automatic.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&automatic.stdout).trim(), "1");
+
+    let explicit = run("PROJECT_MODE", "training", Some("PROJECT_MODE"));
+    assert!(
+        explicit.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&explicit.stdout),
+        String::from_utf8_lossy(&explicit.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&explicit.stdout).trim(), "training");
+
+    let secret = run("PROJECT_RUN_SECRET_TOKEN", "1", None);
+    assert_eq!(secret.status.code(), Some(1));
+    assert!(secret.stdout.is_empty());
+
+    let cleanup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "rm", "-rf", "--"])
+        .arg(&fixture)
+        .status()
+        .expect("WSL environment fixture cleanup starts");
+    assert!(cleanup.success());
+    let _ = std::fs::remove_dir_all(state);
 }

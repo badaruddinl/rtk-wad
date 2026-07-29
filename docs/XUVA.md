@@ -7,8 +7,8 @@ arguments it receives.
 ## Canonical command
 
 `xuva` is the primary executable, installer target, and supported command
-surface. `xuva` remains an intentionally compatible legacy launcher; WSL1
-and WSL2 remain explicit routes rather than separate binaries.
+surface. There is no legacy launcher in the current release line; WSL1 and
+WSL2 remain provider routes rather than separate binaries.
 
 ## Route selection
 
@@ -16,10 +16,10 @@ and WSL2 remain explicit routes rather than separate binaries.
 
 | Route | Auto-selection rule | Execution |
 | --- | --- | --- |
-| `raw` | Git mutation (`commit`, `push`, `reset`, and similar) | Native executable exactly once. |
-| `native-rtk` | Verified structured RTK command families and read-only Git | Stock Windows RTK with structured argv. |
-| `wsl1` | Linux path, WSL working directory, or no verified native adapter | Isolated WSL1 RTK. |
-| `wsl2` | Explicit only during alpha | Existing WSL2 RTK bridge. |
+| `raw` | Windows-worktree Git, Windows-native tools, or POSIX utilities with a verified WSL executable | Native executable exactly once on the owning host. |
+| `native-rtk` | Verified structured RTK command families with a native adapter | Stock Windows RTK with structured argv. |
+| `wsl1` | Explicit WSL1 backend or the only compatible provider | Isolated WSL1 provider. |
+| `wsl2` | Preferred verified Linux provider on the configured distro | Existing WSL2 provider with structured argv. |
 
 This policy deliberately does not fall back after a child process starts or
 returns a non-zero exit status. A failure therefore has the same observable
@@ -49,6 +49,13 @@ this keeps Flutter Windows workflows out of the WSL shell path.
 `wsl2`). A leading `--route` option has higher precedence for a single
 invocation. `XUVA_NATIVE_RTK_PATH` selects the stock native RTK executable;
 it defaults to `rtk.exe` on `PATH`.
+
+Git in a Windows worktree is pinned to Git for Windows. This includes
+read-only commands, NTFS mutations such as `commit`, and network mutations such
+as `push`; WSL is not a fallback for a Windows Git mutation. This preserves
+Git's object-store permissions, credential provider, proxy, and Windows DNS
+configuration. `xuva --explain-route ...` reports that ownership explicitly,
+and `xuva doctor git --json` includes the routing-health advisory.
 
 ## Evidence-backed decisions
 
@@ -122,6 +129,12 @@ five-minute local cache is per tool and can be bypassed with `--refresh`. See
 [`PROVIDER_DISCOVERY_PD1.md`](PROVIDER_DISCOVERY_PD1.md) for the exact scope,
 cache content, and deliberate cross-host limitations.
 
+A normal dispatch or `resolve` reuses the bounded cache without spawning Git,
+WSL identity, or version probes. Discovery checks the configured distro first
+and stops after the first sufficient provider. `doctor`, `--refresh`, setup,
+and explicit provider execution perform the complete inventory and version
+inspection. Repository revisions are intentionally not a provider-cache key.
+
 P13 validates a project's actual cross-host directory in both directions using
 the structured `wsl.exe --exec wslpath` form plus a target-host directory
 probe. This is still diagnostic-only; see
@@ -187,9 +200,10 @@ the token-saving threshold. See
 
 ## Shell and argv safety
 
-Use structured RTK commands such as `git`, `rg`, `grep`, `find`, `ls`, `tree`,
-`read`, `files`, and `diff`. They are eligible for the native route because
-their RTK implementations receive distinct arguments. Commands that rely on
+Use structured RTK commands such as `rg`, `grep`, `read`, `files`, and `diff`.
+POSIX utilities such as `find`, `head`, `tail`, `sed`, `awk`, `ls`, `tree`, and
+`wc` use a raw WSL executable so GNU/POSIX flags are not handed to an
+incompatible Windows system tool or a narrower output adapter. Commands that rely on
 the upstream Windows `run` parser or a single-string `proxy` form are not
 auto-routed to stock Windows RTK. They use WSL1 until their native contracts
 are independently verified.
@@ -201,6 +215,34 @@ forced WSL route, for example:
 ```powershell
 xuva --route wsl1 proxy /bin/sh -c 'printf "%s" "$HOME"'
 ```
+
+If a shell operator such as `&&` is passed as the command, XUVA exits with an
+actionable shell-syntax diagnostic. Operators inside another command's argv
+remain literal. XUVA never joins, quotes, or re-parses the user's argv.
+
+## Cross-host environment
+
+WSL execution retains a clean `env -i` boundary and adds only structured,
+reviewable assignments. The built-in safe set is `CI`, `COLORTERM`,
+`FORCE_COLOR`, `NO_COLOR`, `RUST_BACKTRACE`, and `TERM`. Boolean `*_RUN_*`
+feature gates are forwarded automatically when their value is exactly `0` or
+`1`; this includes `XPDE_RUN_TRAINING_E2E=1`.
+
+Additional non-secret names may be listed with a comma-separated
+`XUVA_ENV_ALLOWLIST`. Names must use POSIX identifier syntax. Credential-like
+names containing markers such as `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`,
+`COOKIE`, `PRIVATE_KEY`, `ACCESS_KEY`, or `AUTH` are refused. Environment
+assignments stay before the executable in the structured plan; no shell command
+is reconstructed.
+
+## Update diagnosis
+
+`xuva self-update --check` queries stable `vMAJOR.MINOR.PATCH` tags through Git
+for Windows with a ten-second timeout and reports `up-to-date` or
+`update-available`. It does not install or overwrite anything. `xuva
+self-update` prints the reviewed release/installer workflow, and failures point
+to Windows Git, DNS, proxy, or credential health rather than being routed as an
+external `self-update` command.
 
 ## Optional benchmark tokenizer
 

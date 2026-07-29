@@ -138,6 +138,7 @@ pub(crate) struct Config {
     pub(crate) environment: ExecutionEnvironment,
     pub(crate) native_rtk_path: String,
     pub(crate) output_adapter: OutputAdapterPreference,
+    pub(crate) environment_allowlist: Vec<String>,
 }
 
 impl Config {
@@ -203,6 +204,8 @@ impl Config {
             Some(value) => OutputAdapterPreference::parse(&value)?,
             None => OutputAdapterPreference::Auto,
         };
+        let environment_allowlist =
+            parse_environment_allowlist(lookup("XUVA_ENV_ALLOWLIST").as_deref())?;
 
         if lock_wait
             .parse::<u64>()
@@ -229,8 +232,66 @@ impl Config {
             environment,
             native_rtk_path,
             output_adapter,
+            environment_allowlist,
         })
     }
+}
+
+fn is_posix_environment_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.bytes().enumerate().all(|(index, byte)| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'_' => true,
+            b'0'..=b'9' => index > 0,
+            _ => false,
+        })
+}
+
+pub(crate) fn is_sensitive_environment_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    let sensitive_component = upper.split('_').any(|component| {
+        matches!(
+            component,
+            "TOKEN"
+                | "SECRET"
+                | "PASSWORD"
+                | "PASSWD"
+                | "CREDENTIAL"
+                | "CREDENTIALS"
+                | "COOKIE"
+                | "AUTH"
+        )
+    });
+    sensitive_component
+        || ["TOKEN", "PRIVATE_KEY", "ACCESS_KEY"]
+            .iter()
+            .any(|marker| upper.contains(marker))
+}
+
+fn parse_environment_allowlist(value: Option<&str>) -> Result<Vec<String>, String> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    if value.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut names = Vec::new();
+    for name in value.split(',').map(str::trim) {
+        if !is_posix_environment_name(name) {
+            return Err(
+                "XUVA_ENV_ALLOWLIST must be a comma-separated list of POSIX environment names"
+                    .to_owned(),
+            );
+        }
+        if is_sensitive_environment_name(name) {
+            return Err(format!(
+                "XUVA_ENV_ALLOWLIST refuses credential-like variable `{name}`"
+            ));
+        }
+        if !names.iter().any(|existing| existing == name) {
+            names.push(name.to_owned());
+        }
+    }
+    Ok(names)
 }
 
 fn required_setting(

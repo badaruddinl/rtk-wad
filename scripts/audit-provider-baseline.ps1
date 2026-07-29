@@ -366,6 +366,10 @@ $rtkCommandCoverage = foreach ($provider in $wslProviders | Where-Object { $_.Rt
     [pscustomobject]@{
         Distro = $provider.Distro
         WslVersion = $provider.WslVersion
+        Path = $provider.Rtk.Path
+        Version = $provider.Rtk.Version
+        VersionExitCode = $provider.Rtk.VersionExitCode
+        Sha256 = $provider.Rtk.Sha256
         ObservedCount = $coverage.ObservedCount
         ObservedOnly = $coverage.ObservedOnly
         ManifestOnly = $coverage.ManifestOnly
@@ -379,26 +383,68 @@ $windowsRtkCoverage = foreach ($provider in $windowsRtkEvidence) {
         Version = $provider.Version
         VersionExitCode = $provider.VersionExitCode
         HelpExitCode = $provider.HelpExitCode
+        Sha256 = $provider.Sha256
         ObservedCount = $coverage.ObservedCount
         ObservedOnly = $coverage.ObservedOnly
         ManifestOnly = $coverage.ManifestOnly
         ExactMatch = $coverage.ExactMatch
     }
 }
+$verifiedWindowsRtk = @(
+    $windowsRtkCoverage |
+        Where-Object {
+            $_.ExactMatch -and $_.VersionExitCode -eq 0 -and
+            $_.HelpExitCode -eq 0 -and $_.Version -and $_.Sha256
+        }
+)
+$verifiedWslRtk = @(
+    $rtkCommandCoverage |
+        Where-Object {
+            $_.ExactMatch -and $_.VersionExitCode -eq 0 -and
+            $_.Version -and $_.Sha256 -and $_.WslVersion -in @(1, 2)
+        } |
+        Sort-Object @{ Expression = { if ($_.WslVersion -eq 2) { 0 } else { 1 } } }, Distro
+)
+$manifestProvider = if ($verifiedWindowsRtk.Count -gt 0) {
+    [pscustomobject]@{
+        Kind = "windows-native"
+        Distro = $null
+        WslVersion = $null
+        Path = $verifiedWindowsRtk[0].Path
+        Version = $verifiedWindowsRtk[0].Version
+        Sha256 = $verifiedWindowsRtk[0].Sha256
+    }
+} elseif ($verifiedWslRtk.Count -gt 0) {
+    [pscustomobject]@{
+        Kind = "wsl$($verifiedWslRtk[0].WslVersion)"
+        Distro = $verifiedWslRtk[0].Distro
+        WslVersion = $verifiedWslRtk[0].WslVersion
+        Path = $verifiedWslRtk[0].Path
+        Version = $verifiedWslRtk[0].Version
+        Sha256 = $verifiedWslRtk[0].Sha256
+    }
+} else {
+    $null
+}
 $benchmarkPreflight = [pscustomobject]@{
     Protocol = "benchmark-matrix-preflight-v1"
     ManifestCommandCount = $manifestCommands.Count
-    WindowsNativeRtkReady = @($windowsRtkCoverage | Where-Object { $_.ExactMatch -and $_.VersionExitCode -eq 0 -and $_.HelpExitCode -eq 0 }).Count -gt 0
-    Wsl1RtkReady = @($rtkCommandCoverage | Where-Object { $_.WslVersion -eq 1 -and $_.ExactMatch }).Count -gt 0
-    Wsl2RtkReady = @($rtkCommandCoverage | Where-Object { $_.WslVersion -eq 2 -and $_.ExactMatch }).Count -gt 0
+    ManifestProviderReady = $null -ne $manifestProvider
+    ManifestProvider = $manifestProvider
+    WindowsNativeRtkReady = $verifiedWindowsRtk.Count -gt 0
+    Wsl1RtkReady = @($verifiedWslRtk | Where-Object { $_.WslVersion -eq 1 }).Count -gt 0
+    Wsl2RtkReady = @($verifiedWslRtk | Where-Object { $_.WslVersion -eq 2 }).Count -gt 0
     BlockingReasons = @(
-        if (@($windowsRtkCoverage | Where-Object { $_.ExactMatch -and $_.VersionExitCode -eq 0 -and $_.HelpExitCode -eq 0 }).Count -eq 0) {
+        if ($null -eq $manifestProvider) {
+            "No verified Windows or WSL RTK provider matches the embedded command manifest. Release manifest verification is blocked."
+        }
+        if ($verifiedWindowsRtk.Count -eq 0) {
             "No verified stock Windows RTK matches the embedded command manifest. Native three-way benchmark claims are blocked."
         }
-        if (@($rtkCommandCoverage | Where-Object { $_.WslVersion -eq 1 -and $_.ExactMatch }).Count -eq 0) {
+        if (@($verifiedWslRtk | Where-Object { $_.WslVersion -eq 1 }).Count -eq 0) {
             "No verified WSL1 RTK matches the embedded command manifest. WSL1 RTK benchmark claims are blocked."
         }
-        if (@($rtkCommandCoverage | Where-Object { $_.WslVersion -eq 2 -and $_.ExactMatch }).Count -eq 0) {
+        if (@($verifiedWslRtk | Where-Object { $_.WslVersion -eq 2 }).Count -eq 0) {
             "No verified WSL2 RTK matches the embedded command manifest. WSL2 RTK benchmark claims are blocked."
         }
     )

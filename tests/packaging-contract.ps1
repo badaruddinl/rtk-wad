@@ -59,6 +59,19 @@ try {
     Assert-Condition $failedSafely "missing source did not fail"
     Assert-Condition ((Get-Content -LiteralPath $target -Raw) -eq "surviving launcher`r`n") "failed install damaged the active launcher"
 
+    $invalidSource = Join-Path $temporaryRoot "invalid-xuva.exe"
+    Set-Content -LiteralPath $invalidSource -Value "not a Windows executable"
+    $backupExistedBeforeInvalid = Test-Path -LiteralPath $backup
+    $backupBeforeInvalid = if ($backupExistedBeforeInvalid) { Get-Content -LiteralPath $backup -Raw } else { $null }
+    $invalidRejected = $false
+    try { & $install -Destination $destination -Force -Source $invalidSource } catch { $invalidRejected = $true }
+    Assert-Condition $invalidRejected "invalid candidate launcher was not rejected"
+    Assert-Condition ((Get-Content -LiteralPath $target -Raw) -eq "surviving launcher`r`n") "candidate smoke-check failure damaged the active launcher"
+    Assert-Condition ((Test-Path -LiteralPath $backup) -eq $backupExistedBeforeInvalid) "candidate smoke-check failure changed rollback-backup presence"
+    if ($backupExistedBeforeInvalid) {
+        Assert-Condition ((Get-Content -LiteralPath $backup -Raw) -eq $backupBeforeInvalid) "candidate smoke-check failure changed rollback-backup content"
+    }
+
     Write-Output "Packaging contract passed"
     exit 0
 } finally {

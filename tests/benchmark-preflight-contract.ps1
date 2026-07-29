@@ -20,10 +20,17 @@ try {
     if ($report.BenchmarkPreflight.ManifestCommandCount -ne 69) {
         throw "Expected 69 manifest command families, got $($report.BenchmarkPreflight.ManifestCommandCount)."
     }
-    if ($null -eq $report.BenchmarkPreflight.WindowsNativeRtkReady -or
+    if ($null -eq $report.BenchmarkPreflight.ManifestProviderReady -or
+        $null -eq $report.BenchmarkPreflight.WindowsNativeRtkReady -or
         $null -eq $report.BenchmarkPreflight.Wsl1RtkReady -or
         $null -eq $report.BenchmarkPreflight.Wsl2RtkReady) {
         throw "P18 backend readiness fields are incomplete."
+    }
+    if ($report.BenchmarkPreflight.ManifestProviderReady) {
+        $provider = $report.BenchmarkPreflight.ManifestProvider
+        if (-not $provider.Kind -or -not $provider.Path -or -not $provider.Version -or -not $provider.Sha256) {
+            throw "The verified manifest provider lacks route, path, version, or SHA-256 evidence."
+        }
     }
     if ($null -eq $report.Manifest.WindowsCoverage) {
         throw "Native Windows RTK manifest evidence is missing."

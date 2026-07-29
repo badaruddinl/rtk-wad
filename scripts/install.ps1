@@ -16,7 +16,7 @@ $ErrorActionPreference = "Stop"
 $source = (Resolve-Path -LiteralPath $source).Path
 $targetDirectory = [System.IO.Path]::GetFullPath($Destination)
 $target = Join-Path $targetDirectory "xuva.exe"
-$temporary = Join-Path $targetDirectory ".xuva.exe.$PID.new"
+$temporary = Join-Path $targetDirectory ".xuva.$PID.new.exe"
 $tokenizerInstaller = Join-Path $PSScriptRoot "install-tokenizer.ps1"
 
 if ($InstallTokenizer -and $SkipTokenizer) {
@@ -40,13 +40,19 @@ if ($InstallTokenizer) {
     & $tokenizerInstaller @tokenizerArguments
     if ($LASTEXITCODE -ne 0) { throw "Optional WAD benchmark tokenizer installation failed." }
 }
+$backup = "$target.previous.exe"
+$activated = $false
+$hadExisting = Test-Path -LiteralPath $target
 try {
     Copy-Item -LiteralPath $source -Destination $temporary -ErrorAction Stop
-    if (Test-Path -LiteralPath $target) {
+    $versionOutput = @(& $temporary --version)
+    if (($LASTEXITCODE -ne 0) -or (($versionOutput -join "`n") -notmatch '^xuva \d+\.\d+\.\d+')) {
+        throw "Candidate launcher failed its local version smoke check."
+    }
+    if ($hadExisting) {
         if (-not $Force) {
             throw "Refusing to overwrite existing $target. Re-run with -Force after reviewing it."
         }
-        $backup = "$target.previous.exe"
         if (Test-Path -LiteralPath $backup) {
             throw "Refusing to overwrite existing backup $backup. Move or remove it deliberately first."
         }
@@ -54,6 +60,21 @@ try {
     }
 
     Move-Item -LiteralPath $temporary -Destination $target
+    $activated = $true
+    if (-not $SkipProviderScan) {
+        & $target scan
+        if ($LASTEXITCODE -ne 0) {
+            throw "Installed launcher capability scan failed with exit code $LASTEXITCODE."
+        }
+    }
+} catch {
+    if ($activated -and (Test-Path -LiteralPath $target)) {
+        Remove-Item -LiteralPath $target -Force
+    }
+    if ($hadExisting -and (Test-Path -LiteralPath $backup)) {
+        Move-Item -LiteralPath $backup -Destination $target
+    }
+    throw
 } finally {
     if (Test-Path -LiteralPath $temporary) {
         Remove-Item -LiteralPath $temporary -Force
@@ -61,9 +82,3 @@ try {
 }
 
 Write-Output "Installed $target"
-if (-not $SkipProviderScan) {
-    & $target scan
-    if ($LASTEXITCODE -ne 0) {
-        throw "Installed launcher capability scan failed with exit code $LASTEXITCODE."
-    }
-}

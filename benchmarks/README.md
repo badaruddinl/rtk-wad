@@ -28,9 +28,15 @@ missing provider:
 
 See [`BENCHMARK_MATRIX_P18.md`](../docs/BENCHMARK_MATRIX_P18.md). A missing
 native Windows RTK or WSL RTK is a blocked evidence row, not permission to use
-another backend as a stand-in.
+another backend as a stand-in. Release manifest verification is a separate,
+read-only contract: it automatically selects one identity-, version-, hash-,
+and help-verified RTK provider. It prefers native Windows RTK and otherwise
+uses XUVA's recommended verified WSL provider. This fallback proves only the
+69-command manifest and never fills a missing three-way benchmark row.
 
 ```powershell
+.\benchmarks\verify-command-manifest.ps1
+# Or pin a reviewed Windows provider:
 .\benchmarks\verify-command-manifest.ps1 -NativeRtk C:\tools\rtk.exe
 ```
 

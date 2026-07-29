@@ -1,21 +1,148 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)]
     [string]$NativeRtk,
-    [string]$ManifestPath = (Join-Path $PSScriptRoot "command-manifest.json")
+    [string]$Xuva,
+    [string]$ManifestPath
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$rtkManifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
-$rtkHelp = & $NativeRtk --help
-if ($LASTEXITCODE -ne 0) {
-    throw "Unable to read RTK help from $NativeRtk."
+$PSNativeCommandUseErrorActionPreference = $false
+
+$Xuva = if ($Xuva) { $Xuva } else { Join-Path $PSScriptRoot "..\target\release\xuva.exe" }
+$ManifestPath = if ($ManifestPath) { $ManifestPath } else { Join-Path $PSScriptRoot "command-manifest.json" }
+
+function Invoke-ProviderCapture {
+    param(
+        [Parameter(Mandatory)] [string]$Executable,
+        [Parameter(Mandatory)] [string[]]$Arguments
+    )
+
+    $previousErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $lines = @(
+            & $Executable @Arguments |
+                ForEach-Object { "$_" -split "`r?`n" } |
+                Where-Object { $_ -ne "" }
+        )
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Lines = $lines
+    }
 }
 
-$rtkCommands = $rtkHelp |
+function Resolve-CommandPath {
+    param(
+        [Parameter(Mandatory)] [string]$Value,
+        [Parameter(Mandatory)] [string]$Label
+    )
+
+    if (Test-Path -LiteralPath $Value -PathType Leaf) {
+        return (Resolve-Path -LiteralPath $Value -ErrorAction Stop).Path
+    }
+    $command = Get-Command $Value -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($command -and ($command.Source -or $command.Path)) {
+        return $(if ($command.Path) { $command.Path } else { $command.Source })
+    }
+    throw "$Label was not found: $Value"
+}
+
+$rtkManifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
+$providerKind = $null
+$providerDescription = $null
+$versionResult = $null
+$helpResult = $null
+
+if ($NativeRtk) {
+    $nativeRtkPath = Resolve-CommandPath -Value $NativeRtk -Label "Native RTK"
+    $versionResult = Invoke-ProviderCapture -Executable $nativeRtkPath -Arguments @("--version")
+    $helpResult = Invoke-ProviderCapture -Executable $nativeRtkPath -Arguments @("--help")
+    $providerKind = "windows-native"
+    $providerDescription = $nativeRtkPath
+} else {
+    $xuvaPath = Resolve-CommandPath -Value $Xuva -Label "XUVA launcher"
+    $doctorResult = Invoke-ProviderCapture -Executable $xuvaPath -Arguments @("doctor", "rtk", "--json")
+    if ($doctorResult.ExitCode -ne 0) {
+        throw "XUVA could not discover a verified RTK provider (exit $($doctorResult.ExitCode))."
+    }
+    try {
+        $doctor = ($doctorResult.Lines -join [Environment]::NewLine) | ConvertFrom-Json
+    } catch {
+        throw "XUVA returned invalid RTK provider evidence: $($_.Exception.Message)"
+    }
+    if ($doctor.schema_version -lt 3 -or $doctor.tool -ne "rtk") {
+        throw "XUVA returned an unsupported RTK provider-evidence schema."
+    }
+
+    $candidates = @($doctor.candidates)
+    if ($null -eq $doctor.recommended -or $doctor.recommended -lt 0 -or
+        $doctor.recommended -ge $candidates.Count) {
+        throw "XUVA did not recommend a verified RTK provider."
+    }
+    $candidateIndex = [int]$doctor.recommended
+    $candidate = $candidates[$candidateIndex]
+    if (-not [bool]$candidate.usable -or
+        $candidate.kind -notin @("windows_raw", "wsl_raw", "wsl_rtk") -or
+        -not $candidate.executable) {
+        throw "XUVA recommended an unusable or unsupported RTK provider."
+    }
+
+    if ($candidate.kind -eq "windows_raw") {
+        $evidence = $doctor.availability.windows
+        if (-not $evidence.executable_identity -or -not $evidence.executable_version -or
+            $evidence.executable -ne $candidate.executable) {
+            throw "The recommended Windows RTK provider lacks matching identity and version evidence."
+        }
+    } else {
+        $matchingEvidence = @(
+            $doctor.availability.wsl |
+                Where-Object {
+                    $_.distro -eq $candidate.distro -and
+                    $_.executable -eq $candidate.executable -and
+                    $_.wsl_version -eq $candidate.wsl_version
+                }
+        )
+        if ($matchingEvidence.Count -ne 1 -or
+            -not $matchingEvidence[0].executable_identity -or
+            -not $matchingEvidence[0].executable_version -or
+            $candidate.wsl_version -notin @(1, 2)) {
+            throw "The recommended WSL RTK provider lacks matching distro, identity, and version evidence."
+        }
+        $evidence = $matchingEvidence[0]
+    }
+
+    $providerArguments = @("provider", "exec", "rtk", "--candidate", "$candidateIndex", "--")
+    $versionResult = Invoke-ProviderCapture -Executable $xuvaPath -Arguments ($providerArguments + "--version")
+    $helpResult = Invoke-ProviderCapture -Executable $xuvaPath -Arguments ($providerArguments + "--help")
+    $observedVersion = @($versionResult.Lines | Where-Object { $_.Trim() } | Select-Object -First 1)
+    if ($observedVersion.Count -ne 1 -or $observedVersion[0] -ne $evidence.executable_version) {
+        throw "The executed RTK provider version does not match XUVA's verified provider evidence."
+    }
+    $providerKind = "$($candidate.kind)"
+    $providerDescription = if ($candidate.distro) {
+        "xuva candidate $candidateIndex ($($candidate.distro):$($candidate.executable))"
+    } else {
+        "xuva candidate $candidateIndex ($($candidate.executable))"
+    }
+}
+
+if ($versionResult.ExitCode -ne 0 -or -not @($versionResult.Lines | Where-Object { $_.Trim() })) {
+    throw "Unable to read RTK version from $providerDescription."
+}
+if ($helpResult.ExitCode -ne 0) {
+    throw "Unable to read RTK help from $providerDescription."
+}
+
+$rtkCommands = $helpResult.Lines |
     Where-Object { $_ -match '^  ([a-z][a-z0-9-]*)\s{2,}' } |
     ForEach-Object { ([regex]::Match($_, '^  ([a-z][a-z0-9-]*)\s{2,}')).Groups[1].Value } |
-    Where-Object { $_ -ne "help" }
+    Where-Object { $_ -ne "help" } |
+    Sort-Object -Unique
 $manifestCommands = [System.Collections.Generic.List[string]]::new()
 foreach ($command in $rtkManifest.native_structured) { $manifestCommands.Add([string]$command) }
 foreach ($command in $rtkManifest.raw_native) { $manifestCommands.Add([string]$command) }
@@ -23,11 +150,13 @@ foreach ($command in $rtkManifest.wsl1_conservative) { $manifestCommands.Add([st
 foreach ($command in $rtkManifest.wad_internal) {
     if ($command -notmatch '^-' -and $command -ne "stats") { $manifestCommands.Add([string]$command) }
 }
-$manifestCommands = [string[]]$manifestCommands.ToArray()
+$manifestCommands = [string[]]@($manifestCommands.ToArray() | Sort-Object -Unique)
 $differences = Compare-Object -ReferenceObject $rtkCommands -DifferenceObject $manifestCommands
 if ($differences) {
     $detail = $differences | ForEach-Object { "$($_.SideIndicator)$($_.InputObject)" }
     throw "Command manifest mismatch: $($detail -join ', ')."
 }
 
+Write-Output "provider_kind=$providerKind"
+Write-Output "provider=$providerDescription"
 Write-Output "Command manifest covers $($rtkCommands.Count) RTK command families."

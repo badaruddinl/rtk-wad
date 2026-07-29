@@ -94,6 +94,7 @@ Install it for the current user:
 ```powershell
 .\scripts\install.ps1
 xuva gain
+xuva self-update --check
 ```
 
 The installer performs `xuva scan` after activating the binary. It
@@ -102,6 +103,12 @@ distros that actually exist, without executing those tools, installing a
 toolchain, or forcing WSL. The dispatcher resolves and caches any safe
 executable name on demand; use `xuva scan nvm rustc` to refresh named
 providers across Windows and WSL explicitly.
+
+The installer smoke-tests the candidate binary before activation and restores
+the previous launcher if the post-install provider scan fails. `self-update`
+is deliberately diagnostic-only: `--check` queries stable tags through Git for
+Windows, while installation still requires a reviewed release or trusted
+checkout.
 
 The core installer has no Python or tokenizer dependency. The pinned
 [`tiktoken`](requirements/wad-tokenizer.txt) environment is optional and used
@@ -208,6 +215,13 @@ system, conversation, output, and model pricing all affect an eventual bill.
 
 - Exact argv forwarding handles spaces, quotes, Unicode, `&`, `;`, `$`, and
   backslashes without shell reconstruction.
+- Drive-qualified Windows arguments and standard `/mnt/<drive>/...` arguments
+  are translated as individual path argv when the verified provider is on the
+  other host.
+- Git operations in Windows worktrees use Git for Windows for NTFS object
+  writes, credentials, and Windows DNS. Mutations never fall back to WSL.
+- POSIX utilities such as `find`, `head`, and `tail` use raw WSL executables;
+  a same-named Windows system tool is not treated as semantically compatible.
 - Drive CWD mapping, exit code propagation, stdout/stderr, Ctrl+C, child
   processes, and lock release have automated process-contract coverage.
 - WSL use requires an explicit verified provider and path mapping. WSL1 and
@@ -227,6 +241,12 @@ sh /mnt/c/tools/xuva-wsl.sh go version
 Set `XUVA_WSL_EXTRA_PATH` only when a WSL-only tool lives outside that distro's
 normal `PATH`. The shim is required because WSL does not forward arbitrary
 Linux environment variables to Windows `.exe` processes.
+
+Cross-host children start from a clean environment. XUVA forwards a small
+safe set (`CI`, color controls, `TERM`, and `RUST_BACKTRACE`), boolean
+`*_RUN_*` feature gates such as `XPDE_RUN_TRAINING_E2E=1`, and names explicitly
+listed in the comma-separated `XUVA_ENV_ALLOWLIST`. Credential-like names are
+rejected even when they resemble a feature gate or appear in the allowlist.
 
 ## Documentation
 
