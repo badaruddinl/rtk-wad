@@ -266,6 +266,12 @@ system, conversation, output, and model pricing all affect an eventual bill.
 - WSL1 and WSL2 use an attest-then-permit launch handshake. A target cannot
   begin until the parent has observed its cancellation boundary, so an
   immediate Ctrl+C cannot leave a command starting in the background.
+- WSL1 keeps a Linux supervisor alive after the permit. Normal return is
+  accepted only when that supervisor has stopped same-process-group
+  descendants, published an installation-ID-bound completion record, and its
+  status matches the Windows proxy. A missing or contradictory completion
+  resets only the revalidated dedicated WSL1 distro before the mutex is
+  released.
 - WSL2 cancellation state lives under a nonce-named file in a non-symlink,
   user-owned `0700` runtime directory; token files are regular, user-owned
   `0600` files. A launcher removes another token only after proving its Linux
@@ -274,6 +280,11 @@ system, conversation, output, and model pricing all affect an eventual bill.
   every member of its process group. Cancellation continues inside Linux even
   if the Windows `wsl.exe` proxy exits first, and a missing token is not treated
   as proof of cleanup without that completion attestation.
+- XUVA is a foreground command dispatcher, not a daemon launcher. A command
+  cannot detach same-process-group children past XUVA's return. Deliberately
+  creating a separate Linux session (for example with `setsid`) crosses the
+  supported supervision boundary and must be managed by an external service
+  manager.
 - WSL use requires an explicit verified provider and path mapping. WSL1 and
   WSL2 are measured routes, not a default performance claim.
 - Existing Windows and WSL tool installations can be diagnosed on demand.

@@ -139,7 +139,8 @@ attestation_file=$8
 permit_file=$9
 completion_file=${10}
 launch_delay=${11}
-shift 11
+completion_override=${12}
+shift 12
 
 if [ -z "$rtk_path" ]; then
     rtk_path="$HOME/.local/bin/rtk"
@@ -214,8 +215,11 @@ cleanup() {
     [ -z "$cancel_token" ] || /bin/rm -f -- "$cancel_token"
 }
 publish_completion() {
-    completion_status=$1
-    printf '%s:%s' "$cancel_nonce" "$completion_status" > "$completion_staging" &&
+    attested_status=$1
+    if [ -n "$completion_override" ]; then
+        attested_status=$completion_override
+    fi
+    printf '%s:%s' "$cancel_nonce" "$attested_status" > "$completion_staging" &&
         /bin/mv -f -- "$completion_staging" "$completion_file"
 }
 finish() {
@@ -245,6 +249,10 @@ trap ':' INT TERM
 case "$launch_delay" in
     0|1|2|3|4|5) ;;
     *) printf 'xuva: invalid test launch delay\n' >&2; exit 1 ;;
+esac
+case "$completion_override" in
+    ''|0|1|2|3|4|5|6|7|8|9|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5]) ;;
+    *) printf 'xuva: invalid test completion override\n' >&2; exit 1 ;;
 esac
 if [ "$launch_delay" -ne 0 ]; then
     /bin/sleep "$launch_delay"
@@ -334,46 +342,66 @@ fi
 status=$?
 exit "$status"
 "#;
-const WSL1_LAUNCH_SCRIPT: &str = r#"
-rtk_path=$1
-metrics_db_path=$2
-extra_path=$3
-ready_file=$4
-attestation_file=$5
-permit_file=$6
-attestation_delay=$7
-shift 7
-
-if [ -z "$rtk_path" ]; then
-    rtk_path="$HOME/.local/bin/rtk"
-fi
-case "$attestation_delay" in
-    0|1|2|3|4|5) ;;
-    *) printf 'xuva: invalid test attestation delay\n' >&2; exit 126 ;;
-esac
-if [ "$attestation_delay" -ne 0 ]; then
-    /bin/sleep "$attestation_delay"
-fi
-marker=/etc/xuva-dedicated-wsl1
+const WSL1_MARKER_VALIDATOR_SCRIPT: &str = r#"
+marker=${1:-/etc/xuva-dedicated-wsl1}
 if [ -L "$marker" ] || [ ! -f "$marker" ] || [ ! -r "$marker" ] ||
    [ "$(/usr/bin/stat -Lc '%u:%a' -- "$marker" 2>/dev/null)" != "0:444" ] ||
-   ! /bin/grep -qx 'product=xuva' "$marker" ||
-   ! /bin/grep -qx 'schema_version=1' "$marker" ||
-   ! /bin/grep -qx 'dedicated=true' "$marker"; then
-    printf 'xuva: WSL1 distro lacks a valid dedicated-runtime marker\n' >&2
+   [ "$(/usr/bin/wc -l < "$marker" 2>/dev/null)" != "4" ] ||
+   [ "$(/bin/grep -c '^product=xuva$' "$marker" 2>/dev/null)" != "1" ] ||
+   [ "$(/bin/grep -c '^schema_version=1$' "$marker" 2>/dev/null)" != "1" ] ||
+   [ "$(/bin/grep -c '^dedicated=true$' "$marker" 2>/dev/null)" != "1" ] ||
+   [ "$(/bin/grep -c '^installation_id=' "$marker" 2>/dev/null)" != "1" ]; then
     exit 126
 fi
 installation_id=$(/bin/sed -n 's/^installation_id=//p' "$marker")
 case "$installation_id" in
     ????????-????-????-????-????????????) ;;
-    *) printf 'xuva: WSL1 marker has an invalid installation ID\n' >&2; exit 126 ;;
+    *) exit 126 ;;
 esac
 case "$installation_id" in
-    *[!0-9A-Fa-f-]*) printf 'xuva: WSL1 marker has an invalid installation ID\n' >&2; exit 126 ;;
+    *[!0-9A-Fa-f-]*) exit 126 ;;
 esac
+printf '%s\n' "$installation_id"
+"#;
+
+const WSL1_LAUNCH_SCRIPT: &str = r#"
+metrics_db_path=$1
+extra_path=$2
+ready_file=$3
+attestation_file=$4
+permit_file=$5
+completion_file=$6
+attestation_delay=$7
+marker_validator=$8
+completion_override=$9
+marker_path=${10}
+fixed_executable=${11}
+shift 11
+
+case "$attestation_delay" in
+    0|1|2|3|4|5) ;;
+    *) printf 'xuva: invalid test attestation delay\n' >&2; exit 126 ;;
+esac
+case "$completion_override" in
+    ''|0|1|2|3|4|5|6|7|8|9|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5]) ;;
+    *) printf 'xuva: invalid test completion override\n' >&2; exit 126 ;;
+esac
+if [ -z "$attestation_file" ] || [ -z "$permit_file" ] ||
+   [ -z "$completion_file" ] || [ -z "$marker_validator" ]; then
+    printf 'xuva: incomplete WSL1 supervision metadata\n' >&2
+    exit 126
+fi
+if [ "$attestation_delay" -ne 0 ]; then
+    /bin/sleep "$attestation_delay"
+fi
+installation_id=$(/bin/sh -c "$marker_validator" xuva-marker-validator "$marker_path") || {
+    marker_description=${marker_path:-/etc/xuva-dedicated-wsl1}
+    printf 'xuva: WSL1 distro lacks a valid dedicated-runtime marker at %s\n' "$marker_description" >&2
+    exit 126
+}
 attestation_staging="${attestation_file}.staging"
-if [ -z "$attestation_file" ] ||
-   ! printf '%s' "$installation_id" > "$attestation_staging" ||
+completion_staging="${completion_file}.staging"
+if ! printf '%s' "$installation_id" > "$attestation_staging" ||
    ! /bin/mv -f -- "$attestation_staging" "$attestation_file"; then
     /bin/rm -f -- "$attestation_staging"
     printf 'xuva: unable to attest the dedicated WSL1 runtime\n' >&2
@@ -394,6 +422,76 @@ if [ "$permit_id" != "$installation_id" ]; then
     exit 126
 fi
 
+group_has_other_members() {
+    for stat_path in /proc/[0-9]*/stat; do
+        [ -r "$stat_path" ] || continue
+        process_id=${stat_path#/proc/}
+        process_id=${process_id%/stat}
+        [ "$process_id" != "$$" ] || continue
+        stat_value=$(/bin/cat -- "$stat_path" 2>/dev/null) || continue
+        stat_fields=${stat_value##*) }
+        set -- $stat_fields
+        [ "${3:-}" = "$$" ] && return 0
+    done
+    return 1
+}
+signal_other_members() {
+    member_signal=$1
+    for stat_path in /proc/[0-9]*/stat; do
+        [ -r "$stat_path" ] || continue
+        process_id=${stat_path#/proc/}
+        process_id=${process_id%/stat}
+        [ "$process_id" != "$$" ] || continue
+        stat_value=$(/bin/cat -- "$stat_path" 2>/dev/null) || continue
+        stat_fields=${stat_value##*) }
+        set -- $stat_fields
+        [ "${3:-}" = "$$" ] || continue
+        /bin/kill "-$member_signal" -- "$process_id" 2>/dev/null || true
+    done
+}
+quiesce_process_group() {
+    group_has_other_members || return 0
+    signal_other_members TERM
+    remaining=20
+    while group_has_other_members && [ "$remaining" -gt 0 ]; do
+        remaining=$((remaining - 1))
+        /bin/sleep 0.05
+    done
+    group_has_other_members || return 0
+    signal_other_members KILL
+    remaining=20
+    while group_has_other_members && [ "$remaining" -gt 0 ]; do
+        remaining=$((remaining - 1))
+        /bin/sleep 0.05
+    done
+    ! group_has_other_members
+}
+publish_completion() {
+    attested_status=$1
+    if [ -n "$completion_override" ]; then
+        attested_status=$completion_override
+    fi
+    printf '%s:%s' "$installation_id" "$attested_status" > "$completion_staging" &&
+        /bin/mv -f -- "$completion_staging" "$completion_file"
+}
+finish() {
+    completion_status=$?
+    trap - EXIT INT TERM
+    if ! quiesce_process_group; then
+        /bin/rm -f -- "$completion_staging"
+        printf 'xuva: WSL1 child process group did not quiesce\n' >&2
+        exit 125
+    fi
+    publish_completion "$completion_status" || {
+        /bin/rm -f -- "$completion_staging"
+        printf 'xuva: unable to publish WSL1 completion attestation\n' >&2
+        completion_status=125
+    }
+    exit "$completion_status"
+}
+trap finish EXIT
+trap ':' INT TERM
+
 user=${USER:-}
 if [ -n "$extra_path" ]; then
     path_prefix="$extra_path:"
@@ -403,12 +501,26 @@ fi
 if [ -n "$ready_file" ]; then
     printf 'ready' > "$ready_file"
 fi
-exec /usr/bin/env -i \
-    HOME="$HOME" \
-    USER="$user" \
-    PATH="${path_prefix}$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-    RTK_DB_PATH="$metrics_db_path" \
-    "$rtk_path" "$@"
+if [ "$fixed_executable" = "@default-rtk@" ]; then
+    fixed_executable="$HOME/.local/bin/rtk"
+fi
+if [ -n "$fixed_executable" ]; then
+    /usr/bin/env -i \
+        HOME="$HOME" \
+        USER="$user" \
+        PATH="${path_prefix}$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+        RTK_DB_PATH="$metrics_db_path" \
+        "$fixed_executable" "$@"
+else
+    /usr/bin/env -i \
+        HOME="$HOME" \
+        USER="$user" \
+        PATH="${path_prefix}$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+        RTK_DB_PATH="$metrics_db_path" \
+        "$@"
+fi
+status=$?
+exit "$status"
 "#;
 const PLAN_LAUNCH_SCRIPT: &str = r#"
 lock_wait=$1
@@ -421,7 +533,8 @@ attestation_file=$7
 permit_file=$8
 completion_file=$9
 launch_delay=${10}
-shift 10
+completion_override=${11}
+shift 11
 
 user=${USER:-}
 if [ -n "$extra_path" ]; then
@@ -492,8 +605,11 @@ cleanup() {
     [ -z "$cancel_token" ] || /bin/rm -f -- "$cancel_token"
 }
 publish_completion() {
-    completion_status=$1
-    printf '%s:%s' "$cancel_nonce" "$completion_status" > "$completion_staging" &&
+    attested_status=$1
+    if [ -n "$completion_override" ]; then
+        attested_status=$completion_override
+    fi
+    printf '%s:%s' "$cancel_nonce" "$attested_status" > "$completion_staging" &&
         /bin/mv -f -- "$completion_staging" "$completion_file"
 }
 finish() {
@@ -519,6 +635,10 @@ trap ':' INT TERM
 case "$launch_delay" in
     0|1|2|3|4|5) ;;
     *) printf 'xuva-plan: invalid test launch delay\n' >&2; exit 1 ;;
+esac
+case "$completion_override" in
+    ''|0|1|2|3|4|5|6|7|8|9|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5]) ;;
+    *) printf 'xuva-plan: invalid test completion override\n' >&2; exit 1 ;;
 esac
 if [ "$launch_delay" -ne 0 ]; then
     /bin/sleep "$launch_delay"
@@ -612,78 +732,6 @@ fi
 status=$?
 exit "$status"
 "#;
-const WSL1_PLAN_LAUNCH_SCRIPT: &str = r#"
-metrics_db_path=$1
-extra_path=$2
-ready_file=$3
-attestation_file=$4
-permit_file=$5
-attestation_delay=$6
-shift 6
-
-case "$attestation_delay" in
-    0|1|2|3|4|5) ;;
-    *) printf 'xuva: invalid test attestation delay\n' >&2; exit 126 ;;
-esac
-if [ "$attestation_delay" -ne 0 ]; then
-    /bin/sleep "$attestation_delay"
-fi
-marker=/etc/xuva-dedicated-wsl1
-if [ -L "$marker" ] || [ ! -f "$marker" ] || [ ! -r "$marker" ] ||
-   [ "$(/usr/bin/stat -Lc '%u:%a' -- "$marker" 2>/dev/null)" != "0:444" ] ||
-   ! /bin/grep -qx 'product=xuva' "$marker" ||
-   ! /bin/grep -qx 'schema_version=1' "$marker" ||
-   ! /bin/grep -qx 'dedicated=true' "$marker"; then
-    printf 'xuva: WSL1 distro lacks a valid dedicated-runtime marker\n' >&2
-    exit 126
-fi
-installation_id=$(/bin/sed -n 's/^installation_id=//p' "$marker")
-case "$installation_id" in
-    ????????-????-????-????-????????????) ;;
-    *) printf 'xuva: WSL1 marker has an invalid installation ID\n' >&2; exit 126 ;;
-esac
-case "$installation_id" in
-    *[!0-9A-Fa-f-]*) printf 'xuva: WSL1 marker has an invalid installation ID\n' >&2; exit 126 ;;
-esac
-attestation_staging="${attestation_file}.staging"
-if [ -z "$attestation_file" ] ||
-   ! printf '%s' "$installation_id" > "$attestation_staging" ||
-   ! /bin/mv -f -- "$attestation_staging" "$attestation_file"; then
-    /bin/rm -f -- "$attestation_staging"
-    printf 'xuva: unable to attest the dedicated WSL1 runtime\n' >&2
-    exit 126
-fi
-remaining=500
-while [ ! -r "$permit_file" ]; do
-    if [ "$remaining" -le 0 ]; then
-        printf 'xuva: parent did not authorize the attested WSL1 launch\n' >&2
-        exit 126
-    fi
-    remaining=$((remaining - 1))
-    /bin/sleep 0.02
-done
-permit_id=$(/bin/cat -- "$permit_file") || exit 126
-if [ "$permit_id" != "$installation_id" ]; then
-    printf 'xuva: WSL1 launch permit does not match the dedicated runtime\n' >&2
-    exit 126
-fi
-user=${USER:-}
-if [ -n "$extra_path" ]; then
-    path_prefix="$extra_path:"
-else
-    path_prefix=""
-fi
-if [ -n "$ready_file" ]; then
-    printf 'ready' > "$ready_file"
-fi
-exec /usr/bin/env -i \
-    HOME="$HOME" \
-    USER="$user" \
-    PATH="${path_prefix}$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-    RTK_DB_PATH="$metrics_db_path" \
-    "$@"
-"#;
-
 fn decode_wsl_output(bytes: &[u8]) -> String {
     if bytes.chunks_exact(2).any(|pair| pair[1] == 0) {
         let units = bytes
@@ -1267,7 +1315,18 @@ fn probe_wsl_tool(
     extra_path: Option<&str>,
     inspect_version: bool,
 ) -> WslToolProbe {
-    let script = "if [ -n \"$2\" ]; then PATH=\"$2:$PATH\"; fi; tool_path=$(command -v \"$1\" 2>/dev/null || true); case \"$tool_path\" in /*) [ -f \"$tool_path\" ] && [ -x \"$tool_path\" ] || tool_path= ;; *) tool_path= ;; esac; rtk_path=$(command -v rtk 2>/dev/null || true); case \"$rtk_path\" in /*) [ -f \"$rtk_path\" ] && [ -x \"$rtk_path\" ] || rtk_path= ;; *) rtk_path= ;; esac; tool_identity=$(stat -Lc '%s:%Y' -- \"$tool_path\" 2>/dev/null || true); rtk_identity=$(stat -Lc '%s:%Y' -- \"$rtk_path\" 2>/dev/null || true); installation_id=; if [ \"$3\" = 1 ]; then marker=/etc/xuva-dedicated-wsl1; if [ ! -L \"$marker\" ] && [ -f \"$marker\" ] && [ -r \"$marker\" ] && [ \"$(stat -Lc '%u:%a' -- \"$marker\" 2>/dev/null)\" = '0:444' ] && grep -qx 'product=xuva' \"$marker\" && grep -qx 'schema_version=1' \"$marker\" && grep -qx 'dedicated=true' \"$marker\"; then installation_id=$(sed -n 's/^installation_id=//p' \"$marker\"); fi; fi; printf '%s\\n%s\\n%s\\n%s\\n%s\\n' \"$tool_path\" \"$rtk_path\" \"$tool_identity\" \"$rtk_identity\" \"$installation_id\"";
+    let script = concat!(
+        "if [ -n \"$2\" ]; then PATH=\"$2:$PATH\"; fi; ",
+        "tool_path=$(command -v \"$1\" 2>/dev/null || true); ",
+        "case \"$tool_path\" in /*) [ -f \"$tool_path\" ] && [ -x \"$tool_path\" ] || tool_path= ;; *) tool_path= ;; esac; ",
+        "rtk_path=$(command -v rtk 2>/dev/null || true); ",
+        "case \"$rtk_path\" in /*) [ -f \"$rtk_path\" ] && [ -x \"$rtk_path\" ] || rtk_path= ;; *) rtk_path= ;; esac; ",
+        "tool_identity=$(stat -Lc '%s:%Y' -- \"$tool_path\" 2>/dev/null || true); ",
+        "rtk_identity=$(stat -Lc '%s:%Y' -- \"$rtk_path\" 2>/dev/null || true); ",
+        "installation_id=; ",
+        "if [ \"$3\" = 1 ]; then installation_id=$(/bin/sh -c \"$4\") || installation_id=; fi; ",
+        "printf '%s\\n%s\\n%s\\n%s\\n%s\\n' \"$tool_path\" \"$rtk_path\" \"$tool_identity\" \"$rtk_identity\" \"$installation_id\"",
+    );
     let deadline = Instant::now() + Duration::from_secs(3);
     let output = loop {
         let mut command = Command::new("wsl.exe");
@@ -1275,7 +1334,8 @@ fn probe_wsl_tool(
             .args(wsl_exec_prefix(distro, user))
             .args(["sh", "-c", script, "xuva-provider-probe", tool])
             .arg(extra_path.unwrap_or_default())
-            .arg(wsl_version.map_or_else(String::new, |version| version.to_string()));
+            .arg(wsl_version.map_or_else(String::new, |version| version.to_string()))
+            .arg(WSL1_MARKER_VALIDATOR_SCRIPT);
         let output = process::run_probe(&mut command);
         let should_retry = wsl_version == Some(1)
             && output
@@ -3416,6 +3476,20 @@ fn test_wsl1_attestation_delay_seconds() -> u8 {
         .unwrap_or(0)
 }
 
+fn test_wsl1_marker_path() -> String {
+    if env::var("XUVA_TEST_MODE").as_deref() != Ok("1") {
+        return String::new();
+    }
+    env::var("XUVA_TEST_WSL1_MARKER_PATH")
+        .ok()
+        .filter(|path| {
+            path.starts_with('/')
+                && !path.contains(['\0', '\r', '\n'])
+                && path.split('/').all(|part| !matches!(part, "." | ".."))
+        })
+        .unwrap_or_default()
+}
+
 fn test_wsl2_launch_delay_seconds() -> u8 {
     if env::var("XUVA_TEST_MODE").as_deref() != Ok("1") {
         return 0;
@@ -3425,6 +3499,25 @@ fn test_wsl2_launch_delay_seconds() -> u8 {
         .and_then(|value| value.parse::<u8>().ok())
         .filter(|value| *value <= 5)
         .unwrap_or(0)
+}
+
+fn test_completion_status_override() -> Option<u8> {
+    (env::var("XUVA_TEST_MODE").as_deref() == Ok("1"))
+        .then(|| {
+            env::var("XUVA_TEST_COMPLETION_STATUS_OVERRIDE")
+                .ok()
+                .and_then(|value| value.parse::<u8>().ok())
+        })
+        .flatten()
+}
+
+fn test_kill_wsl1_proxy_after_permit() -> bool {
+    env::var("XUVA_TEST_MODE").as_deref() == Ok("1")
+        && env::var("XUVA_TEST_KILL_WSL1_PROXY_AFTER_PERMIT").as_deref() == Ok("1")
+}
+
+fn test_ready_file_exists() -> bool {
+    env::var_os("XUVA_WSL_TEST_READY_FILE").is_some_and(|path| PathBuf::from(path).is_file())
 }
 
 fn test_kill_wsl2_proxy_during_cancellation() -> bool {
@@ -3480,6 +3573,9 @@ fn rtk_arguments_with_metrics(
         OsString::from(permit_path),
         OsString::from(completion_path),
         OsString::from(test_wsl2_launch_delay_seconds().to_string()),
+        OsString::from(
+            test_completion_status_override().map_or_else(String::new, |value| value.to_string()),
+        ),
     ]);
     command.extend(forwarded);
     command
@@ -3493,6 +3589,7 @@ fn wsl1_rtk_arguments(arguments: Vec<OsString>, config: &Config) -> Vec<OsString
         None,
         "/tmp/xuva-test.attestation",
         "/tmp/xuva-test.permit",
+        "/tmp/xuva-test.completion",
     )
 }
 
@@ -3502,22 +3599,31 @@ fn wsl1_rtk_arguments_with_metrics(
     metrics_db_path: Option<&str>,
     attestation_path: &str,
     permit_path: &str,
+    completion_path: &str,
 ) -> Vec<OsString> {
     let forwarded = forwarded_rtk_arguments(arguments);
     let mut command = wsl_launch_prefix(config);
     command.extend([
         OsString::from("--exec"),
+        OsString::from("/usr/bin/setsid"),
+        OsString::from("-w"),
         OsString::from("/bin/sh"),
         OsString::from("-c"),
         OsString::from(WSL1_LAUNCH_SCRIPT),
         OsString::from("xuva-wsl1"),
-        OsString::from(config.rtk_path.as_deref().unwrap_or("")),
         OsString::from(metrics_db_path.unwrap_or("")),
         OsString::from(config.extra_path.as_deref().unwrap_or("")),
         OsString::from(test_ready_wsl_path().unwrap_or_default()),
         OsString::from(attestation_path),
         OsString::from(permit_path),
+        OsString::from(completion_path),
         OsString::from(test_wsl1_attestation_delay_seconds().to_string()),
+        OsString::from(WSL1_MARKER_VALIDATOR_SCRIPT),
+        OsString::from(
+            test_completion_status_override().map_or_else(String::new, |value| value.to_string()),
+        ),
+        OsString::from(test_wsl1_marker_path()),
+        OsString::from(config.rtk_path.as_deref().unwrap_or("@default-rtk@")),
     ]);
     command.extend(forwarded);
     command
@@ -3590,18 +3696,34 @@ fn plan_wsl_arguments_with_metrics(
                     "WSL1 execution plans require a parent launch-permit path",
                 )
             })?;
+            let completion_path = metadata.completion_path.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "WSL1 execution plans require a completion-attestation path",
+                )
+            })?;
             command.extend([
                 OsString::from("--exec"),
+                OsString::from("/usr/bin/setsid"),
+                OsString::from("-w"),
                 OsString::from("/bin/sh"),
                 OsString::from("-c"),
-                OsString::from(WSL1_PLAN_LAUNCH_SCRIPT),
+                OsString::from(WSL1_LAUNCH_SCRIPT),
                 OsString::from("xuva-wsl1-plan"),
                 OsString::from(metadata.metrics_db_path.unwrap_or("")),
                 OsString::from(config.extra_path.as_deref().unwrap_or("")),
                 OsString::from(test_ready_wsl_path().unwrap_or_default()),
                 OsString::from(attestation_path),
                 OsString::from(permit_path),
+                OsString::from(completion_path),
                 OsString::from(test_wsl1_attestation_delay_seconds().to_string()),
+                OsString::from(WSL1_MARKER_VALIDATOR_SCRIPT),
+                OsString::from(
+                    test_completion_status_override()
+                        .map_or_else(String::new, |value| value.to_string()),
+                ),
+                OsString::from(test_wsl1_marker_path()),
+                OsString::new(),
             ]);
         }
         Route::Wsl2 => {
@@ -3647,6 +3769,10 @@ fn plan_wsl_arguments_with_metrics(
                 OsString::from(permit_path),
                 OsString::from(completion_path),
                 OsString::from(test_wsl2_launch_delay_seconds().to_string()),
+                OsString::from(
+                    test_completion_status_override()
+                        .map_or_else(String::new, |value| value.to_string()),
+                ),
             ]);
         }
         Route::Auto | Route::Raw | Route::NativeRtk => {
@@ -3927,25 +4053,16 @@ fn dedicated_wsl1_installation_id_for(distro: &str) -> Option<String> {
         "-u",
         "root",
         "--exec",
-        "/bin/cat",
-        "/etc/xuva-dedicated-wsl1",
+        "/bin/sh",
+        "-c",
+        WSL1_MARKER_VALIDATOR_SCRIPT,
     ]);
     let output = process::run_probe(&mut command).ok()?;
     if !output.status.success() || output.stdout_truncated {
         return None;
     }
     let rendered = decode_wsl_output(&output.stdout);
-    let fields = rendered
-        .lines()
-        .filter_map(|line| line.split_once('='))
-        .collect::<std::collections::HashMap<_, _>>();
-    if fields.get("product") != Some(&"xuva")
-        || fields.get("schema_version") != Some(&"1")
-        || fields.get("dedicated") != Some(&"true")
-    {
-        return None;
-    }
-    let installation_id = fields.get("installation_id")?.trim();
+    let installation_id = rendered.trim();
     valid_installation_id(installation_id).then(|| installation_id.to_owned())
 }
 
@@ -4111,6 +4228,16 @@ impl LaunchPermitGuard {
     }
 
     fn completion_status(&self) -> std::io::Result<Option<i32>> {
+        let expected_value = self.expected_value.as_deref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "an unbound WSL launch guard requires an explicit completion identity",
+            )
+        })?;
+        self.completion_status_for(expected_value)
+    }
+
+    fn completion_status_for(&self, expected_value: &str) -> std::io::Result<Option<i32>> {
         let completion = match fs::read_to_string(&self.completion_windows_path) {
             Ok(value) => value,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -4127,7 +4254,7 @@ impl LaunchPermitGuard {
                 "the WSL child completion attestation is malformed",
             )
         })?;
-        if Some(identity) != self.expected_value.as_deref() {
+        if identity != expected_value {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "the WSL child completed under a different launch identity",
@@ -4161,6 +4288,30 @@ impl Drop for LaunchPermitGuard {
         let mut completion_staging = self.completion_windows_path.as_os_str().to_os_string();
         completion_staging.push(".staging");
         let _ = fs::remove_file(PathBuf::from(completion_staging));
+    }
+}
+
+fn verify_proxy_completion_status(
+    proxy_status: ExitStatus,
+    attested_status: i32,
+) -> std::io::Result<ExitStatus> {
+    if proxy_status.code() == Some(attested_status) {
+        Ok(proxy_status)
+    } else {
+        Err(std::io::Error::other(format!(
+            "WSL completion status {attested_status} differs from proxy status {:?}",
+            proxy_status.code()
+        )))
+    }
+}
+
+fn verify_pre_authorization_proxy_status(proxy_status: ExitStatus) -> std::io::Result<ExitStatus> {
+    if proxy_status.success() {
+        Err(std::io::Error::other(
+            "WSL1 proxy exited successfully before launch authorization; the target was not executed",
+        ))
+    } else {
+        Ok(proxy_status)
     }
 }
 
@@ -4315,6 +4466,9 @@ fn wait_for_wsl1_child(
     let started = Instant::now();
     let mut authorized = false;
     let mut accepted_installation_id = None;
+    let mut proxy_status = None;
+    let mut proxy_exited_at = None;
+    let mut test_proxy_killed = false;
     loop {
         let cancellation_requested = console::requested();
         if cancellation_requested {
@@ -4396,21 +4550,96 @@ fn wait_for_wsl1_child(
                 }
             }
         }
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
-            Ok(None) => {}
-            Err(error) => {
-                let cleanup = stop_cancelled_wsl1_child(
-                    &mut child,
-                    config,
-                    accepted_installation_id.as_deref(),
-                );
-                return Err(match cleanup {
-                    Ok(_) => error,
-                    Err(cleanup_error) => std::io::Error::other(format!(
-                        "{error}; WSL1 child status cleanup failed: {cleanup_error}"
-                    )),
-                });
+        if authorized
+            && !test_proxy_killed
+            && test_kill_wsl1_proxy_after_permit()
+            && test_ready_file_exists()
+        {
+            // The test-only ready boundary is published immediately before
+            // target launch. Give the target one scheduler turn so the
+            // contract exercises a proxy failure after execution has begun.
+            thread::sleep(Duration::from_millis(100));
+            trace("test hook terminated the WSL1 Windows proxy after launch permit");
+            let _ = child.kill();
+            test_proxy_killed = true;
+        }
+        if proxy_status.is_none() {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    trace(format!("WSL1 Windows proxy exited with {status}"));
+                    proxy_status = Some(status);
+                    proxy_exited_at = Some(Instant::now());
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let cleanup = stop_cancelled_wsl1_child(
+                        &mut child,
+                        config,
+                        accepted_installation_id.as_deref(),
+                    );
+                    return Err(match cleanup {
+                        Ok(_) => error,
+                        Err(cleanup_error) => std::io::Error::other(format!(
+                            "{error}; WSL1 child status cleanup failed: {cleanup_error}"
+                        )),
+                    });
+                }
+            }
+        }
+        if let Some(status) = proxy_status {
+            if !authorized {
+                return verify_pre_authorization_proxy_status(status);
+            }
+            let installation_id = accepted_installation_id.as_deref().ok_or_else(|| {
+                std::io::Error::other(
+                    "an authorized WSL1 child has no accepted dedicated-runtime identity",
+                )
+            })?;
+            match launch_guard.completion_status_for(installation_id) {
+                Ok(Some(attested_status)) => {
+                    match verify_proxy_completion_status(status, attested_status) {
+                        Ok(status) => return Ok(status),
+                        Err(error) => {
+                            let cleanup = stop_cancelled_wsl1_child(
+                                &mut child,
+                                config,
+                                Some(installation_id),
+                            );
+                            return Err(match cleanup {
+                                Ok(_) => error,
+                                Err(cleanup_error) => std::io::Error::other(format!(
+                                    "{error}; WSL1 mismatch recovery failed: {cleanup_error}"
+                                )),
+                            });
+                        }
+                    }
+                }
+                Ok(None)
+                    if proxy_exited_at
+                        .is_some_and(|exited| exited.elapsed() < Duration::from_millis(500)) => {}
+                Ok(None) => {
+                    let error = std::io::Error::other(
+                        "WSL1 proxy exited after launch permit without a completion attestation",
+                    );
+                    let cleanup =
+                        stop_cancelled_wsl1_child(&mut child, config, Some(installation_id));
+                    return Err(match cleanup {
+                        Ok(_) => error,
+                        Err(cleanup_error) => std::io::Error::other(format!(
+                            "{error}; WSL1 incomplete-launch recovery failed: {cleanup_error}"
+                        )),
+                    });
+                }
+                Err(error) => {
+                    let cleanup =
+                        stop_cancelled_wsl1_child(&mut child, config, Some(installation_id));
+                    return Err(match cleanup {
+                        Ok(_) => error,
+                        Err(cleanup_error) => std::io::Error::other(format!(
+                            "{error}; WSL1 invalid-completion recovery failed: {cleanup_error}"
+                        )),
+                    });
+                }
             }
         }
         if !authorized && started.elapsed() >= Duration::from_secs(10) {
@@ -4494,7 +4723,9 @@ fn wait_for_wsl_child(
             && pending_error.is_none()
         {
             match launch_guard.completion_status() {
-                Ok(Some(_)) => return Ok(*status),
+                Ok(Some(attested_status)) => {
+                    return verify_proxy_completion_status(*status, attested_status);
+                }
                 Ok(None)
                     if proxy_exited_at
                         .is_some_and(|exited| exited.elapsed() < Duration::from_millis(500)) => {}
@@ -5444,6 +5675,7 @@ fn run_wsl_route(
             metrics_path.as_deref(),
             &launch_guard.attestation_wsl_path,
             &launch_guard.permit_wsl_path,
+            &launch_guard.completion_wsl_path,
         ));
         let result = process.spawn().and_then(|child| {
             trace("spawned identity-gated WSL1 proxy");
@@ -5508,7 +5740,7 @@ fn run_wsl_execution_plan(
                 metrics_db_path: metrics_path.as_deref(),
                 attestation_path: Some(&launch_guard.attestation_wsl_path),
                 permit_path: Some(&launch_guard.permit_wsl_path),
-                completion_path: None,
+                completion_path: Some(&launch_guard.completion_wsl_path),
             },
         )?;
         trace("starting identity-gated WSL1 plan while holding the global mutex");
@@ -6408,7 +6640,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_wsl1_route_uses_the_windows_mutex_without_redundant_linux_locking() {
+    fn explicit_wsl1_route_uses_the_windows_mutex_and_supervised_process_group() {
         let config = Config::from_lookup(|name| match name {
             "XUVA_WSL_BACKEND" => Some("wsl1".to_owned()),
             _ => None,
@@ -6431,13 +6663,92 @@ mod tests {
         assert!(
             strings
                 .iter()
-                .any(|value| value.contains("exec /usr/bin/env"))
+                .any(|value| value.contains("publish_completion"))
+        );
+        assert!(
+            strings
+                .iter()
+                .any(|value| value.contains("/usr/bin/env -i"))
         );
         assert!(!strings.iter().any(|value| value.contains("/usr/bin/flock")));
-        assert!(!strings.iter().any(|value| value == "/usr/bin/setsid"));
+        assert!(strings.iter().any(|value| value == "/usr/bin/setsid"));
         assert_eq!(
             strings.last().map(|value| value.as_ref()),
             Some("space & $HOME")
+        );
+    }
+
+    #[test]
+    fn every_wsl1_launch_surface_uses_the_same_strict_marker_validator() {
+        let config = Config::from_lookup(|name| match name {
+            "XUVA_WSL_BACKEND" => Some("wsl1".to_owned()),
+            _ => None,
+        })
+        .expect("explicit WSL1 configuration is valid");
+        let rtk_arguments = wsl1_rtk_arguments_with_metrics(
+            vec![OsString::from("smart")],
+            &config,
+            None,
+            "/tmp/xuva-test.attestation",
+            "/tmp/xuva-test.permit",
+            "/tmp/xuva-test.completion",
+        );
+        let plan_arguments = plan_wsl_arguments_with_metrics(
+            &OsString::from("/usr/bin/printf"),
+            &[OsString::from("%s"), OsString::from("fixture")],
+            &[],
+            &config,
+            Route::Wsl1,
+            WslLaunchMetadata {
+                cancel_nonce: None,
+                metrics_db_path: None,
+                attestation_path: Some("/tmp/xuva-test.attestation"),
+                permit_path: Some("/tmp/xuva-test.permit"),
+                completion_path: Some("/tmp/xuva-test.completion"),
+            },
+        )
+        .expect("WSL1 plan arguments are valid");
+
+        for arguments in [&rtk_arguments, &plan_arguments] {
+            assert_eq!(
+                arguments
+                    .iter()
+                    .filter(|argument| argument.as_os_str() == WSL1_MARKER_VALIDATOR_SCRIPT)
+                    .count(),
+                1,
+                "each WSL1 launch must receive the canonical marker validator exactly once"
+            );
+            assert!(
+                arguments
+                    .iter()
+                    .any(|argument| argument.as_os_str() == WSL1_LAUNCH_SCRIPT)
+            );
+        }
+        assert!(!WSL1_LAUNCH_SCRIPT.contains("marker=/etc/xuva-dedicated-wsl1"));
+        assert!(WSL1_MARKER_VALIDATOR_SCRIPT.contains("stat -Lc '%u:%a'"));
+        assert!(WSL1_MARKER_VALIDATOR_SCRIPT.contains("!= \"0:444\""));
+        assert!(WSL1_MARKER_VALIDATOR_SCRIPT.contains("grep -c '^installation_id='"));
+    }
+
+    #[test]
+    fn wsl1_proxy_cannot_report_success_before_target_authorization() {
+        let success = Command::new("cmd.exe")
+            .args(["/d", "/c", "exit 0"])
+            .status()
+            .expect("successful proxy fixture starts");
+        let rejected = verify_pre_authorization_proxy_status(success)
+            .expect_err("pre-authorization success must not impersonate target success");
+        assert!(rejected.to_string().contains("target was not executed"));
+
+        let failure = Command::new("cmd.exe")
+            .args(["/d", "/c", "exit 126"])
+            .status()
+            .expect("failed proxy fixture starts");
+        assert_eq!(
+            verify_pre_authorization_proxy_status(failure)
+                .expect("launcher failure remains observable")
+                .code(),
+            Some(126)
         );
     }
 
@@ -6600,6 +6911,23 @@ mod tests {
                 guard
                     .completion_status()
                     .expect_err("out-of-range completion is rejected")
+                    .kind(),
+                std::io::ErrorKind::InvalidData
+            );
+            fs::write(&completion, "ffffffffffffffffffffffffffffffff:37")
+                .expect("mismatched completion is written");
+            assert_eq!(
+                guard
+                    .completion_status()
+                    .expect_err("mismatched completion identity is rejected")
+                    .kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            fs::write(&completion, "not-a-completion").expect("malformed completion is written");
+            assert_eq!(
+                guard
+                    .completion_status()
+                    .expect_err("malformed completion is rejected")
                     .kind(),
                 std::io::ErrorKind::InvalidData
             );

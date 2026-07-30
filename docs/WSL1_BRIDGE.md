@@ -155,12 +155,20 @@ dedicated-runtime marker before execution and again before termination. A
 renamed or overridden general-purpose distro without this marker is rejected
 and is never terminated.
 
-The Windows mutex makes Linux `flock` redundant for WSL1, and dedicated-distro
-termination makes a Linux process group redundant for cancellation. The
-optimized WSL1 launch therefore uses a small shell only to resolve the selected
-user's home and establish a clean environment, then directly executes RTK. This
-preserves portable user and path overrides without the previous `setsid` and
-`flock` startup cost.
+The Windows mutex makes Linux `flock` redundant for WSL1, but it does not prove
+that Linux descendants are gone when the Windows proxy exits. The WSL1 launch
+therefore creates a dedicated process group and retains a small supervisor
+after the permit. On normal exit, the supervisor sends `TERM` and then `KILL`
+to remaining same-group descendants, publishes an installation-ID-bound
+completion record, and returns the target status. The Windows parent accepts
+the result only when that status matches the `wsl.exe` proxy. Missing,
+malformed, or contradictory completion causes a revalidation and reset of the
+dedicated distro before the Windows mutex is released.
+
+This boundary intentionally covers foreground commands and their inherited
+process group. XUVA is not a daemon launcher: a child that explicitly starts a
+new Linux session (for example with `setsid`) is outside XUVA supervision and
+must be owned by an external service manager.
 
 WSL2 retains Linux process-group signal escalation and is never terminated by
 this profile-specific lifecycle. It now uses the same attest-then-permit

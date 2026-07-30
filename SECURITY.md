@@ -36,7 +36,16 @@ or an identity-matched completion attestation. A WSL1 child validates and
 attests the root-owned, read-only dedicated-runtime marker in the same session
 before the parent can permit execution. Cancellation accepts that exact
 installation ID and requires it to match the marker again immediately before
-`wsl.exe --terminate`.
+`wsl.exe --terminate`. After authorization, the WSL1 launcher remains as a
+process-group supervisor. It publishes completion only after same-group
+descendants are gone, and the Windows parent requires the attested status to
+match the proxy status. Missing, malformed, or contradictory completion is a
+fail-closed lifecycle error that revalidates and resets only the dedicated
+WSL1 distro before releasing the global mutex.
+
+XUVA supervises foreground process groups; it is not a daemon service manager.
+A child that intentionally creates a new Linux session is outside this
+boundary and must have a separately managed lifecycle.
 
 Provider discovery records path, size, and modification time. The current
 public-beta threat model trusts the selected user's local toolchain and writable

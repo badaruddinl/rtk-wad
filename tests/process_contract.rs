@@ -293,6 +293,42 @@ fn preserves_stdout_stderr_exit_codes_and_literal_arguments() {
 }
 
 #[test]
+fn rejects_completion_status_that_differs_from_the_windows_proxy() {
+    let _guard = process_contract_guard();
+    let output = command("/bin/sh")
+        .args(["-c", "exit 0"])
+        .env("XUVA_TEST_MODE", "1")
+        .env("XUVA_TEST_COMPLETION_STATUS_OVERRIDE", "37")
+        .env("XUVA_METRICS", "off")
+        .output()
+        .expect("completion-mismatch launcher starts");
+    assert!(
+        !output.status.success(),
+        "a forged completion status unexpectedly succeeded"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("completion status 37 differs from proxy status Some(0)"),
+        "completion/proxy mismatch was not reported: {stderr}"
+    );
+
+    let next = command("/usr/bin/printf")
+        .args(["%s", "after-completion-mismatch"])
+        .env("XUVA_METRICS", "off")
+        .output()
+        .expect("post-mismatch invocation starts");
+    assert!(
+        next.status.success(),
+        "runtime was not reusable after mismatch rejection: {}",
+        String::from_utf8_lossy(&next.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&next.stdout),
+        "after-completion-mismatch"
+    );
+}
+
+#[test]
 fn supports_stdin_for_a_simple_interactive_command() {
     let _guard = process_contract_guard();
     let mut child = command("/bin/sh")
@@ -2496,6 +2532,280 @@ fn immediate_ctrl_break_cannot_authorize_a_wsl1_target() {
         "after-immediate-cancel"
     );
     std::fs::remove_dir_all(directory).expect("immediate-cancel fixture is removed");
+}
+
+#[test]
+fn normal_wsl1_completion_reaps_background_group_members_before_returning() {
+    let _guard = process_contract_guard();
+    let Ok(distro) = std::env::var("XUVA_WSL1_TEST_DISTRO") else {
+        return;
+    };
+    let directory = unique_temp_directory("wsl1-normal-background");
+    std::fs::create_dir_all(&directory).expect("WSL1 background fixture is created");
+    let pid_file = directory.join("background.pid");
+    let mapped_pid = Command::new("wsl.exe")
+        .args(["-d", &distro, "--exec", "wslpath", "-a"])
+        .arg(&pid_file)
+        .output()
+        .expect("WSL1 background PID path mapping starts");
+    assert!(mapped_pid.status.success());
+    let mapped_pid = String::from_utf8_lossy(&mapped_pid.stdout)
+        .trim()
+        .to_owned();
+
+    let output = command("/bin/sh")
+        .args([
+            "-c",
+            concat!(
+                "(printf 'xuva) wsl1 worker' > /proc/self/comm; ",
+                "trap '' TERM; while :; do :; done) & ",
+                "printf '%s' \"$!\" > \"$1\"; exit 0",
+            ),
+            "xuva-wsl1-background-worker",
+            &mapped_pid,
+        ])
+        .env("XUVA_METRICS", "off")
+        .output()
+        .expect("WSL1 background-worker command starts");
+    assert!(
+        output.status.success(),
+        "WSL1 supervisor rejected normal completion: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let worker_pid = std::fs::read_to_string(&pid_file)
+        .expect("WSL1 background worker PID is readable")
+        .trim()
+        .to_owned();
+    let stopped = Command::new("wsl.exe")
+        .args([
+            "-d",
+            &distro,
+            "--exec",
+            "/bin/sh",
+            "-c",
+            "! kill -0 \"$1\" 2>/dev/null",
+            "xuva-wsl1-background-cleanup",
+            &worker_pid,
+        ])
+        .status()
+        .expect("WSL1 background cleanup probe starts");
+    assert!(
+        stopped.success(),
+        "XUVA returned while a WSL1 background process-group member remained"
+    );
+
+    let next = command("/usr/bin/printf")
+        .args(["%s", "after-background-cleanup"])
+        .env("XUVA_METRICS", "off")
+        .output()
+        .expect("post-background WSL1 invocation starts");
+    assert!(next.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&next.stdout),
+        "after-background-cleanup"
+    );
+    std::fs::remove_dir_all(directory).expect("WSL1 background fixture is removed");
+}
+
+#[test]
+fn wsl1_proxy_exit_after_permit_resets_the_dedicated_runtime() {
+    let _guard = process_contract_guard();
+    let Ok(distro) = std::env::var("XUVA_WSL1_TEST_DISTRO") else {
+        return;
+    };
+    let directory = unique_temp_directory("wsl1-proxy-exit");
+    std::fs::create_dir_all(&directory).expect("WSL1 proxy-exit fixture is created");
+    let ready_file = directory.join("ready");
+    let pid_file = directory.join("worker.pid");
+    let mapped_pid = Command::new("wsl.exe")
+        .args(["-d", &distro, "--exec", "wslpath", "-a"])
+        .arg(&pid_file)
+        .output()
+        .expect("WSL1 proxy-exit PID path mapping starts");
+    assert!(mapped_pid.status.success());
+    let mapped_pid = String::from_utf8_lossy(&mapped_pid.stdout)
+        .trim()
+        .to_owned();
+
+    let output = command("/bin/sh")
+        .args([
+            "-c",
+            "printf '%s' \"$$\" > \"$1\"; while :; do sleep 1; done",
+            "xuva-wsl1-proxy-exit-worker",
+            &mapped_pid,
+        ])
+        .env("XUVA_TEST_MODE", "1")
+        .env("XUVA_TEST_KILL_WSL1_PROXY_AFTER_PERMIT", "1")
+        .env("XUVA_WSL_TEST_READY_FILE", &ready_file)
+        .env("XUVA_WSL_TRACE", "1")
+        .env("XUVA_METRICS", "off")
+        .output()
+        .expect("WSL1 proxy-exit command starts");
+    assert!(
+        !output.status.success(),
+        "a killed WSL1 proxy unexpectedly produced a successful completion"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("test hook terminated the WSL1 Windows proxy after launch permit"),
+        "the post-permit proxy failure was not exercised: {stderr}"
+    );
+    assert!(
+        stderr.contains("without a completion attestation"),
+        "missing WSL1 completion proof was not rejected: {stderr}"
+    );
+    assert!(
+        pid_file.exists(),
+        "the proxy was killed before the permitted target started"
+    );
+
+    let running = Command::new("wsl.exe")
+        .args(["--list", "--running", "--quiet"])
+        .output()
+        .expect("running distro inventory starts");
+    assert!(running.status.success());
+    let running = decode_wsl_list(&running.stdout).replace('\0', "");
+    assert!(
+        !running.lines().any(|line| line.trim() == distro),
+        "the dedicated WSL1 distro survived a proxy exit: {running}"
+    );
+
+    let next = command("/usr/bin/printf")
+        .args(["%s", "after-proxy-recovery"])
+        .env("XUVA_METRICS", "off")
+        .output()
+        .expect("post-proxy-recovery WSL1 invocation starts");
+    assert!(
+        next.status.success(),
+        "WSL1 runtime or mutex was not reusable: {}",
+        String::from_utf8_lossy(&next.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&next.stdout),
+        "after-proxy-recovery"
+    );
+    std::fs::remove_dir_all(directory).expect("WSL1 proxy-exit fixture is removed");
+}
+
+#[test]
+fn wsl1_marker_validator_enforces_one_root_owned_read_only_contract() {
+    let _guard = process_contract_guard();
+    let Ok(distro) = std::env::var("XUVA_WSL1_TEST_DISTRO") else {
+        return;
+    };
+    let fixture_root = format!("/tmp/xuva-marker-contract-{}", std::process::id());
+    let actual_id = Command::new("wsl.exe")
+        .args([
+            "-d",
+            &distro,
+            "-u",
+            "root",
+            "--exec",
+            "/bin/sed",
+            "-n",
+            "s/^installation_id=//p",
+            "/etc/xuva-dedicated-wsl1",
+        ])
+        .output()
+        .expect("dedicated installation ID query starts");
+    assert!(actual_id.status.success());
+    let actual_id = String::from_utf8_lossy(&actual_id.stdout).trim().to_owned();
+    assert!(!actual_id.is_empty());
+    let prepared = Command::new("wsl.exe")
+        .args([
+            "-d",
+            &distro,
+            "-u",
+            "root",
+            "--exec",
+            "/bin/sh",
+            "-c",
+            concat!(
+                "set -eu; root=$1; id=$2; rm -rf -- \"$root\"; mkdir -m 755 -- \"$root\"; ",
+                "printf 'product=xuva\\nschema_version=1\\ninstallation_id=%s\\ndedicated=true\\n' \"$id\" > \"$root/valid\"; ",
+                "cp -- \"$root/valid\" \"$root/writable\"; chmod 0644 \"$root/writable\"; ",
+                "cp -- \"$root/valid\" \"$root/duplicate\"; printf 'dedicated=true\\n' >> \"$root/duplicate\"; ",
+                "sed '/^dedicated=true$/d' \"$root/valid\" > \"$root/missing\"; ",
+                "sed 's/^installation_id=.*/installation_id=not-a-uuid/' \"$root/valid\" > \"$root/malformed-id\"; ",
+                "cp -- \"$root/valid\" \"$root/extra\"; printf 'unknown=value\\n' >> \"$root/extra\"; ",
+                "cp -- \"$root/valid\" \"$root/wrong-owner\"; chown 65534:65534 \"$root/wrong-owner\"; ",
+                "chmod 0444 \"$root/valid\" \"$root/duplicate\" \"$root/missing\" \"$root/malformed-id\" \"$root/extra\" \"$root/wrong-owner\"; ",
+                "ln -s -- \"$root/valid\" \"$root/symlink\"",
+            ),
+            "xuva-marker-fixture",
+            &fixture_root,
+            &actual_id,
+        ])
+        .status()
+        .expect("marker fixture preparation starts");
+    assert!(prepared.success());
+
+    let valid = command("/usr/bin/printf")
+        .args(["%s", "marker-valid"])
+        .env("XUVA_TEST_MODE", "1")
+        .env(
+            "XUVA_TEST_WSL1_MARKER_PATH",
+            format!("{fixture_root}/valid"),
+        )
+        .env("XUVA_METRICS", "off")
+        .output()
+        .expect("valid marker launch starts");
+    assert!(
+        valid.status.success(),
+        "the canonical marker contract was rejected: {}",
+        String::from_utf8_lossy(&valid.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&valid.stdout), "marker-valid");
+
+    for invalid in [
+        "writable",
+        "duplicate",
+        "missing",
+        "malformed-id",
+        "extra",
+        "wrong-owner",
+        "symlink",
+    ] {
+        let output = command("/usr/bin/printf")
+            .args(["%s", "must-not-run"])
+            .env("XUVA_TEST_MODE", "1")
+            .env(
+                "XUVA_TEST_WSL1_MARKER_PATH",
+                format!("{fixture_root}/{invalid}"),
+            )
+            .env("XUVA_METRICS", "off")
+            .output()
+            .unwrap_or_else(|error| panic!("{invalid} marker launch failed to start: {error}"));
+        assert!(
+            !output.status.success(),
+            "{invalid} marker unexpectedly authorized target execution"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "{invalid} marker allowed the target to produce output"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("lacks a valid dedicated-runtime marker"),
+            "{invalid} marker failure was not explicit: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let removed = Command::new("wsl.exe")
+        .args([
+            "-d",
+            &distro,
+            "-u",
+            "root",
+            "--exec",
+            "/bin/rm",
+            "-rf",
+            &fixture_root,
+        ])
+        .status()
+        .expect("marker fixture cleanup starts");
+    assert!(removed.success());
 }
 
 #[test]

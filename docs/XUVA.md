@@ -31,6 +31,19 @@ xuva --explain-route git log -1
 xuva --route wsl1 --explain-route proxy /usr/bin/printf '%s'
 ```
 
+## Process lifecycle
+
+XUVA is a foreground dispatcher, not a daemon launcher. WSL1 and WSL2 targets
+start only after an attest-then-permit handshake. Their Linux supervisors do
+not publish completion until same-process-group descendants have exited or
+been stopped. The Windows parent also compares the identity-bound completion
+status with the `wsl.exe` proxy status; missing or contradictory proof fails
+closed instead of silently releasing the route lock.
+
+A child that deliberately creates a separate Linux session (for example with
+`setsid`) crosses this supervision boundary. Long-running services should be
+started and owned by a service manager rather than detached through XUVA.
+
 For an `auto` decision only, a missing native RTK executable is an exception:
 XUVA falls back to WSL1 only when Windows reports `NotFound` while starting the
 native process. No child has started in that case. An explicit `native-rtk`
