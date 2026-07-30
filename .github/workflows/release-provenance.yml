@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing immutable version tag to verify, build, and attest
+        description: Existing immutable version tag to verify, build, test, attest, and publish
         required: true
         type: string
 
@@ -16,36 +16,145 @@ permissions:
   contents: read
 
 jobs:
-  controlled-release-gate:
-    runs-on: [self-hosted, Windows, WSL]
+  resolve-release-source:
+    runs-on: windows-latest
+    outputs:
+      gated_sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
     steps:
-      - name: Check out requested tag
+      - name: Check out workflow source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag }}
           fetch-depth: 0
 
-      - name: Verify immutable tag, version, and source SHA
-        shell: powershell
+      - name: Resolve the exact immutable tag commit
+        id: source
+        shell: pwsh
+        env:
+          XUVA_RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          $tag = '${{ inputs.tag }}'
+          $tag = $env:XUVA_RELEASE_TAG
           if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') {
-            throw "Release input is not a version tag: $tag"
+            throw "Release input is not a valid version tag."
+          }
+          git fetch --force origin "+refs/tags/${tag}:refs/tags/${tag}"
+          if ($LASTEXITCODE -ne 0) { throw "Unable to fetch the exact release tag." }
+          $sha = (& git rev-parse "refs/tags/${tag}^{commit}").Trim()
+          if ($sha -notmatch '^[0-9a-f]{40}$') { throw "Release tag did not resolve to a commit." }
+          git checkout --detach $sha
+          if ($LASTEXITCODE -ne 0 -or (& git rev-parse HEAD).Trim() -ne $sha) {
+            throw "Unable to check out the resolved release commit."
           }
           $cargoVersion = (Select-String Cargo.toml '^version = "([^"]+)"$').Matches.Groups[1].Value
           if ($tag.TrimStart('v') -ne $cargoVersion) {
-            throw "Tag $tag does not match Cargo.toml version $cargoVersion"
+            throw "Release tag and Cargo.toml version differ."
           }
-          $head = (& git rev-parse HEAD).Trim()
-          $tagSha = (& git rev-list -n 1 $tag).Trim()
-          if ($head -ne $tagSha) { throw "Checked out SHA $head differs from tag SHA $tagSha" }
-          "XUVA_RELEASE_SHA=$head" >> $env:GITHUB_ENV
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+          "version=$cargoVersion" >> $env:GITHUB_OUTPUT
 
-      - name: Require stable Windows Rust
+  build-release-artifact:
+    needs: resolve-release-source
+    runs-on: windows-latest
+    outputs:
+      artifact_digest: ${{ steps.release-artifact.outputs.artifact-digest }}
+    env:
+      XUVA_RELEASE_TAG: ${{ inputs.tag }}
+      XUVA_GATED_SHA: ${{ needs.resolve-release-source.outputs.gated_sha }}
+      XUVA_RELEASE_VERSION: ${{ needs.resolve-release-source.outputs.version }}
+      XUVA_BUILD_COMMIT_OVERRIDE: ${{ needs.resolve-release-source.outputs.gated_sha }}
+    steps:
+      - name: Check out the resolved commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve-release-source.outputs.gated_sha }}
+          fetch-depth: 0
+
+      - name: Install the exact release Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+
+      - name: Revalidate source identity
+        shell: pwsh
+        run: |
+          $head = (& git rev-parse HEAD).Trim()
+          if ($head -ne $env:XUVA_GATED_SHA) { throw "Checkout differs from the gated SHA." }
+          git fetch --force origin "+refs/tags/$($env:XUVA_RELEASE_TAG):refs/tags/$($env:XUVA_RELEASE_TAG)"
+          $tagSha = (& git rev-parse "refs/tags/$($env:XUVA_RELEASE_TAG)^{commit}").Trim()
+          if ($tagSha -ne $env:XUVA_GATED_SHA) { throw "Release tag moved after source resolution." }
+          $cargoVersion = (Select-String Cargo.toml '^version = "([^"]+)"$').Matches.Groups[1].Value
+          if ($cargoVersion -ne $env:XUVA_RELEASE_VERSION) { throw "Cargo version changed after source resolution." }
+
+      - name: Build, audit, and package once
+        shell: pwsh
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --bins
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit
+          cargo install cargo-cyclonedx --version 0.5.9 --locked
+          cargo build --release --locked --bins
+          .\scripts\package-release.ps1 -Version $env:XUVA_RELEASE_TAG
+          cargo cyclonedx --format json
+          $sbom = Get-ChildItem -Filter '*.cdx.json' | Select-Object -First 1
+          if (-not $sbom) { throw "cargo cyclonedx did not create an SBOM." }
+          $sbomName = "xuva-v$($env:XUVA_RELEASE_VERSION).cdx.json"
+          Copy-Item $sbom.FullName (Join-Path "dist" $sbomName)
+          $cyclonedx = (& "$env:USERPROFILE\.cargo\bin\cargo-cyclonedx.exe" cyclonedx --version).Trim()
+          [ordered]@{
+            schema_version = 1
+            source_commit = $env:XUVA_GATED_SHA
+            rustc = (& rustc --version).Trim()
+            cargo = (& cargo --version).Trim()
+            cargo_audit = (& "$env:USERPROFILE\.cargo\bin\cargo-audit.exe" --version).Trim()
+            cargo_cyclonedx = $cyclonedx
+          } | ConvertTo-Json | Set-Content `
+              -LiteralPath "dist\xuva-v$($env:XUVA_RELEASE_VERSION).toolchain.json" -Encoding utf8
+          .\scripts\verify-release-artifact.ps1 -DistributionDirectory dist `
+              -ExpectedVersion $env:XUVA_RELEASE_VERSION -ExpectedCommit $env:XUVA_GATED_SHA
+
+      - name: Upload the single release artifact set
+        id: release-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: xuva-release-artifact
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  controlled-release-gate:
+    needs: [resolve-release-source, build-release-artifact]
+    runs-on: [self-hosted, Windows, WSL]
+    outputs:
+      gated_sha: ${{ steps.gate-identity.outputs.sha }}
+      artifact_digest: ${{ steps.gate-identity.outputs.digest }}
+    env:
+      XUVA_RELEASE_TAG: ${{ inputs.tag }}
+      XUVA_GATED_SHA: ${{ needs.resolve-release-source.outputs.gated_sha }}
+      XUVA_RELEASE_VERSION: ${{ needs.resolve-release-source.outputs.version }}
+      XUVA_ARTIFACT_DIGEST: ${{ needs.build-release-artifact.outputs.artifact_digest }}
+      XUVA_BUILD_COMMIT_OVERRIDE: ${{ needs.resolve-release-source.outputs.gated_sha }}
+    steps:
+      - name: Check out the gated commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve-release-source.outputs.gated_sha }}
+          fetch-depth: 0
+
+      - name: Download the exact hosted artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: xuva-release-artifact
+          path: gated-dist
+
+      - name: Require the exact release Rust toolchain
         shell: powershell
         run: |
-          rustup.exe toolchain install stable --profile minimal --component rustfmt --component clippy
-          rustup.exe run stable cargo --version
+          rustup.exe toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
+          rustup.exe run 1.97.1 cargo --version
 
       - name: Provision checksum-pinned RTK verification adapter
         shell: powershell
@@ -62,64 +171,80 @@ jobs:
           if (-not $rtk) { throw 'RTK archive did not contain rtk.exe' }
           "XUVA_RELEASE_RTK=$($rtk.FullName)" >> $env:GITHUB_ENV
 
-      - name: Run the complete release gate on the tagged SHA
+      - name: Test the gated source and the exact hosted artifact
         shell: powershell
         run: |
-          rustup.exe run stable cargo build --locked --release --bins
-          .\scripts\verify-release.ps1 -Cargo "$env:USERPROFILE\.cargo\bin\cargo.exe" -NativeRtk $env:XUVA_RELEASE_RTK
+          if ((git rev-parse HEAD).Trim() -ne $env:XUVA_GATED_SHA) {
+            throw "Self-hosted checkout differs from the gated SHA."
+          }
+          if ($env:XUVA_ARTIFACT_DIGEST -notmatch '^[0-9a-f]{64}$') {
+            throw "Hosted artifact has no valid immutable digest."
+          }
+          .\scripts\verify-release.ps1 -Cargo "$env:USERPROFILE\.cargo\bin\cargo.exe" `
+              -NativeRtk $env:XUVA_RELEASE_RTK
+          .\scripts\verify-release-artifact.ps1 -DistributionDirectory gated-dist `
+              -ExpectedVersion $env:XUVA_RELEASE_VERSION -ExpectedCommit $env:XUVA_GATED_SHA
 
-  build-attest-publish:
-    needs: controlled-release-gate
+      - name: Export successful gate identity
+        id: gate-identity
+        shell: powershell
+        run: |
+          "sha=$($env:XUVA_GATED_SHA)" >> $env:GITHUB_OUTPUT
+          "digest=$($env:XUVA_ARTIFACT_DIGEST)" >> $env:GITHUB_OUTPUT
+
+  attest-and-publish:
+    needs: [resolve-release-source, build-release-artifact, controlled-release-gate]
     runs-on: windows-latest
     environment: release
     permissions:
       contents: write
       id-token: write
       attestations: write
+    env:
+      XUVA_RELEASE_TAG: ${{ inputs.tag }}
+      XUVA_GATED_SHA: ${{ needs.controlled-release-gate.outputs.gated_sha }}
+      XUVA_RELEASE_VERSION: ${{ needs.resolve-release-source.outputs.version }}
+      XUVA_ARTIFACT_DIGEST: ${{ needs.controlled-release-gate.outputs.artifact_digest }}
+      XUVA_BUILD_ARTIFACT_DIGEST: ${{ needs.build-release-artifact.outputs.artifact_digest }}
     steps:
-      - name: Check out the gated tag
+      - name: Check out the gated commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.controlled-release-gate.outputs.gated_sha }}
           fetch-depth: 0
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Download the tested artifact set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          components: rustfmt, clippy
+          name: xuva-release-artifact
+          path: dist
 
-      - name: Revalidate tag and build release binary
+      - name: Revalidate the publish boundary
         shell: pwsh
         run: |
-          $tag = '${{ inputs.tag }}'
-          $cargoVersion = (Select-String Cargo.toml '^version = "([^"]+)"$').Matches.Groups[1].Value
-          if ($tag.TrimStart('v') -ne $cargoVersion) { throw 'Tag and Cargo version diverged.' }
-          if ((git rev-parse HEAD).Trim() -ne (git rev-list -n 1 $tag).Trim()) {
-            throw 'Tag and checked-out SHA diverged.'
+          if ((git rev-parse HEAD).Trim() -ne $env:XUVA_GATED_SHA) {
+            throw "Publish checkout differs from the controlled gate SHA."
           }
-          cargo build --release --locked --bins
-          .\scripts\package-release.ps1 -Version $tag
+          git fetch --force origin "+refs/tags/$($env:XUVA_RELEASE_TAG):refs/tags/$($env:XUVA_RELEASE_TAG)"
+          $tagSha = (& git rev-parse "refs/tags/$($env:XUVA_RELEASE_TAG)^{commit}").Trim()
+          if ($tagSha -ne $env:XUVA_GATED_SHA) { throw "Release tag moved after the controlled gate." }
+          if ($env:XUVA_ARTIFACT_DIGEST -ne $env:XUVA_BUILD_ARTIFACT_DIGEST) {
+            throw "Controlled gate artifact digest differs from the hosted build digest."
+          }
+          .\scripts\verify-release-artifact.ps1 -DistributionDirectory dist `
+              -ExpectedVersion $env:XUVA_RELEASE_VERSION -ExpectedCommit $env:XUVA_GATED_SHA
 
-      - name: Audit dependencies and generate CycloneDX SBOM
-        shell: pwsh
-        run: |
-          cargo install cargo-audit --version 0.22.2 --locked
-          cargo audit
-          cargo install cargo-cyclonedx --version 0.5.9 --locked
-          cargo cyclonedx --format json
-          $sbom = Get-ChildItem -Filter '*.cdx.json' | Select-Object -First 1
-          if (-not $sbom) { throw 'cargo cyclonedx did not create an SBOM.' }
-          Copy-Item $sbom.FullName dist\xuva-${{ inputs.tag }}.cdx.json
-
-      - name: Attest release archive and SBOM provenance
-        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+      - name: Attest tested release artifacts
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: |
             dist/*.zip
+            dist/*.sha256
             dist/*.cdx.json
+            dist/*.toolchain.json
 
-      - name: Publish gated release artifacts
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+      - name: Publish the tested artifact set
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: ${{ inputs.tag }}
           fail_on_unmatched_files: true
@@ -127,3 +252,4 @@ jobs:
             dist/*.zip
             dist/*.sha256
             dist/*.cdx.json
+            dist/*.toolchain.json

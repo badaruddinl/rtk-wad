@@ -5,10 +5,22 @@ param(
     [switch]$RemoveFromPath
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$targetDirectory = [System.IO.Path]::GetFullPath($Destination)
+
+$resolvedDestination = [System.IO.Path]::GetFullPath($Destination)
+$filesystemRoot = [System.IO.Path]::GetPathRoot($resolvedDestination)
+if ($resolvedDestination.TrimEnd("\") -eq $filesystemRoot.TrimEnd("\")) {
+    throw "Destination must be a dedicated XUVA bundle directory, not a filesystem root."
+}
+$targetDirectory = $resolvedDestination.TrimEnd("\")
+$parentDirectory = Split-Path -Parent $targetDirectory
+$bundleName = Split-Path -Leaf $targetDirectory
 $target = Join-Path $targetDirectory "xuva.exe"
-$backup = "$target.previous.exe"
+$previousDirectory = Join-Path $parentDirectory "$bundleName.previous"
+$nonce = "$PID-$([guid]::NewGuid().ToString('N'))"
+$removedDirectory = Join-Path $parentDirectory ".$bundleName.removed-$nonce"
+$removedPreviousDirectory = Join-Path $parentDirectory ".$bundleName.previous-removed-$nonce"
 
 function Get-NormalizedFullPath([string]$Value) {
     if (-not $Value) { return $null }
@@ -19,38 +31,73 @@ function Get-NormalizedFullPath([string]$Value) {
     }
 }
 
-if (-not (Test-Path -LiteralPath $target)) {
-    throw "No installed XUVA launcher found in $targetDirectory."
+function Invoke-TestFailure([string]$Point) {
+    if ($env:XUVA_TEST_MODE -eq "1" -and $env:XUVA_TEST_UNINSTALL_FAILURE -eq $Point) {
+        throw "Injected XUVA uninstaller failure at $Point."
+    }
+}
+
+if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+    throw "No installed XUVA bundle found in $targetDirectory."
 }
 
 if ($RestorePrevious) {
-    if (-not (Test-Path -LiteralPath $backup)) {
-        throw "No previous XUVA launcher backup found in $targetDirectory."
+    $installer = Join-Path $targetDirectory "install.ps1"
+    if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+        throw "Installed XUVA bundle has no rollback helper."
     }
-    Remove-Item -LiteralPath $target
-    Move-Item -LiteralPath $backup -Destination $target
-    Write-Output "Restored the previous XUVA launcher."
+    & $installer -Destination $targetDirectory -Rollback
     return
 }
 
-Remove-Item -LiteralPath $target
-if (Test-Path -LiteralPath $backup) {
-    Remove-Item -LiteralPath $backup -Force
+$originalUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$pathChanged = $false
+$committed = $false
+try {
+    if ($RemoveFromPath) {
+        $normalized = Get-NormalizedFullPath -Value $targetDirectory
+        $remaining = @(
+            $originalUserPath -split ";" |
+                Where-Object {
+                    $_ -and (Get-NormalizedFullPath -Value $_) -ne $normalized
+                }
+        )
+        [Environment]::SetEnvironmentVariable("Path", ($remaining -join ";"), "User")
+        $pathChanged = $true
+    }
+
+    Move-Item -LiteralPath $targetDirectory -Destination $removedDirectory -ErrorAction Stop
+    Invoke-TestFailure -Point "after-current-move"
+    if (Test-Path -LiteralPath $previousDirectory) {
+        Move-Item -LiteralPath $previousDirectory -Destination $removedPreviousDirectory -ErrorAction Stop
+    }
+    Invoke-TestFailure -Point "after-previous-move"
+    $committed = $true
+} catch {
+    if (-not $committed -and $pathChanged) {
+        [Environment]::SetEnvironmentVariable("Path", $originalUserPath, "User")
+    }
+    if (-not $committed -and
+        -not (Test-Path -LiteralPath $previousDirectory) -and
+        (Test-Path -LiteralPath $removedPreviousDirectory)) {
+        Move-Item -LiteralPath $removedPreviousDirectory -Destination $previousDirectory
+    }
+    if (-not $committed -and
+        -not (Test-Path -LiteralPath $targetDirectory) -and
+        (Test-Path -LiteralPath $removedDirectory)) {
+        Move-Item -LiteralPath $removedDirectory -Destination $targetDirectory
+    }
+    throw
 }
-foreach ($companion in @("install.ps1", "uninstall.ps1", "xuva-wsl.sh")) {
-    $path = Join-Path $targetDirectory $companion
-    if (Test-Path -LiteralPath $path) {
-        Remove-Item -LiteralPath $path -Force
+
+foreach ($removed in @($removedPreviousDirectory, $removedDirectory)) {
+    if (Test-Path -LiteralPath $removed) {
+        try {
+            Remove-Item -LiteralPath $removed -Recurse -Force -ErrorAction Stop
+        } catch {
+            Write-Warning "XUVA was uninstalled, but tombstone cleanup must be retried: $removed"
+        }
     }
 }
-if ($RemoveFromPath) {
-    $normalized = Get-NormalizedFullPath -Value $targetDirectory
-    $entries = @(
-        [Environment]::GetEnvironmentVariable("Path", "User") -split ";" |
-            Where-Object {
-                $_ -and ((Get-NormalizedFullPath -Value $_) -ne $normalized)
-            }
-    )
-    [Environment]::SetEnvironmentVariable("Path", ($entries -join ";"), "User")
-}
-Write-Output "Removed the XUVA launcher."
+
+Write-Output "Removed the current and previous XUVA bundles."

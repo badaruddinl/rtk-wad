@@ -2,6 +2,7 @@
 name = "xuva"
 version = "0.4.2-beta.1"
 edition = "2024"
+rust-version = "1.88"
 description = "Adaptive command dispatcher with explainable cross-environment routing"
 license = "Apache-2.0"
 homepage = "https://github.com/badaruddinl/xuva"

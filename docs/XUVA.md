@@ -71,10 +71,14 @@ Import merges evidence by its command key and atomically replaces only a key
 that was measured again. A later Node or Cargo benchmark therefore preserves
 existing Git and search evidence in the same local policy file.
 
-For at least five samples, XUVA selects native RTK when measured token saving is
-25% or more. The comparison uses end-to-end XUVA latency, including dispatcher
-and local-accounting cost. When measured saving is below that threshold and raw
-execution is no slower, XUVA selects raw execution. This applies only to the
+For at least five samples, the default `balanced` objective selects native RTK
+when measured token saving is 25% or more. The comparison uses end-to-end XUVA
+latency, including dispatcher and local-accounting cost. When measured saving
+is below that threshold and raw execution is no slower, XUVA selects raw
+execution. `XUVA_POLICY_OBJECTIVE=latency` instead chooses the lower median;
+`tokens` prefers any positive measured saving. The objective is included in the
+opaque evidence context, so changing objectives invalidates incompatible local
+policy/calibration evidence. This applies only to the
 verified read-only Git allowlist, `rg`, verified Cargo operations, the exact
 read-only `npm run` listing form, and the exact `go test ./...` form. A policy file can never make a Git mutation
 or `npm run <script>` adaptive, nor can it cause a command to run twice. The
@@ -220,7 +224,21 @@ If a shell operator such as `&&` is passed as the command, XUVA exits with an
 actionable shell-syntax diagnostic. Operators inside another command's argv
 remain literal. XUVA never joins, quotes, or re-parses the user's argv.
 
+Windows native executables receive direct argv. `.cmd` and `.bat` providers
+necessarily cross the Windows batch interpreter boundary: percent,
+exclamation, caret, quotes, empty strings, and trailing backslashes are
+preserved by the tested launcher contract, while CR/LF arguments are rejected
+before a process starts. POSIX command families (`find`, `head`, `tail`, `sed`,
+`awk`, `ls`, `tree`, and `wc`) require a raw Linux executable and never accept a
+same-named Windows utility as a semantic substitute.
+
 ## Cross-host environment
+
+Cross-host execution is determined from explicit invocation origin, not from
+whether a drive mapping happens to exist. WSL-to-Windows providers receive an
+isolated Windows environment and a CWD only when the bridge supplies an exact
+drive mapping or a matching `\\wsl.localhost\<distro>\...`/`\\wsl$` UNC
+mapping. Same-host execution may inherit its native environment.
 
 WSL execution retains a clean `env -i` boundary and adds only structured,
 reviewable assignments. The built-in safe set is `CI`, `COLORTERM`,

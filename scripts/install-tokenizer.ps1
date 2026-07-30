@@ -2,7 +2,11 @@
 param(
     [string]$Root,
     [string]$Python,
-    [string]$Requirements = (Join-Path $PSScriptRoot "..\requirements\xuva-tokenizer.txt"),
+    [string]$Requirements = $(if (Test-Path -LiteralPath (Join-Path $PSScriptRoot "xuva-tokenizer.txt")) {
+        Join-Path $PSScriptRoot "xuva-tokenizer.txt"
+    } else {
+        Join-Path $PSScriptRoot "..\requirements\xuva-tokenizer.txt"
+    }),
     [switch]$PlanPythonBootstrap,
     [switch]$InstallPython,
     [switch]$ConfirmPythonInstall,

@@ -64,6 +64,12 @@ same source SHA completes the hosted and controlled Windows/WSL release gates.
 The archive is not Authenticode-signed; see [release
 provenance](docs/RELEASE_PROVENANCE.md) for the explicit trust boundary.
 
+Supported public-beta runtime targets are Windows 10/11 x86_64 with PowerShell
+5.1 or newer. Cross-host routes support Ubuntu under WSL1 or WSL2 when that
+distro and its project mapping are verified. Other distributions can be
+discovered, but are not part of the release gate. Source builds require Rust
+1.88.0 or newer; official binaries use the pinned Rust 1.97.1 toolchain.
+
 - [Download the v0.4.1 Windows archive](https://github.com/badaruddinl/xuva/releases/download/v0.4.1/xuva-v0.4.1-windows-x86_64.zip)
 - [Download its SHA-256 sidecar](https://github.com/badaruddinl/xuva/releases/download/v0.4.1/xuva-v0.4.1-windows-x86_64.zip.sha256)
 - [Open the v0.4.1 release record](https://github.com/badaruddinl/xuva/releases/tag/v0.4.1)
@@ -102,8 +108,9 @@ xuva self-update --check
 ```
 
 Use `xuva install --status` to inspect the installation, `xuva rollback` to
-swap to the retained previous binary after the current process exits, and
-`xuva uninstall --remove-from-path` to remove the launcher and its PATH entry.
+swap to the retained previous complete bundle after the current process exits,
+and `xuva uninstall --remove-from-path` to remove both bundle generations and
+their PATH entry.
 The companion scripts expose the same operations for recovery when the binary
 cannot start. The installer performs `xuva scan` after activating the binary. It
 inventories every launchable executable on the Windows `PATH` and the WSL
@@ -113,7 +120,9 @@ executable name on demand; use `xuva scan nvm rustc` to refresh named
 providers across Windows and WSL explicitly.
 
 The installer smoke-tests the candidate binary before activation and restores
-the previous launcher if the post-install provider scan fails. `self-update`
+the previous complete bundle if copying, activation, PATH update, or the
+post-install provider scan fails. Official archives are checksum- and
+metadata-verified before any activation. `self-update`
 is deliberately diagnostic-only: `--check` queries stable tags through Git for
 Windows, while installation still requires a reviewed release or trusted
 checkout.
@@ -177,6 +186,13 @@ command_family=rg
 Use `xuva policy show` and `xuva calibration show` to inspect the local
 evidence behind later decisions.
 
+Set `XUVA_POLICY_OBJECTIVE=latency`, `balanced`, or `tokens` to choose the
+evidence objective. `balanced` is the default and retains the documented 25%
+token-saving threshold; `latency` chooses the lower measured median, while
+`tokens` prefers any measured positive token saving. Objective identity is part
+of the local evidence context, so changing it cannot reuse an incompatible
+calibration decision.
+
 ## Benchmark result: token saving *and* latency
 
 The public benchmark does not claim that XUVA is universally faster. It uses
@@ -223,6 +239,10 @@ system, conversation, output, and model pricing all affect an eventual bill.
 
 - Exact argv forwarding handles spaces, quotes, Unicode, `&`, `;`, `$`, and
   backslashes without shell reconstruction.
+- Native `.exe` arguments remain direct process argv. Windows `.cmd` and `.bat`
+  providers accept literal percent, exclamation, caret, quote, empty, and
+  trailing-backslash arguments under the Windows batch boundary, but reject CR
+  or LF before process creation.
 - Paths are translated only in command-defined path positions (`git -C`,
   Cargo manifest/target flags, Go path flags, response files, and Git
   pathspecs). Generic data that merely resembles a path remains unchanged.

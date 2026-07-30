@@ -10,6 +10,7 @@ pub(crate) const DEFAULT_WSL1_DISTRO: &str = "Ubuntu-RTK-WSL1";
 const DEFAULT_LOCK_PATH: &str = "/tmp/xuva.lock";
 const DEFAULT_LOCK_WAIT_SECONDS: &str = "120";
 const DEFAULT_GIT_MODE: &str = "auto";
+const DEFAULT_POLICY_OBJECTIVE: &str = "balanced";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GitMode {
@@ -53,11 +54,43 @@ pub(crate) enum ExecutionEnvironment {
     WindowsOnly,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InvocationOrigin {
+    Windows,
+    Wsl { distro: String },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutputAdapterPreference {
     Auto,
     Raw,
     Rtk,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PolicyObjective {
+    Latency,
+    Balanced,
+    Tokens,
+}
+
+impl PolicyObjective {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Latency => "latency",
+            Self::Balanced => "balanced",
+            Self::Tokens => "tokens",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "latency" => Ok(Self::Latency),
+            "balanced" => Ok(Self::Balanced),
+            "tokens" => Ok(Self::Tokens),
+            _ => Err("XUVA_POLICY_OBJECTIVE must be latency, balanced, or tokens".to_owned()),
+        }
+    }
 }
 
 impl OutputAdapterPreference {
@@ -132,6 +165,7 @@ pub(crate) struct Config {
     pub(crate) lock_wait: String,
     pub(crate) cwd: Option<String>,
     pub(crate) bridge_windows_cwd: Option<String>,
+    pub(crate) invocation_origin: InvocationOrigin,
     pub(crate) git_mode: GitMode,
     pub(crate) extra_path: Option<String>,
     pub(crate) route_preference: Route,
@@ -140,6 +174,7 @@ pub(crate) struct Config {
     pub(crate) output_adapter: OutputAdapterPreference,
     pub(crate) environment_allowlist: Vec<String>,
     pub(crate) metrics_enabled: bool,
+    pub(crate) policy_objective: PolicyObjective,
 }
 
 impl Config {
@@ -212,6 +247,9 @@ impl Config {
             Some("off") => false,
             Some(_) => return Err("XUVA_METRICS must be local, on, or off".to_owned()),
         };
+        let policy_objective = PolicyObjective::parse(
+            &lookup("XUVA_POLICY_OBJECTIVE").unwrap_or_else(|| DEFAULT_POLICY_OBJECTIVE.to_owned()),
+        )?;
 
         if lock_wait
             .parse::<u64>()
@@ -232,6 +270,7 @@ impl Config {
             lock_wait,
             cwd,
             bridge_windows_cwd: None,
+            invocation_origin: InvocationOrigin::Windows,
             git_mode,
             extra_path,
             route_preference,
@@ -240,6 +279,7 @@ impl Config {
             output_adapter,
             environment_allowlist,
             metrics_enabled,
+            policy_objective,
         })
     }
 }

@@ -737,6 +737,104 @@ fn wsl_shim_uses_a_compatible_windows_go_from_a_windows_backed_project() {
 }
 
 #[test]
+fn native_wsl_origin_runs_explicit_windows_provider_once_with_isolated_environment() {
+    let _guard = process_contract_guard();
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let project = format!("/tmp/xuva-native-wsl-origin-{}-{nonce}", std::process::id());
+    let setup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "mkdir", "-p", &project])
+        .status()
+        .expect("native WSL project setup starts");
+    assert!(setup.success());
+
+    let map_path = |path: &str| {
+        let output = Command::new("wsl.exe")
+            .args(["-d", "Ubuntu", "--exec", "wslpath", "-a", path])
+            .output()
+            .expect("Windows path maps into Ubuntu");
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let launcher_path = map_path(launcher());
+    let shim_path = map_path(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("scripts")
+            .join("xuva-wsl.sh")
+            .to_string_lossy(),
+    );
+    let node = Command::new("where.exe")
+        .arg("node.exe")
+        .output()
+        .expect("Windows Node lookup starts");
+    assert!(node.status.success());
+    let node = String::from_utf8_lossy(&node.stdout)
+        .lines()
+        .next()
+        .expect("Windows Node is installed")
+        .trim()
+        .to_owned();
+    let script = concat!(
+        "const fs=require('fs');",
+        "fs.appendFileSync('invocations.txt','1\\n');",
+        "console.log(JSON.stringify({cwd:process.cwd(),",
+        "github:process.env.GITHUB_TOKEN||null,",
+        "aws:process.env.AWS_SECRET_ACCESS_KEY||null}));"
+    );
+    let output = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "sh",
+            "-c",
+            r#"cd "$3"; export GITHUB_TOKEN=must-not-cross AWS_SECRET_ACCESS_KEY=must-not-cross XUVA_WINDOWS_EXE="$1" XUVA_OUTPUT_ADAPTER=raw; exec sh "$2" "$4" -e "$5""#,
+            "xuva-native-wsl-origin",
+            &launcher_path,
+            &shim_path,
+            &project,
+            &node,
+            script,
+        ])
+        .output()
+        .expect("native WSL to Windows provider dispatch starts");
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("provider emits one JSON report");
+    assert!(report["github"].is_null());
+    assert!(report["aws"].is_null());
+    let cwd = report["cwd"]
+        .as_str()
+        .expect("provider reports its Windows CWD")
+        .to_ascii_lowercase();
+    assert!(cwd.starts_with(r"\\wsl"));
+    assert!(cwd.ends_with(&project.replace('/', "\\").to_ascii_lowercase()));
+
+    let count = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "cat",
+            &format!("{project}/invocations.txt"),
+        ])
+        .output()
+        .expect("invocation count is readable");
+    assert!(count.status.success());
+    assert_eq!(String::from_utf8_lossy(&count.stdout), "1\n");
+
+    let cleanup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "rm", "-rf", "--", &project])
+        .status()
+        .expect("native WSL project cleanup starts");
+    assert!(cleanup.success());
+}
+
+#[test]
 fn wsl_provider_version_changes_require_explicit_refresh_within_ttl() {
     let _guard = process_contract_guard();
     let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
@@ -1742,6 +1840,50 @@ fn xuva_provider_exec_runs_each_available_verified_provider_without_replay() {
     }
 
     std::fs::remove_dir_all(directory).expect("temporary XUVA directory is removed");
+}
+
+#[test]
+fn windows_batch_boundary_preserves_supported_literals_and_rejects_line_injection() {
+    let _guard = process_contract_guard();
+    let (launcher, directory) = xuva_launcher();
+    let capture = directory.join("capture.js");
+    let wrapper = directory.join("capture.cmd");
+    std::fs::write(
+        &capture,
+        "process.stdout.write(JSON.stringify(process.argv.slice(2)));",
+    )
+    .expect("batch capture script is written");
+    std::fs::write(&wrapper, "@echo off\r\nnode.exe \"%~dp0capture.js\" %*\r\n")
+        .expect("batch wrapper is written");
+    let literals = ["%NAME%", "!NAME!", "^&", "\"", r"trailing\", "", "ending\""];
+    let output = Command::new(&launcher)
+        .env("NAME", "must-not-expand")
+        .arg(&wrapper)
+        .args(literals)
+        .output()
+        .expect("batch literal contract starts");
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let observed: Vec<String> =
+        serde_json::from_slice(&output.stdout).expect("batch arguments are JSON");
+    assert_eq!(observed, literals);
+
+    let rejected = Command::new(&launcher)
+        .arg(&wrapper)
+        .arg("safe\r\nwhoami")
+        .output()
+        .expect("batch line-injection rejection starts");
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("Windows batch arguments must not contain CR or LF")
+    );
+
+    std::fs::remove_dir_all(directory).expect("batch fixture is removed");
 }
 
 #[test]

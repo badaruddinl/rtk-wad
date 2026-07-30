@@ -1,5 +1,16 @@
 # Runtime dependencies
 
+## Rust build contract
+
+The crate declares Rust `1.88.0` as its minimum supported Rust version and CI
+compiles the locked dependency graph with that toolchain. Reproducible release
+and primary CI builds use the exact Rust `1.97.1` toolchain declared in
+`rust-toolchain.toml`, with `rustfmt` and `clippy`. Release dependency scanning
+uses `cargo-audit 0.22.2`; SBOM generation uses `cargo-cyclonedx 0.5.9`.
+
+These versions are reviewed changes, not floating `stable` aliases. An MSRV
+change must update `Cargo.toml`, CI, tests, and this contract together.
+
 ## XUVA tokenizer
 
 `xuva` has no tokenizer runtime dependency. [tiktoken on
@@ -7,8 +18,8 @@ PyPI](https://pypi.org/project/tiktoken/) is an optional, official benchmark
 dependency used only for reproducible token accounting.
 `requirements/xuva-tokenizer.txt` is the canonical package manifest: the
 installer reads its one exact `tiktoken==<version>` declaration to select the
-private environment, verify the import, and report its installed version. A
-an explicit benchmark installation selects the private XUVA-owned environment.
+private environment, verify the import, and report its installed version. An
+explicit benchmark installation selects the private XUVA-owned environment.
 
 The package is not installed globally and is not bundled into the Rust binary.
 The core launcher installs without Python. `scripts/install.ps1 -InstallTokenizer`

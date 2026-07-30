@@ -80,6 +80,15 @@ try {
         Write-Output "verification_mode=clean-release"
     }
 
+    Invoke-Checked -Name "workflow shell-expression boundary" -Action {
+        & .\scripts\verify-workflow-shell-boundaries.ps1
+    }
+    Invoke-Checked -Name "workflow security regression contract" -Action {
+        & .\tests\workflow-security-contract.ps1
+    }
+    Invoke-Checked -Name "build identity regression contract" -Action {
+        & .\tests\build-identity-contract.ps1 -Cargo $cargoPath
+    }
     Invoke-Checked -Name "format" -Action { & $cargoPath fmt --all --check }
     Invoke-Checked -Name "clippy" -Action { & $cargoPath clippy --locked --all-targets -- -D warnings }
     Invoke-Checked -Name "unit tests" -Action { & $cargoPath test --locked --bins -- --test-threads=1 }

@@ -50,8 +50,10 @@ pub(crate) fn wsl_bridge_request(
     if distro.is_empty() || !cwd.starts_with('/') {
         return Err("payload must contain a WSL distro and an absolute Linux CWD".to_owned());
     }
-    if !windows_cwd.is_empty() && windows_path_to_wsl_path(windows_cwd).is_none() {
-        return Err("payload Windows CWD must be a drive-qualified path when set".to_owned());
+    if !windows_cwd.is_empty() && !bridge_windows_cwd_is_valid(distro, cwd, windows_cwd) {
+        return Err(
+            "payload Windows CWD must be a drive path or a matching WSL UNC mapping".to_owned(),
+        );
     }
     let output_adapter = OutputAdapterPreference::parse(output_adapter)?;
     Ok(Some(WslBridgeRequest {
@@ -62,6 +64,25 @@ pub(crate) fn wsl_bridge_request(
         output_adapter,
         arguments: arguments.iter().cloned().map(OsString::from).collect(),
     }))
+}
+
+fn bridge_windows_cwd_is_valid(distro: &str, cwd: &str, windows_cwd: &str) -> bool {
+    if windows_path_to_wsl_path(windows_cwd).is_some() {
+        // `wslpath -w` is authoritative for the originating distro. Some
+        // distros expose Windows drives under a nonstandard Linux mount root,
+        // so reconstructing `/mnt/<drive>` here would reject a real mapping.
+        return true;
+    }
+
+    let normalized = windows_cwd.replace('/', "\\");
+    ["\\\\wsl.localhost\\", "\\\\wsl$\\"]
+        .into_iter()
+        .find_map(|prefix| normalized.strip_prefix(prefix))
+        .and_then(|remainder| remainder.split_once('\\'))
+        .is_some_and(|(mapped_distro, mapped_path)| {
+            mapped_distro.eq_ignore_ascii_case(distro)
+                && format!("/{}", mapped_path.replace('\\', "/")) == cwd
+        })
 }
 
 pub(crate) fn decode_wsl_bridge_fields(encoded: &str) -> Result<Vec<String>, String> {
@@ -123,4 +144,33 @@ fn decode_base64(encoded: &str) -> Result<Vec<u8>, String> {
         }
     }
     Ok(decoded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bridge_windows_cwd_is_valid;
+
+    #[test]
+    fn bridge_cwd_accepts_only_exact_drive_or_matching_unc_mappings() {
+        assert!(bridge_windows_cwd_is_valid(
+            "Ubuntu",
+            "/custom/windows-drive/work",
+            r"E:\work"
+        ));
+        assert!(bridge_windows_cwd_is_valid(
+            "Ubuntu",
+            "/home/user/work",
+            r"\\wsl.localhost\Ubuntu\home\user\work"
+        ));
+        assert!(!bridge_windows_cwd_is_valid(
+            "Ubuntu",
+            "/home/user/work",
+            r"\\wsl.localhost\Other\home\user\work"
+        ));
+        assert!(!bridge_windows_cwd_is_valid(
+            "Ubuntu",
+            "/home/user/work",
+            r"\\wsl.localhost\Ubuntu\home\user\other"
+        ));
+    }
 }

@@ -61,13 +61,18 @@ fn repository_commit() -> Option<String> {
 }
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=GITHUB_SHA");
+    println!("cargo:rerun-if-env-changed=XUVA_BUILD_COMMIT_OVERRIDE");
     println!("cargo:rerun-if-env-changed=GITHUB_RUN_ID");
 
-    let commit = env::var("GITHUB_SHA")
-        .ok()
-        .and_then(|value| valid_commit(&value))
-        .or_else(repository_commit);
+    let commit = match env::var("XUVA_BUILD_COMMIT_OVERRIDE") {
+        Ok(value) => Some(valid_commit(&value).unwrap_or_else(|| {
+            panic!("XUVA_BUILD_COMMIT_OVERRIDE must be a complete hexadecimal Git object ID")
+        })),
+        Err(env::VarError::NotPresent) => repository_commit(),
+        Err(env::VarError::NotUnicode(_)) => {
+            panic!("XUVA_BUILD_COMMIT_OVERRIDE must be valid Unicode")
+        }
+    };
     let provenance = env::var("GITHUB_RUN_ID")
         .map(|run| format!("github-actions:{run}"))
         .unwrap_or_else(|_| "local-build".to_owned());

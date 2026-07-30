@@ -19,14 +19,14 @@ jobs:
       # The Rust action invokes bash.exe internally on Windows. That resolves
       # through the machine's default WSL distro, which may be Docker Desktop
       # rather than the controlled Ubuntu provider used by this contract.
-      - name: Require stable Windows Rust
+      - name: Require exact Windows Rust
         shell: powershell
         run: |
           $rustup = Get-Command rustup.exe -ErrorAction Stop
-          & $rustup.Source toolchain install stable --profile minimal
-          if ($LASTEXITCODE -ne 0) { throw 'Unable to install the stable Rust toolchain.' }
-          & $rustup.Source run stable cargo --version
-          if ($LASTEXITCODE -ne 0) { throw 'Unable to run the stable Cargo toolchain.' }
+          & $rustup.Source toolchain install 1.97.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to install Rust 1.97.1.' }
+          & $rustup.Source run 1.97.1 cargo --version
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to run the exact Cargo 1.97.1 toolchain.' }
 
       - name: Require the controlled Ubuntu WSL provider
         shell: powershell
@@ -43,4 +43,4 @@ jobs:
 
       - name: Run Windows/WSL process contract
         shell: powershell
-        run: rustup.exe run stable cargo test --locked --test process_contract
+        run: rustup.exe run 1.97.1 cargo test --locked --test process_contract

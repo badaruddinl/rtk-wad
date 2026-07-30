@@ -6,6 +6,49 @@ use std::process::{Command, ExitStatus};
 use crate::dispatcher::{CommandSpec, EnvironmentPolicy};
 use crate::metrics::XuvaMetrics;
 
+fn validate_batch_boundary(executable: &OsString, arguments: &[OsString]) -> std::io::Result<()> {
+    let extension = std::path::Path::new(executable)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if matches!(extension.to_ascii_lowercase().as_str(), "cmd" | "bat")
+        && arguments
+            .iter()
+            .any(|argument| argument.to_string_lossy().contains(['\r', '\n']))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Windows batch arguments must not contain CR or LF characters",
+        ));
+    }
+    Ok(())
+}
+
+fn wait_for_batch_aware_command(
+    executable: &OsString,
+    mut command: Command,
+) -> std::io::Result<ExitStatus> {
+    command
+        .spawn()
+        .and_then(|mut child| child.wait())
+        .map_err(|error| {
+            let extension = std::path::Path::new(executable)
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            if error.kind() == std::io::ErrorKind::InvalidInput
+                && matches!(extension.to_ascii_lowercase().as_str(), "cmd" | "bat")
+            {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Windows batch arguments must not contain CR or LF characters",
+                )
+            } else {
+                error
+            }
+        })
+}
+
 pub(crate) fn run(arguments: &[OsString]) -> std::io::Result<ExitStatus> {
     let Some(program) = arguments.first() else {
         return Err(std::io::Error::new(
@@ -30,12 +73,13 @@ pub(crate) fn run_at(
     arguments: &[OsString],
     current_directory: Option<&str>,
 ) -> std::io::Result<ExitStatus> {
+    validate_batch_boundary(executable, arguments)?;
     let mut command = Command::new(executable);
     command.args(arguments);
     if let Some(current_directory) = current_directory {
         command.current_dir(current_directory);
     }
-    command.spawn().and_then(|mut child| child.wait())
+    wait_for_batch_aware_command(executable, command)
 }
 
 pub(crate) fn run_rtk_at(
@@ -44,6 +88,7 @@ pub(crate) fn run_rtk_at(
     current_directory: Option<&str>,
     metrics: Option<&XuvaMetrics>,
 ) -> std::io::Result<ExitStatus> {
+    validate_batch_boundary(&OsString::from(executable), arguments)?;
     let mut command = Command::new(executable);
     command.args(arguments);
     if let Some(current_directory) = current_directory {
@@ -52,7 +97,7 @@ pub(crate) fn run_rtk_at(
     if let Some(metrics) = metrics {
         command.env("RTK_DB_PATH", metrics.scratch_windows_path());
     }
-    command.spawn().and_then(|mut child| child.wait())
+    wait_for_batch_aware_command(&OsString::from(executable), command)
 }
 
 pub(crate) fn apply_command_spec(command: &mut Command, request: &CommandSpec) {
@@ -91,9 +136,10 @@ pub(crate) fn run_plan(
     executable: &OsString,
     request: &CommandSpec,
 ) -> std::io::Result<ExitStatus> {
+    validate_batch_boundary(executable, &request.arguments)?;
     let mut command = Command::new(executable);
     apply_command_spec(&mut command, request);
-    command.spawn().and_then(|mut child| child.wait())
+    wait_for_batch_aware_command(executable, command)
 }
 
 pub(crate) fn run_rtk_plan(
@@ -102,6 +148,7 @@ pub(crate) fn run_rtk_plan(
     request: &CommandSpec,
     metrics: Option<&XuvaMetrics>,
 ) -> std::io::Result<ExitStatus> {
+    validate_batch_boundary(executable, arguments)?;
     let mut command = Command::new(executable);
     command.args(arguments);
     if let Some(current_directory) = &request.cwd {
@@ -112,7 +159,7 @@ pub(crate) fn run_rtk_plan(
         command.env("RTK_DB_PATH", metrics.scratch_windows_path());
     }
     let _ = request.interactive;
-    command.spawn().and_then(|mut child| child.wait())
+    wait_for_batch_aware_command(executable, command)
 }
 
 #[cfg(test)]
@@ -166,5 +213,23 @@ mod tests {
         assert!(command.get_envs().any(|(key, value)| {
             key == "XUVA_TEST_OVERLAY" && value == Some(std::ffi::OsStr::new("yes"))
         }));
+    }
+
+    #[test]
+    fn batch_boundary_allows_literal_edge_cases_but_rejects_line_injection() {
+        let executable = OsString::from("fixture.cmd");
+        let safe =
+            ["%NAME%", "!NAME!", "^&", "\"", r"trailing\", "", "ending\""].map(OsString::from);
+        validate_batch_boundary(&executable, &safe).expect("literal batch arguments are accepted");
+        for unsafe_value in ["line\rbreak", "line\nbreak", "both\r\nbreak"] {
+            let error = validate_batch_boundary(&executable, &[OsString::from(unsafe_value)])
+                .expect_err("line separators are rejected before cmd.exe");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        }
+        validate_batch_boundary(
+            &OsString::from("native.exe"),
+            &[OsString::from("line\nis native argv data")],
+        )
+        .expect("native executables do not use the batch interpreter boundary");
     }
 }

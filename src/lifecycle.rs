@@ -70,10 +70,20 @@ fn print_status() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let previous = directory
+        .parent()
+        .map(|parent| {
+            parent.join(format!(
+                "{}.previous",
+                directory.file_name().unwrap_or_default().to_string_lossy()
+            ))
+        })
+        .unwrap_or_default();
     let status = serde_json::json!({
         "executable": executable,
         "directory": directory,
-        "backup_available": PathBuf::from(format!("{}.previous.exe", executable.display())).is_file(),
+        "backup_available": previous.join("xuva.exe").is_file(),
+        "backup_directory": previous,
         "installer_available": directory.join("install.ps1").is_file(),
         "uninstaller_available": directory.join("uninstall.ps1").is_file(),
         "on_process_path": path_contains(&directory),
@@ -104,7 +114,7 @@ fn powershell_path() -> OsString {
 }
 
 fn schedule(action: &str, script_name: &str) -> ExitCode {
-    let (executable, directory) = match installed_paths() {
+    let (_executable, directory) = match installed_paths() {
         Ok(paths) => paths,
         Err(error) => {
             eprintln!("{PRODUCT_COMMAND}: {error}");
@@ -119,12 +129,19 @@ fn schedule(action: &str, script_name: &str) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    if action == "rollback"
-        && !PathBuf::from(format!("{}.previous.exe", executable.display())).is_file()
-    {
+    let previous = directory
+        .parent()
+        .map(|parent| {
+            parent.join(format!(
+                "{}.previous",
+                directory.file_name().unwrap_or_default().to_string_lossy()
+            ))
+        })
+        .unwrap_or_default();
+    if action == "rollback" && !previous.join("xuva.exe").is_file() {
         eprintln!(
-            "{PRODUCT_COMMAND}: no previous launcher backup is available beside {}",
-            executable.display()
+            "{PRODUCT_COMMAND}: no previous complete bundle is available at {}",
+            previous.display()
         );
         return ExitCode::FAILURE;
     }

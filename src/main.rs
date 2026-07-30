@@ -17,6 +17,7 @@ mod dispatcher;
 mod lifecycle;
 mod metrics;
 mod paths;
+mod planning;
 mod process;
 mod providers;
 
@@ -30,13 +31,17 @@ use adapters::windows::apply_command_spec;
 use bridge::decode_wsl_bridge_fields;
 use bridge::wsl_bridge_request;
 use config::{
-    Config, DEFAULT_DISTRO, DEFAULT_WSL1_DISTRO, ExecutionEnvironment, OutputAdapterPreference,
-    Route, WslBackend, is_sensitive_environment_name,
+    Config, DEFAULT_DISTRO, DEFAULT_WSL1_DISTRO, ExecutionEnvironment, InvocationOrigin,
+    OutputAdapterPreference, PolicyObjective, Route, WslBackend, is_sensitive_environment_name,
 };
 #[cfg(test)]
 use config::{ExecutableProfile, GitMode};
 use metrics::{TokenTotals, XuvaMetrics, xuva_data_root};
 use paths::{translate_arguments_for_provider, windows_path_to_wsl_path};
+use planning::{
+    classify_project_path, current_project_location, provider_environment_policy,
+    windows_cwd_for_invocation,
+};
 use providers::model::{
     AdapterKind, BinaryIdentity, InspectionLevel, ProbeStatus, ProjectLocation,
     ProjectLocationKind, ProviderCacheEntry, ProviderCacheFile, ProviderCandidate, ProviderHost,
@@ -279,7 +284,12 @@ fn policy_context_report(config: &Config) -> PolicyContextReport {
 }
 
 impl RoutePolicyFile {
-    fn route_for(&self, key: &str, context_signature: &str) -> Option<Route> {
+    fn route_for(
+        &self,
+        key: &str,
+        context_signature: &str,
+        objective: PolicyObjective,
+    ) -> Option<Route> {
         let evidence = self.evidence.iter().find(|evidence| evidence.key == key)?;
         if self.schema_version != ROUTE_POLICY_SCHEMA_VERSION
             || self.manifest_version != adapter_contract_id()
@@ -288,13 +298,12 @@ impl RoutePolicyFile {
         {
             return None;
         }
-        if evidence.token_savings_percent >= 25.0 {
-            Some(Route::NativeRtk)
-        } else if evidence.raw_median_ms <= evidence.candidate_median_ms {
-            Some(Route::Raw)
-        } else {
-            Some(Route::NativeRtk)
-        }
+        Some(select_adaptive_route(
+            Some(evidence.raw_median_ms),
+            Some(evidence.candidate_median_ms),
+            evidence.token_savings_percent,
+            objective,
+        ))
     }
 }
 
@@ -337,11 +346,12 @@ impl CalibrationEntry {
         }
     }
 
-    fn selected_route(&self) -> Route {
+    fn selected_route(&self, objective: PolicyObjective) -> Route {
         select_adaptive_route(
             median(&self.raw_samples_ms),
             median(&self.native_samples_ms),
             self.token_savings_percent(),
+            objective,
         )
     }
 
@@ -374,16 +384,37 @@ fn select_adaptive_route(
     raw_median_ms: Option<f64>,
     native_median_ms: Option<f64>,
     token_savings_percent: f64,
+    objective: PolicyObjective,
 ) -> Route {
-    if token_savings_percent >= 25.0 {
-        Route::NativeRtk
-    } else if raw_median_ms
+    let raw_is_faster = raw_median_ms
         .zip(native_median_ms)
-        .is_some_and(|(raw, native)| raw <= native)
-    {
-        Route::Raw
-    } else {
-        Route::NativeRtk
+        .is_some_and(|(raw, native)| raw <= native);
+    match objective {
+        PolicyObjective::Latency => {
+            if raw_is_faster {
+                Route::Raw
+            } else {
+                Route::NativeRtk
+            }
+        }
+        PolicyObjective::Balanced => {
+            if token_savings_percent >= 25.0 {
+                Route::NativeRtk
+            } else if raw_is_faster {
+                Route::Raw
+            } else {
+                Route::NativeRtk
+            }
+        }
+        PolicyObjective::Tokens => {
+            if token_savings_percent > 0.0 {
+                Route::NativeRtk
+            } else if raw_is_faster {
+                Route::Raw
+            } else {
+                Route::NativeRtk
+            }
+        }
     }
 }
 
@@ -802,61 +833,6 @@ fn probe_wsl_tool(
         executable_identity,
         rtk_identity,
     }
-}
-
-fn classify_project_path(path: &str) -> ProjectLocation {
-    let normalized = path.replace('/', "\\");
-    let lowered = normalized.to_ascii_lowercase();
-    for prefix in ["\\\\wsl.localhost\\", "\\\\wsl$\\"] {
-        if lowered.starts_with(prefix) {
-            let original_remainder = &normalized[prefix.len()..];
-            let mut parts = original_remainder.splitn(2, '\\');
-            if let Some(distro) = parts.next().filter(|value| !value.is_empty()) {
-                let linux_path =
-                    format!("/{}", parts.next().unwrap_or_default().replace('\\', "/"));
-                return ProjectLocation {
-                    kind: ProjectLocationKind::Wsl,
-                    path: linux_path,
-                    distro: Some(distro.to_owned()),
-                    windows_path: None,
-                };
-            }
-        }
-    }
-    if windows_path_to_wsl_path(path).is_some() {
-        ProjectLocation {
-            kind: ProjectLocationKind::Windows,
-            path: path.to_owned(),
-            distro: None,
-            windows_path: None,
-        }
-    } else {
-        ProjectLocation {
-            kind: ProjectLocationKind::Unknown,
-            path: path.to_owned(),
-            distro: None,
-            windows_path: None,
-        }
-    }
-}
-
-fn current_project_location(config: &Config) -> ProjectLocation {
-    if let Some(cwd) = &config.cwd {
-        return ProjectLocation {
-            kind: ProjectLocationKind::Wsl,
-            path: cwd.clone(),
-            distro: Some(config.distro.clone()),
-            windows_path: config.bridge_windows_cwd.clone(),
-        };
-    }
-    env::current_dir()
-        .map(|path| classify_project_path(&path.to_string_lossy()))
-        .unwrap_or(ProjectLocation {
-            kind: ProjectLocationKind::Unknown,
-            path: String::new(),
-            distro: None,
-            windows_path: None,
-        })
 }
 
 fn discover_tool(
@@ -1361,11 +1337,7 @@ fn explicit_executable_plan(
                 "explicit Windows executable `{value}` is not a launchable .exe, .com, .cmd, or .bat file"
             ));
         }
-        let cwd = config
-            .bridge_windows_cwd
-            .as_deref()
-            .map(PathBuf::from)
-            .or_else(|| env::current_dir().ok());
+        let cwd = Some(windows_cwd_for_invocation(config)?);
         let executable = resolved.into_os_string();
         let tool = Path::new(&executable)
             .file_stem()
@@ -1376,7 +1348,8 @@ fn explicit_executable_plan(
             arguments: translate_arguments_for_provider(tool, tool_arguments, true),
             cwd: cwd.clone(),
             environment: forwarded_environment(config),
-            environment_policy: if config.bridge_windows_cwd.is_some() {
+            environment_policy: if matches!(config.invocation_origin, InvocationOrigin::Wsl { .. })
+            {
                 dispatcher::EnvironmentPolicy::Isolated
             } else {
                 dispatcher::EnvironmentPolicy::Inherit
@@ -1462,11 +1435,13 @@ fn explicit_executable_plan(
 }
 
 fn windows_tool_is_usable(
+    tool: &str,
     project: &ProjectLocation,
     static_route: Route,
     windows: &WindowsToolProbe,
 ) -> bool {
-    project.kind != ProjectLocationKind::Wsl
+    windows_provider_has_compatible_semantics(tool)
+        && project.kind != ProjectLocationKind::Wsl
         && windows.executable.is_some()
         && match static_route {
             Route::Raw => true,
@@ -1532,6 +1507,10 @@ fn provider_dispatch_decision_from_resolution(
     resolution: ProviderResolution,
 ) -> ProviderDispatchDecision {
     let windows_is_usable = windows_tool_is_usable(
+        arguments
+            .first()
+            .and_then(|argument| argument.to_str())
+            .unwrap_or_default(),
         &resolution.project,
         static_route,
         &resolution.availability.windows,
@@ -2562,6 +2541,7 @@ fn adaptive_context_signature(config: &Config) -> String {
     };
     append(&adapter_contract_id());
     append(config.environment.as_str());
+    append(config.policy_objective.as_str());
     append(&config.native_rtk_path);
     append(&env::var_os("PATH").unwrap_or_default().to_string_lossy());
     format!("{hash:016x}")
@@ -2572,6 +2552,7 @@ fn calibration_plan(
     current_directory: Option<&str>,
     policy: Option<&RoutePolicyFile>,
     context_signature: &str,
+    objective: PolicyObjective,
 ) -> Result<Option<CalibrationPlan>, String> {
     let Some(current_directory) = current_directory else {
         return Ok(None);
@@ -2586,7 +2567,7 @@ fn calibration_plan(
     if route_policy_key(arguments)
         .as_deref()
         .and_then(|policy_key| {
-            policy.and_then(|policy| policy.route_for(policy_key, context_signature))
+            policy.and_then(|policy| policy.route_for(policy_key, context_signature, objective))
         })
         .is_some()
     {
@@ -2598,7 +2579,7 @@ fn calibration_plan(
         .entries
         .iter()
         .find(|entry| calibration_entry_matches(entry, &signature, context_signature));
-    let (route, reason) = calibration_route_for(entry);
+    let (route, reason) = calibration_route_for(entry, objective);
     Ok(Some(CalibrationPlan {
         signature,
         key: key.to_owned(),
@@ -2619,7 +2600,10 @@ fn calibration_entry_matches(
         && entry.context_signature == context_signature
 }
 
-fn calibration_route_for(entry: Option<&CalibrationEntry>) -> (Route, &'static str) {
+fn calibration_route_for(
+    entry: Option<&CalibrationEntry>,
+    objective: PolicyObjective,
+) -> (Route, &'static str) {
     let (route, reason) = match entry {
         None => (
             Route::NativeRtk,
@@ -2634,7 +2618,7 @@ fn calibration_route_for(entry: Option<&CalibrationEntry>) -> (Route, &'static s
             "local calibration candidate: third safe observation confirms native RTK",
         ),
         Some(entry) if entry.raw_samples_ms.len() < 2 => {
-            let selected = entry.selected_route();
+            let selected = entry.selected_route(objective);
             if entry.raw_samples_ms.len() == 1 && entry.native_samples_ms.len() == 2 {
                 (
                     selected,
@@ -2648,7 +2632,7 @@ fn calibration_route_for(entry: Option<&CalibrationEntry>) -> (Route, &'static s
             }
         }
         Some(entry) => {
-            let selected = entry.selected_route();
+            let selected = entry.selected_route(objective);
             (
                 selected,
                 if selected == Route::Raw {
@@ -2739,7 +2723,7 @@ fn record_calibration(
     save_calibration(&state)
 }
 
-fn print_calibration() -> Result<(), String> {
+fn print_calibration(objective: PolicyObjective) -> Result<(), String> {
     let state = load_calibration()?;
     if state.entries.is_empty() {
         println!("No local adaptive calibration evidence is recorded.");
@@ -2748,7 +2732,7 @@ fn print_calibration() -> Result<(), String> {
     println!("XUVA Local Adaptive Calibration");
     println!();
     for entry in &state.entries {
-        let route = entry.selected_route();
+        let route = entry.selected_route(objective);
         println!("key={}", entry.key);
         println!("signature={}", entry.signature);
         println!("phase={}", entry.phase());
@@ -3302,7 +3286,13 @@ fn auto_route(
     current_directory: Option<&str>,
     policy: Option<&RoutePolicyFile>,
 ) -> (Route, &'static str) {
-    auto_route_with_context(arguments, current_directory, policy, None)
+    auto_route_with_context(
+        arguments,
+        current_directory,
+        policy,
+        None,
+        PolicyObjective::Balanced,
+    )
 }
 
 fn auto_route_with_context(
@@ -3310,6 +3300,7 @@ fn auto_route_with_context(
     current_directory: Option<&str>,
     policy: Option<&RoutePolicyFile>,
     context_signature: Option<&str>,
+    objective: PolicyObjective,
 ) -> (Route, &'static str) {
     if has_wsl_path(arguments)
         || current_directory.is_some_and(|directory| windows_path_to_wsl_path(directory).is_none())
@@ -3322,7 +3313,7 @@ fn auto_route_with_context(
     let policy_key = route_policy_key(arguments);
     if let Some((_key, route)) = policy_key.as_deref().and_then(|key| {
         context_signature
-            .and_then(|context| policy.and_then(|policy| policy.route_for(key, context)))
+            .and_then(|context| policy.and_then(|policy| policy.route_for(key, context, objective)))
             .map(|route| (key, route))
     }) {
         let permitted = match route {
@@ -3434,9 +3425,16 @@ fn auto_route_for_environment(
     policy: Option<&RoutePolicyFile>,
     context_signature: Option<&str>,
     environment: ExecutionEnvironment,
+    objective: PolicyObjective,
 ) -> (Route, &'static str) {
     if environment == ExecutionEnvironment::Adaptive {
-        return auto_route_with_context(arguments, current_directory, policy, context_signature);
+        return auto_route_with_context(
+            arguments,
+            current_directory,
+            policy,
+            context_signature,
+            objective,
+        );
     }
 
     let command = command_family(arguments);
@@ -3493,6 +3491,7 @@ fn print_adapter_info(config: &Config) {
     println!("profile={}", config.profile.as_str());
     println!("route_preference={}", config.route_preference.as_str());
     println!("environment={}", config.environment.as_str());
+    println!("policy_objective={}", config.policy_objective.as_str());
     println!(
         "environment_allowlist={}",
         if config.environment_allowlist.is_empty() {
@@ -3671,11 +3670,7 @@ fn execution_plan_for_provider_candidate(
         arguments: translated_arguments,
         cwd: Some(PathBuf::from(cwd)),
         environment: forwarded_environment(config),
-        environment_policy: if candidate.is_windows() && config.bridge_windows_cwd.is_some() {
-            dispatcher::EnvironmentPolicy::Isolated
-        } else {
-            dispatcher::EnvironmentPolicy::Inherit
-        },
+        environment_policy: provider_environment_policy(config, candidate),
         interactive: false,
     };
     let route = match candidate.host {
@@ -3719,6 +3714,23 @@ fn execution_plan_for_explicit_provider_candidate(
         explicit.output_adapter = OutputAdapterPreference::Rtk;
     }
     execution_plan_for_provider_candidate(tool, arguments, &explicit, candidate)
+}
+
+fn first_compatible_provider_plan<'a>(
+    tool: &str,
+    arguments: &[OsString],
+    config: &Config,
+    candidates: &'a [ProviderCandidate],
+) -> Option<(usize, &'a ProviderCandidate, dispatcher::ExecutionPlan)> {
+    candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| candidate.usable && candidate.has_consistent_location())
+        .find_map(|(index, candidate)| {
+            execution_plan_for_explicit_provider_candidate(tool, arguments, config, candidate)
+                .ok()
+                .map(|plan| (index, candidate, plan))
+        })
 }
 
 fn is_shell_operator_command(arguments: &[OsString]) -> bool {
@@ -3853,33 +3865,39 @@ fn provider_exec_command(arguments: &[OsString], config: &Config) -> ExitCode {
     // Execution is explicit and must not reuse a provider identity discovered
     // under a previous RTK path or tool installation state.
     let resolution = resolve_tool_provider(tool, config, true);
-    let index = candidate_index.or(resolution.recommended);
-    let Some(index) = index else {
-        eprintln!("xuva: no verified provider is available; run `xuva doctor {tool}` for details");
-        return ExitCode::from(127);
-    };
-    let Some(candidate) = resolution.candidates.get(index) else {
-        eprintln!("xuva: provider candidate {index} does not exist; run `xuva resolve {tool}`");
-        return ExitCode::FAILURE;
-    };
-    if !candidate.usable {
-        eprintln!(
-            "xuva: provider candidate {index} is not verified: {}",
-            candidate.reason
-        );
-        return ExitCode::from(127);
-    }
     let forwarded = &arguments[separator + 1..];
-    let plan =
+    let (index, candidate, plan) = if let Some(index) = candidate_index {
+        let Some(candidate) = resolution.candidates.get(index) else {
+            eprintln!("xuva: provider candidate {index} does not exist; run `xuva resolve {tool}`");
+            return ExitCode::FAILURE;
+        };
+        if !candidate.usable {
+            eprintln!(
+                "xuva: provider candidate {index} is not verified: {}",
+                candidate.reason
+            );
+            return ExitCode::from(127);
+        }
         match execution_plan_for_explicit_provider_candidate(tool, forwarded, config, candidate) {
-            Ok(plan) => plan,
+            Ok(plan) => (index, candidate, plan),
             Err(error) => {
                 eprintln!(
                     "xuva: provider candidate {index} cannot produce an execution plan: {error}"
                 );
                 return ExitCode::from(127);
             }
+        }
+    } else {
+        let selected =
+            first_compatible_provider_plan(tool, forwarded, config, &resolution.candidates);
+        let Some(selected) = selected else {
+            eprintln!(
+                "xuva: no verified provider supports the requested output adapter and command semantics; run `xuva resolve {tool}` for details"
+            );
+            return ExitCode::from(127);
         };
+        selected
+    };
     let route = execution_route(&plan.candidate);
     let needs_console_handler = matches!(route, Route::Wsl1 | Route::Wsl2);
     if needs_console_handler && !console::install() {
@@ -4331,7 +4349,7 @@ fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         .is_some_and(|argument| argument == CALIBRATION_ARGUMENT)
     {
         if arguments.len() == 1 || arguments.get(1).is_some_and(|argument| argument == "show") {
-            return match print_calibration() {
+            return match print_calibration(config.policy_objective) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
                     eprintln!("xuva: {error}");
@@ -4389,6 +4407,7 @@ fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
             policy.as_ref(),
             Some(&adaptive_context),
             environment,
+            invocation_config.policy_objective,
         )
     } else {
         (requested_route, "explicit route preference")
@@ -4401,6 +4420,7 @@ fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
             current_directory.as_deref().and_then(|path| path.to_str()),
             policy.as_ref(),
             &adaptive_context,
+            invocation_config.policy_objective,
         ) {
             Ok(plan) => plan,
             Err(error) => {
@@ -4632,6 +4652,9 @@ fn main() -> ExitCode {
         }
     };
     let arguments = if let Some(bridge) = bridge {
+        config.invocation_origin = InvocationOrigin::Wsl {
+            distro: bridge.distro.clone(),
+        };
         config.distro = bridge.distro;
         config.cwd = Some(bridge.cwd);
         config.bridge_windows_cwd = bridge.windows_cwd;
@@ -4707,12 +4730,12 @@ mod tests {
     #[test]
     fn wsl_bridge_request_carries_context_and_arguments_without_environment() {
         let request = wsl_bridge_request(&[OsString::from(
-            "--wsl-bridge=djIAVWJ1bnR1AC90bXAARDpcZml4dHVyZQAvdG1wL2ZpeHR1cmUAcmF3AC0tZXhwbGFpbi1yb3V0ZQBnbwBydW4AeAA=",
+            "--wsl-bridge=djIAVWJ1bnR1AC9tbnQvZC9maXh0dXJlAEQ6XGZpeHR1cmUAL3RtcC9maXh0dXJlAHJhdwAtLWV4cGxhaW4tcm91dGUAZ28AcnVuAHgA",
         )])
         .expect("bridge payload is valid")
         .expect("argument selects the bridge");
         assert_eq!(request.distro, "Ubuntu");
-        assert_eq!(request.cwd, "/tmp");
+        assert_eq!(request.cwd, "/mnt/d/fixture");
         assert_eq!(request.windows_cwd.as_deref(), Some(r"D:\fixture"));
         assert_eq!(request.extra_path.as_deref(), Some("/tmp/fixture"));
         assert_eq!(request.output_adapter, OutputAdapterPreference::Raw);
@@ -4908,6 +4931,12 @@ mod tests {
             _ => None,
         });
         assert!(invalid_extra_path.is_err());
+
+        let invalid_objective = Config::from_lookup(|name| match name {
+            "XUVA_POLICY_OBJECTIVE" => Some("fastest-ish".to_owned()),
+            _ => None,
+        });
+        assert!(invalid_objective.is_err());
     }
 
     #[test]
@@ -5159,7 +5188,8 @@ mod tests {
                 &[OsString::from("git"), OsString::from("status")],
                 Some(r"E:\work"),
                 Some(&policy),
-                Some(&context)
+                Some(&context),
+                PolicyObjective::Balanced,
             )
             .0,
             Route::Raw
@@ -5169,7 +5199,8 @@ mod tests {
                 &[OsString::from("rg"), OsString::from("needle")],
                 Some(r"E:\work"),
                 Some(&policy),
-                Some(&context)
+                Some(&context),
+                PolicyObjective::Balanced,
             )
             .0,
             Route::NativeRtk
@@ -5179,7 +5210,8 @@ mod tests {
                 &[OsString::from("cargo"), OsString::from("check")],
                 Some(r"E:\work"),
                 Some(&policy),
-                Some(&context)
+                Some(&context),
+                PolicyObjective::Balanced,
             )
             .0,
             Route::Raw
@@ -5189,7 +5221,8 @@ mod tests {
                 &[OsString::from("npm"), OsString::from("run")],
                 Some(r"E:\work"),
                 Some(&policy),
-                Some(&context)
+                Some(&context),
+                PolicyObjective::Balanced,
             )
             .0,
             Route::NativeRtk
@@ -5203,7 +5236,8 @@ mod tests {
                 ],
                 Some(r"E:\work"),
                 Some(&policy),
-                Some(&context)
+                Some(&context),
+                PolicyObjective::Balanced,
             )
             .0,
             Route::NativeRtk
@@ -5305,11 +5339,15 @@ mod tests {
             .expect("new measurement replaces rg");
         assert_eq!(rg.token_savings_percent, 90.0);
         assert_eq!(
-            merged.route_for("cargo:check", "0123456789abcdef"),
+            merged.route_for("cargo:check", "0123456789abcdef", PolicyObjective::Balanced,),
             Some(Route::Raw)
         );
         assert_eq!(
-            merged.route_for("npm:run-list", "0123456789abcdef"),
+            merged.route_for(
+                "npm:run-list",
+                "0123456789abcdef",
+                PolicyObjective::Balanced,
+            ),
             Some(Route::Raw)
         );
     }
@@ -5334,8 +5372,14 @@ mod tests {
                 sample_count: 5,
             }],
         };
-        assert_eq!(policy.route_for("rg", &context), Some(Route::Raw));
-        assert_eq!(policy.route_for("rg", "0123456789abcdef"), None);
+        assert_eq!(
+            policy.route_for("rg", &context, PolicyObjective::Balanced),
+            Some(Route::Raw)
+        );
+        assert_eq!(
+            policy.route_for("rg", "0123456789abcdef", PolicyObjective::Balanced),
+            None
+        );
 
         let entry = CalibrationEntry {
             signature: "fedcba9876543210".to_owned(),
@@ -5418,6 +5462,7 @@ mod tests {
                 None,
                 None,
                 ExecutionEnvironment::WindowsOnly,
+                PolicyObjective::Balanced,
             )
             .0,
             Route::Raw
@@ -5429,6 +5474,7 @@ mod tests {
                 None,
                 None,
                 ExecutionEnvironment::WindowsOnly,
+                PolicyObjective::Balanced,
             )
             .0,
             Route::NativeRtk
@@ -5445,6 +5491,7 @@ mod tests {
                 None,
                 None,
                 ExecutionEnvironment::WindowsOnly,
+                PolicyObjective::Balanced,
             )
             .0,
             Route::Raw
@@ -6504,17 +6551,19 @@ mod tests {
             windows_path: None,
         };
         assert!(windows_tool_is_usable(
+            "go",
             &windows_project,
             Route::Raw,
             &windows
         ));
         assert!(!windows_tool_is_usable(
+            "go",
             &windows_project,
             Route::NativeRtk,
             &windows
         ));
         assert!(
-            !windows_tool_is_usable(&windows_project, Route::Wsl1, &windows),
+            !windows_tool_is_usable("go", &windows_project, Route::Wsl1, &windows),
             "a conservative WSL fallback must not suppress Windows provider resolution"
         );
         let wsl_project = ProjectLocation {
@@ -6523,12 +6572,114 @@ mod tests {
             distro: Some("Ubuntu".to_owned()),
             windows_path: None,
         };
-        assert!(!windows_tool_is_usable(&wsl_project, Route::Raw, &windows));
+        assert!(!windows_tool_is_usable(
+            "go",
+            &wsl_project,
+            Route::Raw,
+            &windows
+        ));
+        assert!(
+            !windows_tool_is_usable("find", &windows_project, Route::Raw, &windows),
+            "Windows find.exe must never satisfy POSIX find semantics"
+        );
+        let mut structured = windows.clone();
+        structured.native_rtk = Some(r"C:\Tools\rtk.exe".to_owned());
+        assert!(windows_tool_is_usable(
+            "go",
+            &windows_project,
+            Route::NativeRtk,
+            &structured
+        ));
+        assert!(!windows_tool_is_usable(
+            "find",
+            &windows_project,
+            Route::NativeRtk,
+            &structured
+        ));
+    }
+
+    #[test]
+    fn cross_host_isolation_uses_origin_identity_and_preserves_unc_cwd() {
+        let mut config = default_config();
+        config.invocation_origin = InvocationOrigin::Wsl {
+            distro: "Ubuntu".to_owned(),
+        };
+        config.cwd = Some("/home/test/project".to_owned());
+        config.bridge_windows_cwd = Some(r"\\wsl.localhost\Ubuntu\home\test\project".to_owned());
+        let candidate = ProviderCandidate {
+            host: ProviderHost::Windows,
+            adapters: vec![AdapterKind::Raw],
+            distro: None,
+            wsl_version: None,
+            executable: r"C:\Tools\tool.exe".to_owned(),
+            rtk: None,
+            project_path: config.bridge_windows_cwd.clone(),
+            usable: true,
+            reason: "fixture".to_owned(),
+        };
+
+        assert_eq!(
+            provider_environment_policy(&config, &candidate),
+            dispatcher::EnvironmentPolicy::Isolated
+        );
+        assert_eq!(
+            windows_cwd_for_invocation(&config).expect("UNC mapping is usable"),
+            PathBuf::from(r"\\wsl.localhost\Ubuntu\home\test\project")
+        );
+
+        config.invocation_origin = InvocationOrigin::Windows;
+        assert_eq!(
+            provider_environment_policy(&config, &candidate),
+            dispatcher::EnvironmentPolicy::Inherit
+        );
+    }
+
+    #[test]
+    fn explicit_provider_selection_skips_adapter_incompatible_candidates() {
+        let mut config = default_config();
+        config.output_adapter = OutputAdapterPreference::Rtk;
+        let candidates = vec![
+            ProviderCandidate {
+                host: ProviderHost::Windows,
+                adapters: vec![AdapterKind::Raw],
+                distro: None,
+                wsl_version: None,
+                executable: r"C:\Tools\tool.exe".to_owned(),
+                rtk: None,
+                project_path: Some(r"E:\work".to_owned()),
+                usable: true,
+                reason: "raw-only Windows fixture".to_owned(),
+            },
+            ProviderCandidate {
+                host: ProviderHost::Wsl2,
+                adapters: vec![AdapterKind::Raw, AdapterKind::Rtk],
+                distro: Some("Ubuntu".to_owned()),
+                wsl_version: Some(2),
+                executable: "/usr/bin/tool".to_owned(),
+                rtk: Some("/usr/local/bin/rtk".to_owned()),
+                project_path: Some("/mnt/e/work".to_owned()),
+                usable: true,
+                reason: "RTK-capable WSL fixture".to_owned(),
+            },
+        ];
+
+        let (index, candidate, plan) =
+            first_compatible_provider_plan("tool", &[], &config, &candidates)
+                .expect("a compatible provider exists");
+        assert_eq!(index, 1);
+        assert_eq!(candidate.host, ProviderHost::Wsl2);
+        assert!(matches!(
+            plan.adapter,
+            dispatcher::OutputAdapter::Rtk { .. }
+        ));
     }
 
     #[test]
     fn local_calibration_bootstraps_then_requires_validation_before_stable() {
-        assert_eq!(calibration_route_for(None).0, Route::NativeRtk);
+        assert_eq!(
+            calibration_route_for(None, PolicyObjective::Balanced).0,
+            Route::NativeRtk
+        );
 
         let mut entry = CalibrationEntry {
             signature: "0123456789abcdef".to_owned(),
@@ -6540,16 +6691,25 @@ mod tests {
             native_input_tokens: 100,
             native_saved_tokens: 0,
         };
-        assert_eq!(calibration_route_for(Some(&entry)).0, Route::Raw);
+        assert_eq!(
+            calibration_route_for(Some(&entry), PolicyObjective::Balanced).0,
+            Route::Raw
+        );
 
         entry.raw_samples_ms.push(10.0);
         entry.native_samples_ms.push(30.0);
         assert_eq!(entry.phase(), "provisional");
-        assert_eq!(calibration_route_for(Some(&entry)).0, Route::Raw);
+        assert_eq!(
+            calibration_route_for(Some(&entry), PolicyObjective::Balanced).0,
+            Route::Raw
+        );
 
         entry.raw_samples_ms.push(10.0);
         assert_eq!(entry.phase(), "stable");
-        assert_eq!(calibration_route_for(Some(&entry)).0, Route::Raw);
+        assert_eq!(
+            calibration_route_for(Some(&entry), PolicyObjective::Balanced).0,
+            Route::Raw
+        );
     }
 
     #[test]
@@ -6587,8 +6747,27 @@ mod tests {
             native_saved_tokens: 25,
         };
         assert_eq!(entry.phase(), "stable");
-        assert_eq!(entry.selected_route(), Route::NativeRtk);
+        assert_eq!(
+            entry.selected_route(PolicyObjective::Balanced),
+            Route::NativeRtk
+        );
+        assert_eq!(entry.selected_route(PolicyObjective::Latency), Route::Raw);
+        assert_eq!(
+            select_adaptive_route(Some(10.0), Some(30.0), 1.0, PolicyObjective::Tokens,),
+            Route::NativeRtk
+        );
         assert_eq!(median(&[1.0, 3.0]), Some(2.0));
+    }
+
+    #[test]
+    fn policy_objective_is_part_of_the_local_evidence_context() {
+        let balanced = default_config();
+        let mut latency = balanced.clone();
+        latency.policy_objective = PolicyObjective::Latency;
+        assert_ne!(
+            adaptive_context_signature(&balanced),
+            adaptive_context_signature(&latency)
+        );
     }
 
     #[test]

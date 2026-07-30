@@ -13,7 +13,7 @@ fi
 cwd=$(pwd -P)
 windows_cwd=$(wslpath -w -a "$cwd" 2>/dev/null || true)
 case "$windows_cwd" in
-    [A-Za-z]:\\*) ;;
+    [A-Za-z]:\\*|\\\\wsl.localhost\\*|\\\\wsl\$\\*) ;;
     *) windows_cwd= ;;
 esac
 extra_path=${XUVA_WSL_EXTRA_PATH:-}

@@ -1,30 +1,58 @@
-# Release provenance and Windows signing readiness
+# Release provenance and Windows signing status
 
-`release-provenance.yml` accepts an existing immutable tag only. The tag and
-`Cargo.toml` version must match, the controlled Windows/WSL runner must pass the
-full release gate on that exact SHA, and the hosted Windows builder then creates
-the ZIP, SHA-256 sidecar, CycloneDX SBOM, and GitHub build-provenance
-attestation. It is manual so an ordinary branch build can never publish an
-artifact.
+`release-provenance.yml` publishes only an existing immutable `v<version>` tag.
+The workflow first resolves `refs/tags/<tag>^{commit}` and checks that the tag,
+`Cargo.toml`, and the requested version agree. User-controlled workflow inputs
+are passed to PowerShell through step environment variables; they are never
+embedded in a `run:` program.
 
-The current public archive is
-`xuva-v0.4.1-windows-x86_64.zip`. New archives contain `xuva.exe`, the
-installer, uninstaller, WSL shim, license, readme, and checksum record. The
-release page, SHA-256 sidecar, SBOM, and attestation are the authoritative
-distribution record. A source branch or an untagged workflow artifact is not a
-stable binary release.
+## Build once, gate once, publish the same bytes
 
-The project does not claim Authenticode signing until a maintainer supplies a
-trusted code-signing certificate and an appropriate protected GitHub
-environment. Before enabling signing, require all of the following:
+The hosted Windows build job checks out the resolved commit, builds one release
+binary, packages it once, and uploads one immutable artifact set:
 
-1. A certificate owned by the release publisher, stored only as a protected
-   GitHub secret or hardware-backed signing identity.
-2. A documented timestamp service and a verification command for the published
-   EXE and ZIP.
-3. A protected release environment with reviewer approval and immutable tags.
-4. A successful self-hosted Windows/WSL process-contract run for the same tag.
+- `xuva-v<version>-windows-x86_64.zip`;
+- its SHA-256 sidecar;
+- a CycloneDX SBOM;
+- exact toolchain provenance.
 
-Until then, users should verify the published SHA-256 sidecar and GitHub
-attestation. The absence of an Authenticode signature is explicit release
-metadata, not an implied guarantee.
+The controlled Windows/WSL job downloads those exact bytes, verifies their
+digest and embedded source identity, installs the archive in an isolated
+directory, runs the full source/process gate on the same commit, and returns the
+gated artifact digest. The protected publish job downloads the same artifact;
+it does not compile or package again. It rechecks the tag-to-commit mapping and
+digest, creates GitHub build-provenance attestations, and publishes those exact
+files.
+
+The release compiler is Rust `1.97.1`. `cargo-audit` is pinned to `0.22.2` and
+`cargo-cyclonedx` to `0.5.9`. GitHub Actions are pinned by full commit SHA. The
+crate's separately tested minimum supported Rust version is `1.88.0`.
+
+## Package integrity
+
+The ZIP contains an exact allowlisted file set, including the launcher,
+installer, uninstaller, WSL shim, optional tokenizer installer and pin,
+`RELEASE-METADATA.json`, and `SHA256SUMS`. `verify-package.ps1` checks:
+
+- no missing or unexpected package files;
+- exact checksum coverage and every payload digest;
+- package version, source commit, target, profile, and provenance;
+- equality between metadata and `xuva --version --verbose`.
+
+The installer runs that verifier before activating an official package. Updates
+rotate the complete bundle atomically and retain one complete previous bundle;
+rollback never swaps only `xuva.exe` while leaving newer companion scripts.
+
+## Authenticode status
+
+XUVA public-beta archives are not Authenticode-signed. Windows SmartScreen may
+therefore show an unrecognized-publisher warning. Do not bypass that warning for
+an archive from an unknown source: download only from the repository release,
+verify the SHA-256 sidecar and GitHub attestation, then inspect the package
+metadata before installation.
+
+The project will claim Authenticode signing only after a maintainer supplies a
+protected code-signing identity, documented timestamp service, verification
+procedure, and reviewer-controlled release environment. Until then, the
+published checksum, attestation, immutable source tag, and exact package
+verification are the explicit trust boundary.

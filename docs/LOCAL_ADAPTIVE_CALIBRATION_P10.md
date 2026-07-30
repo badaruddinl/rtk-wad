@@ -90,7 +90,8 @@ token-saving percentage.
 ## Validation gates
 
 P10 adds unit coverage for the candidate → provisional → stable transition,
-the 25% token threshold, safe-command exclusion, and non-revealing signature
+the default balanced 25% token threshold, objective-specific evidence context,
+safe-command exclusion, and non-revealing signature
 behavior. The release gate remains:
 
 ```powershell
