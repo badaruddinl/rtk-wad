@@ -9,9 +9,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $rootPath = (Resolve-Path -LiteralPath $Root).Path
-$versionMatch = Select-String -LiteralPath (Join-Path $rootPath "Cargo.toml") `
-    -Pattern '^version = "([^"]+)"$'
-$cargoVersion = $versionMatch.Matches.Groups[1].Value
+$cargoVersion = (& (Join-Path $rootPath "scripts\read-cargo-version.ps1") `
+    -CargoManifest (Join-Path $rootPath "Cargo.toml")).Trim()
 if ($Version.TrimStart("v") -ne $cargoVersion) {
     throw "Requested package version $Version does not match Cargo.toml version $cargoVersion."
 }
