@@ -56,23 +56,25 @@ jobs:
           & $rustup.Source run 1.97.1 cargo --version
           if ($LASTEXITCODE -ne 0) { throw 'Unable to run the exact Cargo 1.97.1 toolchain.' }
 
-      - name: Prove the dedicated WSL1 distro
+      - name: Prove the WSL1 distro version
         shell: powershell
         run: |
           $inventory = ((wsl.exe --list --verbose | Out-String) -replace [char]0, '')
           if ($inventory -notmatch '(?m)^\s*\*?\s*Ubuntu-RTK-WSL1\s+\S+\s+1\s*$') {
             throw "Ubuntu-RTK-WSL1 is not proven to be WSL 1.`n$inventory"
           }
-          $marker = (((wsl.exe -d Ubuntu-RTK-WSL1 -u root --exec `
-              /bin/cat /etc/xuva-dedicated-wsl1 | Out-String) -replace [char]0, '') -replace "`r", '')
-          if ($LASTEXITCODE -ne 0 -or
-              $marker -notmatch '(?m)^product=xuva$' -or
-              $marker -notmatch '(?m)^schema_version=1$' -or
-              $marker -notmatch '(?m)^dedicated=true$' -or
-              $marker -notmatch '(?m)^installation_id=[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$') {
-            throw 'The WSL1 test distro lacks the verified XUVA dedicated-runtime marker.'
-          }
 
-      - name: Run the WSL1 process contract
+      - name: Validate the dedicated runtime and run the WSL1 process contract
         shell: powershell
-        run: rustup.exe run 1.97.1 cargo test --locked --test process_contract -- --test-threads=1
+        run: |
+          rustup.exe run 1.97.1 cargo build --locked --bin xuva
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to build the WSL1 contract binary.' }
+          $env:XUVA_WSL_BACKEND = 'wsl1'
+          $env:XUVA_WSL_DISTRO = $env:XUVA_WSL1_TEST_DISTRO
+          $doctor = ((& .\target\debug\xuva.exe doctor wc --refresh | Out-String) -replace [char]0, '')
+          if ($LASTEXITCODE -ne 0 -or
+              $doctor -notmatch '(?m)^inspected_distro=Ubuntu-RTK-WSL1;user=[^;]+;wsl_version=1;dedicated=true;installation_id=[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12};') {
+            throw "The XUVA contract binary did not validate the dedicated WSL1 runtime.`n$doctor"
+          }
+          rustup.exe run 1.97.1 cargo test --locked --test process_contract -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'The WSL1 process contract failed.' }
