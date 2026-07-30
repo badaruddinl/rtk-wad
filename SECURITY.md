@@ -29,9 +29,14 @@ that pass the controlled Windows/WSL gate on the same source SHA.
 WSL launches are cancellation-gated: the Linux launcher first establishes and
 attests its cancellation boundary, and only then can the Windows parent publish
 a matching permit. WSL2 process-group tokens are stored below a private
-per-user runtime directory rather than directly in shared `/tmp`. WSL1
-termination additionally requires the pre-launch dedicated installation ID to
-match the marker immediately before `wsl.exe --terminate`.
+per-user runtime directory rather than directly in shared `/tmp`. Active tokens
+are never deleted by age. The parent retains cancellation state after a Windows
+proxy exit and accepts Linux cleanup only after a verified dead process group
+or an identity-matched completion attestation. A WSL1 child validates and
+attests the root-owned, read-only dedicated-runtime marker in the same session
+before the parent can permit execution. Cancellation accepts that exact
+installation ID and requires it to match the marker again immediately before
+`wsl.exe --terminate`.
 
 Provider discovery records path, size, and modification time. The current
 public-beta threat model trusts the selected user's local toolchain and writable

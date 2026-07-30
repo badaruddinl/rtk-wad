@@ -215,7 +215,10 @@ are independently verified.
 RTK meta commands such as `smart`, `proxy`, `rewrite`, and `hook` are
 adapter-owned subcommands rather than operating-system executables. Adaptive
 routing keeps their static RTK route and never asks the generic provider
-resolver to discover a fictitious executable with the same name.
+resolver to discover a fictitious executable with the same name. This
+adapter-only boundary is intentionally narrower than RTK's recognized command
+surface: `wc` remains a raw POSIX provider, and `--explain-route` reports its
+resolved `/usr/bin/wc` executable.
 
 `xuva` does not provide an implicit shell mode. If a workflow genuinely
 requires shell syntax, invoke the required shell explicitly and keep it on a
