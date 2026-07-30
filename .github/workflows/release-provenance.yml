@@ -157,7 +157,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: xuva-release-artifact
-          path: gated-dist
+          path: ${{ runner.temp }}/xuva-gated-dist-wsl2
 
       - name: Require the exact release Rust toolchain
         shell: powershell
@@ -189,9 +189,10 @@ jobs:
           if ($env:XUVA_ARTIFACT_DIGEST -notmatch '^[0-9a-f]{64}$') {
             throw "Hosted artifact has no valid immutable digest."
           }
-          .\scripts\verify-release-artifact.ps1 -DistributionDirectory gated-dist `
+          $distribution = Join-Path $env:RUNNER_TEMP "xuva-gated-dist-wsl2"
+          .\scripts\verify-release-artifact.ps1 -DistributionDirectory $distribution `
               -ExpectedVersion $env:XUVA_RELEASE_VERSION -ExpectedCommit $env:XUVA_GATED_SHA
-          $archive = Join-Path gated-dist "xuva-v$($env:XUVA_RELEASE_VERSION)-windows-x86_64.zip"
+          $archive = Join-Path $distribution "xuva-v$($env:XUVA_RELEASE_VERSION)-windows-x86_64.zip"
           $expanded = Join-Path $env:RUNNER_TEMP "xuva-gated-package-$($env:GITHUB_RUN_ID)"
           if (Test-Path -LiteralPath $expanded) {
             Remove-Item -LiteralPath $expanded -Recurse -Force
@@ -232,7 +233,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: xuva-release-artifact
-          path: gated-dist
+          path: ${{ runner.temp }}/xuva-gated-dist-wsl1
 
       - name: Require exact Windows Rust and prove WSL1 version
         shell: powershell
@@ -247,9 +248,10 @@ jobs:
       - name: Run WSL1 contract against the packaged executable
         shell: powershell
         run: |
-          .\scripts\verify-release-artifact.ps1 -DistributionDirectory gated-dist `
+          $distribution = Join-Path $env:RUNNER_TEMP "xuva-gated-dist-wsl1"
+          .\scripts\verify-release-artifact.ps1 -DistributionDirectory $distribution `
               -ExpectedVersion $env:XUVA_RELEASE_VERSION -ExpectedCommit $env:XUVA_GATED_SHA
-          $archive = Join-Path gated-dist "xuva-v$($env:XUVA_RELEASE_VERSION)-windows-x86_64.zip"
+          $archive = Join-Path $distribution "xuva-v$($env:XUVA_RELEASE_VERSION)-windows-x86_64.zip"
           $expanded = Join-Path $env:RUNNER_TEMP "xuva-gated-wsl1-$($env:GITHUB_RUN_ID)"
           if (Test-Path -LiteralPath $expanded) {
             Remove-Item -LiteralPath $expanded -Recurse -Force

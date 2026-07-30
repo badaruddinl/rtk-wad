@@ -70,15 +70,15 @@ distro and its project mapping are verified. Other distributions can be
 discovered, but are not part of the release gate. Source builds require Rust
 1.95.0 or newer; official binaries use the pinned Rust 1.97.1 toolchain.
 
-- [Download the v0.4.2 Windows archive](https://github.com/badaruddinl/xuva/releases/download/v0.4.2/xuva-v0.4.2-windows-x86_64.zip)
-- [Download its SHA-256 sidecar](https://github.com/badaruddinl/xuva/releases/download/v0.4.2/xuva-v0.4.2-windows-x86_64.zip.sha256)
+- [Download the v0.4.3 Windows archive](https://github.com/badaruddinl/xuva/releases/download/v0.4.3/xuva-v0.4.3-windows-x86_64.zip)
+- [Download its SHA-256 sidecar](https://github.com/badaruddinl/xuva/releases/download/v0.4.3/xuva-v0.4.3-windows-x86_64.zip.sha256)
 - [Open the v0.4.1 release record](https://github.com/badaruddinl/xuva/releases/tag/v0.4.1)
 
 Verify the archive after downloading it:
 
 ```powershell
-Get-FileHash .\xuva-v0.4.2-windows-x86_64.zip -Algorithm SHA256
-Get-Content .\xuva-v0.4.2-windows-x86_64.zip.sha256
+Get-FileHash .\xuva-v0.4.3-windows-x86_64.zip -Algorithm SHA256
+Get-Content .\xuva-v0.4.3-windows-x86_64.zip.sha256
 ```
 
 Every stable release also requires successful hosted quality gates and a

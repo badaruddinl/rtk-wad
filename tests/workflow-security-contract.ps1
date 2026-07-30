@@ -27,6 +27,21 @@ try {
     ) {
         throw "Every release version boundary must use the canonical Cargo version reader."
     }
+    if (
+        $releaseWorkflow -match '(?m)^\s*path:\s*gated-dist\s*$' -or
+        $releaseWorkflow -match 'DistributionDirectory\s+gated-dist' -or
+        $releaseWorkflow -match 'Join-Path\s+gated-dist'
+    ) {
+        throw "Controlled release artifacts must not dirty the source checkout."
+    }
+    if (
+        [regex]::Matches(
+            $releaseWorkflow,
+            '(?m)^\s*path:\s*\$\{\{\s*runner\.temp\s*\}\}/xuva-gated-dist-wsl[12]\s*$'
+        ).Count -ne 2
+    ) {
+        throw "Both controlled WSL gates must stage artifacts below runner.temp."
+    }
 
     New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
     $validManifest = Join-Path $temporaryRoot "valid-Cargo.toml"
