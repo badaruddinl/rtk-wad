@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Destination = (Join-Path $env:USERPROFILE ".local\bin"),
+    [string]$Destination = (Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "Programs\XUVA"),
     [string]$Source,
     [string]$TokenizerRoot,
     [string]$TokenizerPython,
@@ -11,12 +11,19 @@ param(
     [switch]$SkipProviderScan,
     [switch]$AddToPath,
     [switch]$Status,
+    [switch]$Recover,
     [switch]$Rollback,
     [switch]$Force
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$lifecycleLibrary = Join-Path $PSScriptRoot "install-lifecycle.ps1"
+if (-not (Test-Path -LiteralPath $lifecycleLibrary -PathType Leaf)) {
+    throw "XUVA installation lifecycle library is missing."
+}
+. $lifecycleLibrary
 
 $resolvedDestination = [System.IO.Path]::GetFullPath($Destination)
 $filesystemRoot = [System.IO.Path]::GetPathRoot($resolvedDestination)
@@ -32,6 +39,11 @@ $nonce = "$PID-$([guid]::NewGuid().ToString('N'))"
 $stageDirectory = Join-Path $parentDirectory ".$bundleName.stage-$nonce"
 $retiredPreviousDirectory = Join-Path $parentDirectory ".$bundleName.previous-$nonce"
 $failedDirectory = Join-Path $parentDirectory ".$bundleName.failed-$nonce"
+$journalPath = Get-XuvaTransactionPath -TargetDirectory $targetDirectory
+$legacyDirectory = Get-XuvaNormalizedFullPath -Value (Join-Path $env:USERPROFILE ".local\bin")
+$legacyTarget = Join-Path $legacyDirectory "xuva.exe"
+$usingDefaultDestination = $targetDirectory -eq
+    (Get-XuvaNormalizedFullPath -Value (Get-XuvaDefaultDestination))
 
 function Get-NormalizedFullPath([string]$Value) {
     if (-not $Value) { return $null }
@@ -71,32 +83,94 @@ function Move-Bundle([string]$From, [string]$To) {
 }
 
 if ($Status) {
+    $owned = $false
+    $installationId = $null
+    if (Test-Path -LiteralPath $targetDirectory -PathType Container) {
+        try {
+            $marker = Get-XuvaOwnedBundle -Directory $targetDirectory
+            $owned = $true
+            $installationId = [string]$marker.installation_id
+        } catch {
+            $owned = $false
+        }
+    }
     [pscustomobject]@{
         Installed = Test-Path -LiteralPath $target -PathType Leaf
+        Owned = $owned
+        InstallationId = $installationId
         Target = $target
-        BackupAvailable = Test-Path -LiteralPath (Join-Path $previousDirectory "xuva.exe") -PathType Leaf
+        BackupAvailable = (Test-Path -LiteralPath (Join-Path $previousDirectory "xuva.exe") -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $previousDirectory $script:XuvaOwnershipMarkerName) -PathType Leaf)
         BackupDirectory = $previousDirectory
         OnUserPath = Test-DirectoryOnUserPath -Directory $targetDirectory
+        RecoveryRequired = Test-Path -LiteralPath $journalPath -PathType Leaf
+        RecoveryJournal = $journalPath
+        LegacyInstallationDetected = $usingDefaultDestination -and
+            (Test-Path -LiteralPath $legacyTarget -PathType Leaf)
+        LegacyInstallation = $legacyTarget
     } | ConvertTo-Json
     return
 }
 
+function Invoke-TestCrash([string]$Point) {
+    if ($env:XUVA_TEST_MODE -eq "1" -and $env:XUVA_TEST_INSTALL_CRASH -eq $Point) {
+        Stop-Process -Id $PID -Force
+    }
+}
+
+if ($Recover) {
+    if (Invoke-XuvaTransactionRecovery -TargetDirectory $targetDirectory `
+        -PreviousDirectory $previousDirectory) {
+        Write-Output "Recovered the interrupted XUVA installation transaction."
+    } else {
+        Write-Output "No interrupted XUVA installation transaction was found."
+    }
+    return
+}
+
+if (Test-Path -LiteralPath $journalPath -PathType Leaf) {
+    throw "An interrupted XUVA transaction requires recovery. Run this installer with -Recover first."
+}
+
 if ($Rollback) {
-    if (-not (Test-Path -LiteralPath (Join-Path $previousDirectory "xuva.exe") -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $previousDirectory -PathType Container)) {
         throw "No previous XUVA bundle backup found beside $targetDirectory."
     }
-    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $targetDirectory -PathType Container)) {
         throw "No current XUVA bundle found in $targetDirectory."
     }
+    $currentMarker = Get-XuvaOwnedBundle -Directory $targetDirectory
+    $previousMarker = Get-XuvaOwnedBundle -Directory $previousDirectory
+    if ([string]$currentMarker.installation_id -ne [string]$previousMarker.installation_id) {
+        throw "Current and previous bundles do not belong to the same XUVA installation."
+    }
     $swapDirectory = Join-Path $parentDirectory ".$bundleName.rollback-$nonce"
+    $rollbackState = @{
+        operation = "rollback"
+        phase = "prepared"
+        target = $targetDirectory
+        previous = $previousDirectory
+        stage = ""
+        auxiliary = $swapDirectory
+        had_existing = $true
+        installation_id = [string]$currentMarker.installation_id
+    }
+    Write-XuvaTransaction -JournalPath $journalPath -State $rollbackState
     Move-Bundle -From $targetDirectory -To $swapDirectory
+    $rollbackState.phase = "current_rotated"
+    Write-XuvaTransaction -JournalPath $journalPath -State $rollbackState
     $previousActivated = $false
     try {
         Invoke-TestFailure -Point "rollback-after-current-move"
         Move-Bundle -From $previousDirectory -To $targetDirectory
         $previousActivated = $true
+        $rollbackState.phase = "previous_activated"
+        Write-XuvaTransaction -JournalPath $journalPath -State $rollbackState
         Invoke-TestFailure -Point "rollback-after-previous-activate"
         Move-Bundle -From $swapDirectory -To $previousDirectory
+        $rollbackState.phase = "committed"
+        Write-XuvaTransaction -JournalPath $journalPath -State $rollbackState
+        Remove-Item -LiteralPath $journalPath -Force
     } catch {
         if ($previousActivated -and
             (Test-Path -LiteralPath $targetDirectory) -and
@@ -108,6 +182,7 @@ if ($Rollback) {
             (Test-Path -LiteralPath $swapDirectory)) {
             Move-Bundle -From $swapDirectory -To $targetDirectory
         }
+        Remove-Item -LiteralPath $journalPath -Force -ErrorAction SilentlyContinue
         throw
     }
     Write-Output "Restored the previous complete XUVA bundle."
@@ -151,11 +226,11 @@ if ($SkipTokenizer) {
 }
 
 New-Item -ItemType Directory -Path $parentDirectory -Force | Out-Null
-if ((Test-Path -LiteralPath $targetDirectory) -and
-    -not (Test-Path -LiteralPath $target -PathType Leaf)) {
-    throw "Destination exists but is not an installed XUVA bundle: $targetDirectory"
+$existingMarker = $null
+if (Test-Path -LiteralPath $targetDirectory) {
+    $existingMarker = Get-XuvaOwnedBundle -Directory $targetDirectory
 }
-$hadExisting = Test-Path -LiteralPath $target -PathType Leaf
+$hadExisting = $null -ne $existingMarker
 if ($hadExisting -and -not $Force) {
     throw "Refusing to overwrite existing $target. Re-run with -Force after reviewing it."
 }
@@ -172,6 +247,7 @@ try {
         $bundleFiles = @(
             "xuva.exe",
             "install.ps1",
+            "install-lifecycle.ps1",
             "install-tokenizer.ps1",
             "uninstall.ps1",
             "verify-package.ps1",
@@ -194,6 +270,7 @@ try {
         Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $stageDirectory "xuva.exe") -ErrorAction Stop
         foreach ($companion in @(
             "install.ps1",
+            "install-lifecycle.ps1",
             "uninstall.ps1",
             "verify-package.ps1",
             "xuva-wsl.sh",
@@ -214,7 +291,7 @@ try {
     }
 
     $stagedTarget = Join-Path $stageDirectory "xuva.exe"
-    foreach ($requiredCompanion in @("install.ps1", "uninstall.ps1", "xuva-wsl.sh")) {
+    foreach ($requiredCompanion in @("install.ps1", "install-lifecycle.ps1", "uninstall.ps1", "xuva-wsl.sh")) {
         if (-not (Test-Path -LiteralPath (Join-Path $stageDirectory $requiredCompanion) -PathType Leaf)) {
             throw "Candidate bundle is missing required companion $requiredCompanion."
         }
@@ -224,6 +301,12 @@ try {
         (($versionOutput -join "`n") -notmatch '^xuva \d+\.\d+\.\d+')) {
         throw "Candidate launcher failed its local version smoke check."
     }
+    $installationId = if ($existingMarker) {
+        [string]$existingMarker.installation_id
+    } else {
+        [guid]::NewGuid().ToString()
+    }
+    New-XuvaOwnershipMarker -Directory $stageDirectory -InstallationId $installationId
 
     if ($InstallTokenizer) {
         $stagedTokenizerInstaller = Join-Path $stageDirectory "install-tokenizer.ps1"
@@ -243,16 +326,39 @@ try {
         }
     }
 
+    $installState = @{
+        operation = "install"
+        phase = "prepared"
+        target = $targetDirectory
+        previous = $previousDirectory
+        stage = $stageDirectory
+        auxiliary = $retiredPreviousDirectory
+        had_existing = $hadExisting
+        installation_id = $installationId
+    }
+    Write-XuvaTransaction -JournalPath $journalPath -State $installState
     if (Test-Path -LiteralPath $previousDirectory) {
+        $previousMarker = Get-XuvaOwnedBundle -Directory $previousDirectory
+        if ([string]$previousMarker.installation_id -ne $installationId) {
+            throw "Previous bundle does not belong to this XUVA installation."
+        }
         Move-Bundle -From $previousDirectory -To $retiredPreviousDirectory
         $retiredPrevious = $true
+        $installState.phase = "previous_retired"
+        Write-XuvaTransaction -JournalPath $journalPath -State $installState
     }
     if ($hadExisting) {
         Move-Bundle -From $targetDirectory -To $previousDirectory
         $rotatedCurrent = $true
+        $installState.phase = "current_rotated"
+        Write-XuvaTransaction -JournalPath $journalPath -State $installState
+        Invoke-TestCrash -Point "after-current-move"
     }
     Move-Bundle -From $stageDirectory -To $targetDirectory
     $activated = $true
+    $installState.phase = "candidate_activated"
+    Write-XuvaTransaction -JournalPath $journalPath -State $installState
+    Invoke-TestCrash -Point "after-candidate-activate"
 
     if (-not $SkipProviderScan) {
         Invoke-TestFailure -Point "provider-scan"
@@ -266,16 +372,19 @@ try {
         $entries = @($originalUserPath -split ";" | Where-Object { $_ })
         [Environment]::SetEnvironmentVariable(
             "Path",
-            ((@($entries) + $targetDirectory) -join ";"),
+            ((@($targetDirectory) + $entries) -join ";"),
             "User"
         )
         $pathChanged = $true
         Write-Output "Added $targetDirectory to the user PATH. Open a new terminal to use it."
     }
     if ($retiredPrevious -and (Test-Path -LiteralPath $retiredPreviousDirectory)) {
-        Remove-Item -LiteralPath $retiredPreviousDirectory -Recurse -Force
+        Remove-XuvaOwnedDirectory -Directory $retiredPreviousDirectory
         $retiredPrevious = $false
     }
+    $installState.phase = "committed"
+    Write-XuvaTransaction -JournalPath $journalPath -State $installState
+    Remove-Item -LiteralPath $journalPath -Force
 } catch {
     if ($pathChanged) {
         [Environment]::SetEnvironmentVariable("Path", $originalUserPath, "User")
@@ -292,15 +401,21 @@ try {
         $retiredPrevious = $false
     }
     if (Test-Path -LiteralPath $failedDirectory) {
-        Remove-Item -LiteralPath $failedDirectory -Recurse -Force
+        Remove-XuvaEphemeralDirectory -Directory $failedDirectory `
+            -ParentDirectory $parentDirectory -BundleName $bundleName
     }
+    Remove-Item -LiteralPath $journalPath -Force -ErrorAction SilentlyContinue
     throw
 } finally {
     foreach ($temporaryDirectory in @($stageDirectory, $failedDirectory, $retiredPreviousDirectory)) {
         if (Test-Path -LiteralPath $temporaryDirectory) {
-            Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force
+            Remove-XuvaEphemeralDirectory -Directory $temporaryDirectory `
+                -ParentDirectory $parentDirectory -BundleName $bundleName
         }
     }
 }
 
 Write-Output "Installed complete XUVA bundle at $targetDirectory"
+if ($usingDefaultDestination -and (Test-Path -LiteralPath $legacyTarget -PathType Leaf)) {
+    Write-Warning "A legacy XUVA executable remains at $legacyTarget. It was not moved or deleted because .local\bin is a shared directory. The dedicated XUVA directory was placed first only when -AddToPath was requested."
+}

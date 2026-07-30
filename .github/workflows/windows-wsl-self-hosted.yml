@@ -8,17 +8,14 @@ permissions:
   contents: read
 
 jobs:
-  process-contract:
-    # This job is intentionally separate from hosted Windows CI. Register a
-    # controlled Windows runner with all three labels and an Ubuntu WSL distro.
+  process-contract-wsl2:
     runs-on: [self-hosted, Windows, WSL]
+    env:
+      XUVA_WSL2_TEST_DISTRO: Ubuntu
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The Rust action invokes bash.exe internally on Windows. That resolves
-      # through the machine's default WSL distro, which may be Docker Desktop
-      # rather than the controlled Ubuntu provider used by this contract.
       - name: Require exact Windows Rust
         shell: powershell
         run: |
@@ -28,19 +25,54 @@ jobs:
           & $rustup.Source run 1.97.1 cargo --version
           if ($LASTEXITCODE -ne 0) { throw 'Unable to run the exact Cargo 1.97.1 toolchain.' }
 
-      - name: Require the controlled Ubuntu WSL provider
+      - name: Prove the controlled WSL2 distro
         shell: powershell
         run: |
-          # Windows PowerShell can decode this UTF-16 WSL output with NUL
-          # characters, so normalize before comparing a distro name.
-          $available = @(
-            wsl.exe --list --quiet 2>$null |
-              ForEach-Object { $_ -replace [char]0, '' } |
-              Where-Object { $_ -eq 'Ubuntu' }
-          )
-          if ($available.Count -eq 0) { throw 'The self-hosted WSL runner must provide an Ubuntu distro.' }
-          wsl.exe --distribution Ubuntu --exec /usr/bin/env true
+          $inventory = ((wsl.exe --list --verbose | Out-String) -replace [char]0, '')
+          if ($inventory -notmatch '(?m)^\s*\*?\s*Ubuntu\s+\S+\s+2\s*$') {
+            throw "Ubuntu is not proven to be WSL 2.`n$inventory"
+          }
+          wsl.exe -d Ubuntu --exec /usr/bin/env true
+          if ($LASTEXITCODE -ne 0) { throw 'Ubuntu WSL2 smoke check failed.' }
 
-      - name: Run Windows/WSL process contract
+      - name: Run the WSL2 process contract
         shell: powershell
-        run: rustup.exe run 1.97.1 cargo test --locked --test process_contract
+        run: rustup.exe run 1.97.1 cargo test --locked --test process_contract -- --test-threads=1
+
+  process-contract-wsl1:
+    runs-on: [self-hosted, Windows, WSL]
+    env:
+      XUVA_WSL1_TEST_DISTRO: Ubuntu-RTK-WSL1
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require exact Windows Rust
+        shell: powershell
+        run: |
+          $rustup = Get-Command rustup.exe -ErrorAction Stop
+          & $rustup.Source toolchain install 1.97.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to install Rust 1.97.1.' }
+          & $rustup.Source run 1.97.1 cargo --version
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to run the exact Cargo 1.97.1 toolchain.' }
+
+      - name: Prove the dedicated WSL1 distro
+        shell: powershell
+        run: |
+          $inventory = ((wsl.exe --list --verbose | Out-String) -replace [char]0, '')
+          if ($inventory -notmatch '(?m)^\s*\*?\s*Ubuntu-RTK-WSL1\s+\S+\s+1\s*$') {
+            throw "Ubuntu-RTK-WSL1 is not proven to be WSL 1.`n$inventory"
+          }
+          $marker = (((wsl.exe -d Ubuntu-RTK-WSL1 -u root --exec `
+              /bin/cat /etc/xuva-dedicated-wsl1 | Out-String) -replace [char]0, '') -replace "`r", '')
+          if ($LASTEXITCODE -ne 0 -or
+              $marker -notmatch '(?m)^product=xuva$' -or
+              $marker -notmatch '(?m)^schema_version=1$' -or
+              $marker -notmatch '(?m)^dedicated=true$' -or
+              $marker -notmatch '(?m)^installation_id=[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$') {
+            throw 'The WSL1 test distro lacks the verified XUVA dedicated-runtime marker.'
+          }
+
+      - name: Run the WSL1 process contract
+        shell: powershell
+        run: rustup.exe run 1.97.1 cargo test --locked --test process_contract -- --test-threads=1

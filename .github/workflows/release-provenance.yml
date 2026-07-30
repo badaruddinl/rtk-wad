@@ -21,6 +21,7 @@ jobs:
     outputs:
       gated_sha: ${{ steps.source.outputs.sha }}
       version: ${{ steps.source.outputs.version }}
+      is_prerelease: ${{ steps.source.outputs.is_prerelease }}
     steps:
       - name: Check out workflow source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,8 +50,14 @@ jobs:
           if ($tag.TrimStart('v') -ne $cargoVersion) {
             throw "Release tag and Cargo.toml version differ."
           }
+          git fetch origin master
+          git merge-base --is-ancestor $sha origin/master
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release tag commit is not an ancestor of protected origin/master."
+          }
           "sha=$sha" >> $env:GITHUB_OUTPUT
           "version=$cargoVersion" >> $env:GITHUB_OUTPUT
+          "is_prerelease=$($cargoVersion.Contains('-').ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
 
   build-release-artifact:
     needs: resolve-release-source
@@ -123,11 +130,12 @@ jobs:
           path: dist/*
           if-no-files-found: error
           compression-level: 0
-          retention-days: 1
+          retention-days: 14
 
   controlled-release-gate:
     needs: [resolve-release-source, build-release-artifact]
     runs-on: [self-hosted, Windows, WSL]
+    environment: release-gate
     outputs:
       gated_sha: ${{ steps.gate-identity.outputs.sha }}
       artifact_digest: ${{ steps.gate-identity.outputs.digest }}
@@ -137,6 +145,7 @@ jobs:
       XUVA_RELEASE_VERSION: ${{ needs.resolve-release-source.outputs.version }}
       XUVA_ARTIFACT_DIGEST: ${{ needs.build-release-artifact.outputs.artifact_digest }}
       XUVA_BUILD_COMMIT_OVERRIDE: ${{ needs.resolve-release-source.outputs.gated_sha }}
+      XUVA_WSL2_TEST_DISTRO: Ubuntu
     steps:
       - name: Check out the gated commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -180,10 +189,18 @@ jobs:
           if ($env:XUVA_ARTIFACT_DIGEST -notmatch '^[0-9a-f]{64}$') {
             throw "Hosted artifact has no valid immutable digest."
           }
-          .\scripts\verify-release.ps1 -Cargo "$env:USERPROFILE\.cargo\bin\cargo.exe" `
-              -NativeRtk $env:XUVA_RELEASE_RTK
           .\scripts\verify-release-artifact.ps1 -DistributionDirectory gated-dist `
               -ExpectedVersion $env:XUVA_RELEASE_VERSION -ExpectedCommit $env:XUVA_GATED_SHA
+          $archive = Join-Path gated-dist "xuva-v$($env:XUVA_RELEASE_VERSION)-windows-x86_64.zip"
+          $expanded = Join-Path $env:RUNNER_TEMP "xuva-gated-package-$($env:GITHUB_RUN_ID)"
+          if (Test-Path -LiteralPath $expanded) {
+            Remove-Item -LiteralPath $expanded -Recurse -Force
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $expanded
+          .\scripts\verify-package.ps1 -PackageDirectory $expanded `
+              -ExpectedVersion $env:XUVA_RELEASE_VERSION -ExpectedCommit $env:XUVA_GATED_SHA
+          .\scripts\verify-release.ps1 -Cargo "$env:USERPROFILE\.cargo\bin\cargo.exe" `
+              -NativeRtk $env:XUVA_RELEASE_RTK -TestBinary (Join-Path $expanded "xuva.exe")
 
       - name: Export successful gate identity
         id: gate-identity
@@ -192,8 +209,76 @@ jobs:
           "sha=$($env:XUVA_GATED_SHA)" >> $env:GITHUB_OUTPUT
           "digest=$($env:XUVA_ARTIFACT_DIGEST)" >> $env:GITHUB_OUTPUT
 
+  controlled-release-gate-wsl1:
+    needs: [resolve-release-source, build-release-artifact]
+    runs-on: [self-hosted, Windows, WSL]
+    environment: release-gate
+    outputs:
+      gated_sha: ${{ steps.gate-identity.outputs.sha }}
+      artifact_digest: ${{ steps.gate-identity.outputs.digest }}
+    env:
+      XUVA_GATED_SHA: ${{ needs.resolve-release-source.outputs.gated_sha }}
+      XUVA_RELEASE_VERSION: ${{ needs.resolve-release-source.outputs.version }}
+      XUVA_ARTIFACT_DIGEST: ${{ needs.build-release-artifact.outputs.artifact_digest }}
+      XUVA_WSL1_TEST_DISTRO: Ubuntu-RTK-WSL1
+    steps:
+      - name: Check out the gated commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve-release-source.outputs.gated_sha }}
+          fetch-depth: 0
+
+      - name: Download the exact hosted artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: xuva-release-artifact
+          path: gated-dist
+
+      - name: Require exact Windows Rust and prove WSL1
+        shell: powershell
+        run: |
+          rustup.exe toolchain install 1.97.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to install Rust 1.97.1.' }
+          $inventory = ((wsl.exe --list --verbose | Out-String) -replace [char]0, '')
+          if ($inventory -notmatch '(?m)^\s*\*?\s*Ubuntu-RTK-WSL1\s+\S+\s+1\s*$') {
+            throw "Ubuntu-RTK-WSL1 is not proven to be WSL 1.`n$inventory"
+          }
+          $marker = (((wsl.exe -d Ubuntu-RTK-WSL1 -u root --exec `
+              /bin/cat /etc/xuva-dedicated-wsl1 | Out-String) -replace [char]0, '') -replace "`r", '')
+          if ($LASTEXITCODE -ne 0 -or
+              $marker -notmatch '(?m)^product=xuva$' -or
+              $marker -notmatch '(?m)^schema_version=1$' -or
+              $marker -notmatch '(?m)^dedicated=true$' -or
+              $marker -notmatch '(?m)^installation_id=[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$') {
+            throw 'The WSL1 release gate requires a verified dedicated XUVA distro.'
+          }
+
+      - name: Run WSL1 contract against the packaged executable
+        shell: powershell
+        run: |
+          .\scripts\verify-release-artifact.ps1 -DistributionDirectory gated-dist `
+              -ExpectedVersion $env:XUVA_RELEASE_VERSION -ExpectedCommit $env:XUVA_GATED_SHA
+          $archive = Join-Path gated-dist "xuva-v$($env:XUVA_RELEASE_VERSION)-windows-x86_64.zip"
+          $expanded = Join-Path $env:RUNNER_TEMP "xuva-gated-wsl1-$($env:GITHUB_RUN_ID)"
+          if (Test-Path -LiteralPath $expanded) {
+            Remove-Item -LiteralPath $expanded -Recurse -Force
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $expanded
+          .\scripts\verify-package.ps1 -PackageDirectory $expanded `
+              -ExpectedVersion $env:XUVA_RELEASE_VERSION -ExpectedCommit $env:XUVA_GATED_SHA
+          $env:XUVA_TEST_BINARY = Join-Path $expanded "xuva.exe"
+          rustup.exe run 1.97.1 cargo test --locked --test process_contract -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged executable failed the WSL1 process contract.' }
+
+      - name: Export successful WSL1 gate identity
+        id: gate-identity
+        shell: powershell
+        run: |
+          "sha=$($env:XUVA_GATED_SHA)" >> $env:GITHUB_OUTPUT
+          "digest=$($env:XUVA_ARTIFACT_DIGEST)" >> $env:GITHUB_OUTPUT
+
   attest-and-publish:
-    needs: [resolve-release-source, build-release-artifact, controlled-release-gate]
+    needs: [resolve-release-source, build-release-artifact, controlled-release-gate, controlled-release-gate-wsl1]
     runs-on: windows-latest
     environment: release
     permissions:
@@ -221,6 +306,9 @@ jobs:
 
       - name: Revalidate the publish boundary
         shell: pwsh
+        env:
+          XUVA_WSL1_GATE_SHA: ${{ needs.controlled-release-gate-wsl1.outputs.gated_sha }}
+          XUVA_WSL1_GATE_DIGEST: ${{ needs.controlled-release-gate-wsl1.outputs.artifact_digest }}
         run: |
           if ((git rev-parse HEAD).Trim() -ne $env:XUVA_GATED_SHA) {
             throw "Publish checkout differs from the controlled gate SHA."
@@ -230,6 +318,10 @@ jobs:
           if ($tagSha -ne $env:XUVA_GATED_SHA) { throw "Release tag moved after the controlled gate." }
           if ($env:XUVA_ARTIFACT_DIGEST -ne $env:XUVA_BUILD_ARTIFACT_DIGEST) {
             throw "Controlled gate artifact digest differs from the hosted build digest."
+          }
+          if ($env:XUVA_WSL1_GATE_SHA -ne $env:XUVA_GATED_SHA -or
+              $env:XUVA_WSL1_GATE_DIGEST -ne $env:XUVA_ARTIFACT_DIGEST) {
+            throw "WSL1 gate did not approve the exact publish commit and artifact."
           }
           .\scripts\verify-release-artifact.ps1 -DistributionDirectory dist `
               -ExpectedVersion $env:XUVA_RELEASE_VERSION -ExpectedCommit $env:XUVA_GATED_SHA
@@ -243,13 +335,57 @@ jobs:
             dist/*.cdx.json
             dist/*.toolchain.json
 
-      - name: Publish the tested artifact set
+      - name: Refuse an existing mutable release boundary
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/tags/$env:XUVA_RELEASE_TAG"
+          $headers = @{
+            Accept = "application/vnd.github+json"
+            Authorization = "Bearer $env:GH_TOKEN"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $exists = $false
+          try {
+            $null = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers -ErrorAction Stop
+            $exists = $true
+          } catch {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+            if ($statusCode -ne 404) {
+              throw "Unable to prove that the release boundary is unused (HTTP $statusCode): $($_.Exception.Message)"
+            }
+          }
+          if ($exists) {
+            throw "Release $env:XUVA_RELEASE_TAG already exists; XUVA never replaces release assets."
+          }
+
+      - name: Create the tested release as a draft
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: ${{ inputs.tag }}
+          draft: true
+          prerelease: ${{ needs.resolve-release-source.outputs.is_prerelease }}
+          make_latest: false
+          overwrite_files: false
           fail_on_unmatched_files: true
           files: |
             dist/*.zip
             dist/*.sha256
             dist/*.cdx.json
             dist/*.toolchain.json
+
+      - name: Publish the immutable draft with explicit latest semantics
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          XUVA_IS_PRERELEASE: ${{ needs.resolve-release-source.outputs.is_prerelease }}
+        run: |
+          $arguments = @("release", "edit", $env:XUVA_RELEASE_TAG, "--draft=false")
+          if ($env:XUVA_IS_PRERELEASE -eq "true") {
+            $arguments += @("--prerelease", "--latest=false")
+          } else {
+            $arguments += @("--prerelease=false", "--latest")
+          }
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) { throw "Unable to publish the verified draft release." }

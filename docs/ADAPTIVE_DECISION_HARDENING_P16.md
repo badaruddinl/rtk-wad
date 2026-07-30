@@ -31,10 +31,10 @@ signature. A benchmark artifact must use this exact context to be imported.
 | State | P16 location | Behavior for older state |
 | --- | --- | --- |
 | Imported policy | `route-policy-v2.json` | v1 policy remains untouched and cannot select a P16 route. |
-| Local calibration | `calibration-v2.json` | v1 calibration remains untouched and starts a fresh bounded cycle. |
+| Local calibration | `calibration-v3.json` | Older calibration remains untouched and starts a fresh bounded cycle with per-sample token accounting. |
 
 The upgrade is non-destructive: P16 does not delete or rewrite prior local
-files. New evidence is written atomically under the v2 paths.
+files. New evidence is written atomically under the current versioned paths.
 
 Imported policy now requires all of the following before it can choose a route:
 

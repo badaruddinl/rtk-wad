@@ -48,6 +48,8 @@ The provisioner:
 - verifies it against the ripgrep release checksum;
 - creates the non-root `rtk` user;
 - installs RTK and ripgrep under `/home/rtk/.local/bin`;
+- writes a root-owned, read-only `/etc/xuva-dedicated-wsl1` marker with a
+  unique installation ID;
 - verifies `flock`, `setsid`, `tar`, `env`, and `sh`;
 - writes the isolated distro's `/etc/wsl.conf`;
 - restarts only the new distro and runs an RTK smoke test.
@@ -144,6 +146,11 @@ the bridge kills the child proxy, terminates only the dedicated
 the WSL1 transport before the queued command starts. The distro must remain
 dedicated to RTK because cancellation intentionally ends every process inside
 that isolated runtime.
+
+XUVA proves that the selected distro is version 1 and validates the root-owned
+dedicated-runtime marker before execution and again before termination. A
+renamed or overridden general-purpose distro without this marker is rejected
+and is never terminated.
 
 The Windows mutex makes Linux `flock` redundant for WSL1, and dedicated-distro
 termination makes a Linux process group redundant for cancellation. The

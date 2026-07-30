@@ -2,13 +2,14 @@
 
 use std::ffi::OsString;
 
-use crate::config::OutputAdapterPreference;
+use crate::config::{OutputAdapterPreference, validate_linux_path_list, validate_wsl_user};
 use crate::paths::windows_path_to_wsl_path;
 
 const WSL_BRIDGE_PREFIX: &str = "--wsl-bridge=";
 
 pub(crate) struct WslBridgeRequest {
     pub(crate) distro: String,
+    pub(crate) origin_user: String,
     pub(crate) cwd: String,
     pub(crate) windows_cwd: Option<String>,
     pub(crate) extra_path: Option<String>,
@@ -32,6 +33,7 @@ pub(crate) fn wsl_bridge_request(
     let [
         protocol,
         distro,
+        origin_user,
         cwd,
         windows_cwd,
         extra_path,
@@ -40,12 +42,12 @@ pub(crate) fn wsl_bridge_request(
     ] = fields.as_slice()
     else {
         return Err(
-            "payload must contain protocol, distro, CWD, Windows CWD, extra path, adapter, and argv"
+            "payload must contain protocol, distro, origin user, CWD, Windows CWD, extra path, adapter, and argv"
                 .to_owned(),
         );
     };
-    if protocol != "v2" {
-        return Err("payload must use WSL bridge protocol v2".to_owned());
+    if protocol != "v3" {
+        return Err("payload must use WSL bridge protocol v3".to_owned());
     }
     if distro.is_empty() || !cwd.starts_with('/') {
         return Err("payload must contain a WSL distro and an absolute Linux CWD".to_owned());
@@ -55,9 +57,14 @@ pub(crate) fn wsl_bridge_request(
             "payload Windows CWD must be a drive path or a matching WSL UNC mapping".to_owned(),
         );
     }
+    validate_wsl_user(origin_user)?;
+    if !extra_path.is_empty() {
+        validate_linux_path_list(extra_path, "bridge extra path")?;
+    }
     let output_adapter = OutputAdapterPreference::parse(output_adapter)?;
     Ok(Some(WslBridgeRequest {
         distro: distro.clone(),
+        origin_user: origin_user.clone(),
         cwd: cwd.clone(),
         windows_cwd: (!windows_cwd.is_empty()).then(|| windows_cwd.clone()),
         extra_path: (!extra_path.is_empty()).then(|| extra_path.clone()),
@@ -148,7 +155,8 @@ fn decode_base64(encoded: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::bridge_windows_cwd_is_valid;
+    use super::{bridge_windows_cwd_is_valid, wsl_bridge_request};
+    use std::ffi::OsString;
 
     #[test]
     fn bridge_cwd_accepts_only_exact_drive_or_matching_unc_mappings() {
@@ -172,5 +180,16 @@ mod tests {
             "/home/user/work",
             r"\\wsl.localhost\Ubuntu\home\user\other"
         ));
+    }
+
+    #[test]
+    fn bridge_rejects_unvalidated_extra_path_from_the_originating_shell() {
+        let error = match wsl_bridge_request(&[OsString::from(
+            "--wsl-bridge=djMAVWJ1bnR1AGJhZGFyAC9tbnQvZC9maXh0dXJlAEQ6XGZpeHR1cmUAcmVsYXRpdmU6L29wdAByYXcAbm9kZQA=",
+        )]) {
+            Ok(_) => panic!("relative bridge extra path must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("normalized absolute Linux paths"));
     }
 }

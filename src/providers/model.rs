@@ -35,7 +35,13 @@ pub(crate) struct WindowsToolProbe {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct WslToolProbe {
     pub(crate) distro: String,
+    #[serde(default)]
+    pub(crate) user: Option<String>,
     pub(crate) wsl_version: Option<u8>,
+    #[serde(default)]
+    pub(crate) dedicated: bool,
+    #[serde(default)]
+    pub(crate) installation_id: Option<String>,
     pub(crate) executable: Option<String>,
     pub(crate) rtk: Option<String>,
     #[serde(default)]

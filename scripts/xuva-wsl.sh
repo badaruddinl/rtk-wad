@@ -11,6 +11,10 @@ if [ -z "$distro" ]; then
 fi
 
 cwd=$(pwd -P)
+origin_user=$(id -un)
+case "$origin_user" in
+    ''|*[!a-z0-9_-]*|[0-9-]*) printf '%s\n' 'xuva-wsl: unsupported originating WSL user name' >&2; exit 2 ;;
+esac
 windows_cwd=$(wslpath -w -a "$cwd" 2>/dev/null || true)
 case "$windows_cwd" in
     [A-Za-z]:\\*|\\\\wsl.localhost\\*|\\\\wsl\$\\*) ;;
@@ -20,7 +24,7 @@ extra_path=${XUVA_WSL_EXTRA_PATH:-}
 output_adapter=${XUVA_OUTPUT_ADAPTER:-auto}
 payload=$(
     {
-        printf '%s\0' 'v2' "$distro" "$cwd" "$windows_cwd" "$extra_path" "$output_adapter"
+        printf '%s\0' 'v3' "$distro" "$origin_user" "$cwd" "$windows_cwd" "$extra_path" "$output_adapter"
         printf '%s\0' "$@"
     } | base64 | tr -d '\n'
 )

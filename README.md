@@ -68,7 +68,7 @@ Supported public-beta runtime targets are Windows 10/11 x86_64 with PowerShell
 5.1 or newer. Cross-host routes support Ubuntu under WSL1 or WSL2 when that
 distro and its project mapping are verified. Other distributions can be
 discovered, but are not part of the release gate. Source builds require Rust
-1.88.0 or newer; official binaries use the pinned Rust 1.97.1 toolchain.
+1.95.0 or newer; official binaries use the pinned Rust 1.97.1 toolchain.
 
 - [Download the v0.4.1 Windows archive](https://github.com/badaruddinl/xuva/releases/download/v0.4.1/xuva-v0.4.1-windows-x86_64.zip)
 - [Download its SHA-256 sidecar](https://github.com/badaruddinl/xuva/releases/download/v0.4.1/xuva-v0.4.1-windows-x86_64.zip.sha256)
@@ -111,8 +111,18 @@ Use `xuva install --status` to inspect the installation, `xuva rollback` to
 swap to the retained previous complete bundle after the current process exits,
 and `xuva uninstall --remove-from-path` to remove both bundle generations and
 their PATH entry.
+The default installation is the dedicated managed directory
+`%LOCALAPPDATA%\Programs\XUVA`, never the shared `%USERPROFILE%\.local\bin`.
+Every managed generation has a validated `.xuva-installation.json` ownership
+marker; upgrade, rollback, and uninstall refuse a directory containing foreign
+or missing files. A legacy `.local\bin\xuva.exe` is reported but never moved or
+deleted automatically.
+
 The companion scripts expose the same operations for recovery when the binary
-cannot start. The installer performs `xuva scan` after activating the binary. It
+cannot start. After an interrupted filesystem transaction, run
+`.\scripts\install.ps1 -Recover` (or the installed `install.ps1 -Recover`)
+before retrying the operation. The installer performs `xuva scan` after
+activating the binary. It
 inventories every launchable executable on the Windows `PATH` and the WSL
 distros that actually exist, without executing those tools, installing a
 toolchain, or forcing WSL. The dispatcher resolves and caches any safe
