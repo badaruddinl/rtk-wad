@@ -46,7 +46,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or (& git rev-parse HEAD).Trim() -ne $sha) {
             throw "Unable to check out the resolved release commit."
           }
-          $cargoVersion = (Select-String Cargo.toml '^version = "([^"]+)"$').Matches.Groups[1].Value
+          $cargoVersion = (& .\scripts\read-cargo-version.ps1).Trim()
           if ($tag.TrimStart('v') -ne $cargoVersion) {
             throw "Release tag and Cargo.toml version differ."
           }
@@ -90,7 +90,7 @@ jobs:
           git fetch --force origin "+refs/tags/$($env:XUVA_RELEASE_TAG):refs/tags/$($env:XUVA_RELEASE_TAG)"
           $tagSha = (& git rev-parse "refs/tags/$($env:XUVA_RELEASE_TAG)^{commit}").Trim()
           if ($tagSha -ne $env:XUVA_GATED_SHA) { throw "Release tag moved after source resolution." }
-          $cargoVersion = (Select-String Cargo.toml '^version = "([^"]+)"$').Matches.Groups[1].Value
+          $cargoVersion = (& .\scripts\read-cargo-version.ps1).Trim()
           if ($cargoVersion -ne $env:XUVA_RELEASE_VERSION) { throw "Cargo version changed after source resolution." }
 
       - name: Build, audit, and package once

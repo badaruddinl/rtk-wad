@@ -1,6 +1,6 @@
 [package]
 name = "xuva"
-version = "0.4.2-beta.1"
+version = "0.4.2"
 edition = "2024"
 rust-version = "1.95"
 description = "Adaptive command dispatcher with explainable cross-environment routing"
