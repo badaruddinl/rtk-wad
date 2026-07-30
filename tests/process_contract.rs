@@ -2357,6 +2357,47 @@ fn adaptive_rtk_meta_commands_bypass_external_provider_resolution_and_execute_on
 }
 
 #[test]
+fn adaptive_wc_uses_the_verified_raw_posix_provider() {
+    let _guard = process_contract_guard();
+    let (backend, distro) = if let Ok(distro) = std::env::var("XUVA_WSL1_TEST_DISTRO") {
+        ("wsl1", distro)
+    } else {
+        (
+            "wsl2",
+            std::env::var("XUVA_WSL2_TEST_DISTRO").unwrap_or_else(|_| "Ubuntu".to_owned()),
+        )
+    };
+    let output = Command::new(launcher())
+        .env("XUVA_ROUTE", "auto")
+        .env("XUVA_ENVIRONMENT", "adaptive")
+        .env("XUVA_WSL_BACKEND", backend)
+        .env("XUVA_WSL_DISTRO", &distro)
+        .env("XUVA_METRICS", "off")
+        .args(["--explain-route", "wc", "-l"])
+        .output()
+        .expect("adaptive wc route explanation starts");
+    assert!(
+        output.status.success(),
+        "wc provider resolution failed: stdout={}; stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("output_adapter=raw"),
+        "wc did not select raw semantics: {stdout}"
+    );
+    assert!(
+        stdout.contains("provider=/usr/bin/wc"),
+        "wc did not resolve the real POSIX executable: {stdout}"
+    );
+    assert!(
+        !stdout.contains("output_adapter=rtk"),
+        "wc was routed through the narrower RTK adapter: {stdout}"
+    );
+}
+
+#[test]
 fn immediate_ctrl_break_cannot_authorize_a_wsl1_target() {
     let _guard = process_contract_guard();
     let Ok(distro) = std::env::var("XUVA_WSL1_TEST_DISTRO") else {
@@ -2600,6 +2641,7 @@ fn immediate_ctrl_break_cannot_authorize_a_wsl2_target_before_token_creation() {
         ])
         .env("XUVA_TEST_MODE", "1")
         .env("XUVA_TEST_WSL2_LAUNCH_DELAY_SECONDS", "2")
+        .env("XUVA_TEST_KILL_WSL2_PROXY_DURING_CANCEL", "1")
         .env("XUVA_WSL_TRACE", "1")
         .env("XUVA_METRICS", "off")
         .creation_flags(CREATE_NEW_PROCESS_GROUP)
@@ -2630,7 +2672,11 @@ fn immediate_ctrl_break_cannot_authorize_a_wsl2_target_before_token_creation() {
     let stderr = std::fs::read_to_string(&stderr_path).expect("launcher stderr remains readable");
     assert!(!status.success());
     assert!(
-        cancelled_at.elapsed() < Duration::from_secs(7),
+        stderr.contains("test hook terminated the WSL2 Windows proxy"),
+        "the proxy-exit cancellation path was not exercised: {stderr}"
+    );
+    assert!(
+        cancelled_at.elapsed() < Duration::from_secs(18),
         "immediate WSL2 cancellation exceeded its cleanup window: {stderr}"
     );
     thread::sleep(Duration::from_secs(2));
@@ -2668,6 +2714,166 @@ fn immediate_ctrl_break_cannot_authorize_a_wsl2_target_before_token_creation() {
         "after-wsl2-immediate-cancel"
     );
     std::fs::remove_dir_all(directory).expect("WSL2 immediate-cancel fixture is removed");
+}
+
+#[test]
+fn launching_another_command_never_age_deletes_a_live_wsl2_token() {
+    if std::env::var_os("XUVA_WSL1_TEST_DISTRO").is_some() {
+        return;
+    }
+    let _guard = process_contract_guard();
+    let distro = std::env::var("XUVA_WSL2_TEST_DISTRO").unwrap_or_else(|_| "Ubuntu".to_owned());
+    let directory = unique_temp_directory("wsl2-old-live-token");
+    std::fs::create_dir_all(&directory).expect("old-token fixture directory is created");
+    let ready_file = directory.join("ready");
+    let pid_file = directory.join("worker.pid");
+    let mapped_pid = Command::new("wsl.exe")
+        .args(["-d", &distro, "--exec", "wslpath", "-a"])
+        .arg(&pid_file)
+        .output()
+        .expect("old-token PID path mapping starts");
+    assert!(mapped_pid.status.success());
+    let mapped_pid = String::from_utf8_lossy(&mapped_pid.stdout)
+        .trim()
+        .to_owned();
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let lock_a = format!("/tmp/xuva-old-live-a-{}-{nonce}.lock", std::process::id());
+    let lock_b = format!("/tmp/xuva-old-live-b-{}-{nonce}.lock", std::process::id());
+    let mut long_running = command("/bin/sh")
+        .args([
+            "-c",
+            "trap '' INT TERM; printf '%s' \"$$\" > \"$1\"; while :; do sleep 1; done",
+            "xuva-old-live-token-worker",
+            &mapped_pid,
+        ])
+        .env("XUVA_WSL_LOCK_PATH", &lock_a)
+        .env("XUVA_WSL_TEST_READY_FILE", &ready_file)
+        .env("XUVA_METRICS", "off")
+        .creation_flags(CREATE_NEW_PROCESS_GROUP)
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("long-running WSL2 command starts");
+
+    let ready_deadline = Instant::now() + Duration::from_secs(30);
+    while !ready_file.exists() || !pid_file.exists() {
+        if let Some(status) = long_running
+            .try_wait()
+            .expect("long-running launcher status is available")
+        {
+            let mut stderr = String::new();
+            long_running
+                .stderr
+                .take()
+                .expect("long-running stderr is piped")
+                .read_to_string(&mut stderr)
+                .expect("long-running stderr reads");
+            panic!("long-running launcher exited before readiness: {status}; {stderr}");
+        }
+        assert!(
+            Instant::now() < ready_deadline,
+            "long-running command did not become ready"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    let token = Command::new("wsl.exe")
+        .args([
+            "-d",
+            &distro,
+            "--exec",
+            "/bin/sh",
+            "-c",
+            concat!(
+                "set -eu; root=/tmp/xuva-runtime-$(id -u); ",
+                "set -- \"$root\"/cancel-*.pid; ",
+                "test \"$#\" -eq 1 && test -f \"$1\" && test ! -L \"$1\"; ",
+                "touch -d '2 hours ago' -- \"$1\"; printf '%s' \"$1\"",
+            ),
+        ])
+        .output()
+        .expect("live token aging starts");
+    assert!(
+        token.status.success(),
+        "unable to age the live token: {}",
+        String::from_utf8_lossy(&token.stderr)
+    );
+    let token = String::from_utf8_lossy(&token.stdout).trim().to_owned();
+
+    let second = command("/usr/bin/printf")
+        .args(["%s", "second-command-finished"])
+        .env("XUVA_WSL_LOCK_PATH", &lock_b)
+        .env("XUVA_METRICS", "off")
+        .output()
+        .expect("second WSL2 command starts");
+    assert!(
+        second.status.success(),
+        "second command failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&second.stdout),
+        "second-command-finished"
+    );
+    let token_value = Command::new("wsl.exe")
+        .args(["-d", &distro, "--exec", "/bin/cat", &token])
+        .output()
+        .expect("aged live-token identity probe starts");
+    assert!(
+        token_value.status.success(),
+        "a new command deleted the aged token of a live process group: {}",
+        String::from_utf8_lossy(&token_value.stderr)
+    );
+    let token_pgid = String::from_utf8_lossy(&token_value.stdout)
+        .trim()
+        .to_owned();
+    assert!(
+        !token_pgid.is_empty() && token_pgid.bytes().all(|byte| byte.is_ascii_digit()),
+        "the retained live token did not contain a valid process group: {token_pgid:?}"
+    );
+    let still_live = Command::new("wsl.exe")
+        .args([
+            "-d",
+            &distro,
+            "--exec",
+            "/bin/kill",
+            "-0",
+            "--",
+            &format!("-{token_pgid}"),
+        ])
+        .status()
+        .expect("aged process-group liveness probe starts");
+    assert!(still_live.success(), "the aged process group was not alive");
+
+    let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, long_running.id()) };
+    assert_ne!(sent, 0, "failed to cancel the old-token command");
+    let status = long_running.wait().expect("old-token command exits");
+    assert!(!status.success());
+    let worker_pid = std::fs::read_to_string(&pid_file)
+        .expect("old-token worker PID is readable")
+        .trim()
+        .to_owned();
+    let stopped = Command::new("wsl.exe")
+        .args([
+            "-d",
+            &distro,
+            "--exec",
+            "/bin/sh",
+            "-c",
+            "! kill -0 \"$1\" 2>/dev/null && test ! -e \"$2\"",
+            "xuva-old-live-token-cleanup",
+            &worker_pid,
+            &token,
+        ])
+        .status()
+        .expect("old-token cleanup probe starts");
+    assert!(
+        stopped.success(),
+        "old-token worker or cancellation token survived cleanup"
+    );
+    let _ = Command::new("wsl.exe")
+        .args(["-d", &distro, "--exec", "/bin/rm", "-f", &lock_a, &lock_b])
+        .status();
+    std::fs::remove_dir_all(directory).expect("old-token fixture is removed");
 }
 
 #[test]
@@ -2837,6 +3043,170 @@ fn wsl2_cancellation_escalates_past_ignored_sigint_and_leaves_no_worker() {
         "the per-invocation cancellation token survived child cleanup"
     );
     std::fs::remove_dir_all(directory).expect("signal fixture directory is removed");
+}
+
+#[test]
+fn wsl2_cancellation_finishes_after_the_windows_proxy_exits() {
+    if std::env::var_os("XUVA_WSL1_TEST_DISTRO").is_some() {
+        return;
+    }
+    let _guard = process_contract_guard();
+    let distro = std::env::var("XUVA_WSL2_TEST_DISTRO").unwrap_or_else(|_| "Ubuntu".to_owned());
+    let directory = unique_temp_directory("wsl2-proxy-exit");
+    std::fs::create_dir_all(&directory).expect("proxy-exit fixture directory is created");
+    let ready_file = directory.join("ready");
+    let pid_file = directory.join("worker.pid");
+    let mapped_pid = Command::new("wsl.exe")
+        .args(["-d", &distro, "--exec", "wslpath", "-a"])
+        .arg(&pid_file)
+        .output()
+        .expect("proxy-exit PID path mapping starts");
+    assert!(mapped_pid.status.success());
+    let mapped_pid = String::from_utf8_lossy(&mapped_pid.stdout)
+        .trim()
+        .to_owned();
+    let mut child = command("/bin/sh")
+        .args([
+            "-c",
+            "trap '' INT TERM; printf '%s' \"$$\" > \"$1\"; while :; do sleep 1; done",
+            "xuva-proxy-exit-worker",
+            &mapped_pid,
+        ])
+        .env("XUVA_TEST_MODE", "1")
+        .env("XUVA_TEST_KILL_WSL2_PROXY_DURING_CANCEL", "1")
+        .env("XUVA_WSL_TEST_READY_FILE", &ready_file)
+        .env("XUVA_WSL_TRACE", "1")
+        .env("XUVA_METRICS", "off")
+        .creation_flags(CREATE_NEW_PROCESS_GROUP)
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("proxy-exit launcher starts");
+    let ready_deadline = Instant::now() + Duration::from_secs(30);
+    while !ready_file.exists() || !pid_file.exists() {
+        if let Some(status) = child.try_wait().expect("proxy-exit status is available") {
+            let mut stderr = String::new();
+            child
+                .stderr
+                .take()
+                .expect("proxy-exit stderr is piped")
+                .read_to_string(&mut stderr)
+                .expect("proxy-exit stderr reads");
+            panic!("proxy-exit worker stopped before readiness: {status}; {stderr}");
+        }
+        assert!(
+            Instant::now() < ready_deadline,
+            "proxy-exit worker did not become ready"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    let worker_pid = std::fs::read_to_string(&pid_file)
+        .expect("proxy-exit PID is readable")
+        .trim()
+        .to_owned();
+    let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
+    assert_ne!(sent, 0, "failed to cancel the proxy-exit worker");
+    let started = Instant::now();
+    let status = child.wait().expect("proxy-exit cancellation completes");
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("proxy-exit stderr remains piped")
+        .read_to_string(&mut stderr)
+        .expect("proxy-exit stderr reads after cancellation");
+    assert!(!status.success());
+    assert!(
+        started.elapsed() < Duration::from_secs(7),
+        "proxy-exit cancellation exceeded its bounded finalization window: {stderr}"
+    );
+    assert!(
+        stderr.contains("test hook terminated the WSL2 Windows proxy"),
+        "the Windows proxy did not exit during the cancellation test: {stderr}"
+    );
+    let stopped = Command::new("wsl.exe")
+        .args([
+            "-d",
+            &distro,
+            "--exec",
+            "/bin/sh",
+            "-c",
+            concat!(
+                "! kill -0 \"$1\" 2>/dev/null; ",
+                "root=/tmp/xuva-runtime-$(id -u); ",
+                "set -- \"$root\"/cancel-*.pid; test \"$1\" = \"$root/cancel-*.pid\"",
+            ),
+            "xuva-proxy-exit-cleanup",
+            &worker_pid,
+        ])
+        .status()
+        .expect("proxy-exit cleanup probe starts");
+    assert!(
+        stopped.success(),
+        "Linux worker or cancellation token survived the Windows proxy exit"
+    );
+    std::fs::remove_dir_all(directory).expect("proxy-exit fixture is removed");
+}
+
+#[test]
+fn normal_wsl2_completion_reaps_background_group_members_before_returning() {
+    if std::env::var_os("XUVA_WSL1_TEST_DISTRO").is_some() {
+        return;
+    }
+    let _guard = process_contract_guard();
+    let distro = std::env::var("XUVA_WSL2_TEST_DISTRO").unwrap_or_else(|_| "Ubuntu".to_owned());
+    let directory = unique_temp_directory("wsl2-normal-background");
+    std::fs::create_dir_all(&directory).expect("background fixture directory is created");
+    let pid_file = directory.join("background.pid");
+    let mapped_pid = Command::new("wsl.exe")
+        .args(["-d", &distro, "--exec", "wslpath", "-a"])
+        .arg(&pid_file)
+        .output()
+        .expect("background PID path mapping starts");
+    assert!(mapped_pid.status.success());
+    let mapped_pid = String::from_utf8_lossy(&mapped_pid.stdout)
+        .trim()
+        .to_owned();
+    let output = command("/bin/sh")
+        .args([
+            "-c",
+            "(trap '' TERM; while :; do sleep 1; done) & printf '%s' \"$!\" > \"$1\"; exit 0",
+            "xuva-background-worker",
+            &mapped_pid,
+        ])
+        .env("XUVA_METRICS", "off")
+        .output()
+        .expect("background-worker command starts");
+    assert!(
+        output.status.success(),
+        "launcher rejected a successfully quiesced background worker: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let worker_pid = std::fs::read_to_string(&pid_file)
+        .expect("background worker PID is readable")
+        .trim()
+        .to_owned();
+    let stopped = Command::new("wsl.exe")
+        .args([
+            "-d",
+            &distro,
+            "--exec",
+            "/bin/sh",
+            "-c",
+            concat!(
+                "! kill -0 \"$1\" 2>/dev/null; ",
+                "root=/tmp/xuva-runtime-$(id -u); ",
+                "set -- \"$root\"/cancel-*.pid; test \"$1\" = \"$root/cancel-*.pid\"",
+            ),
+            "xuva-background-cleanup",
+            &worker_pid,
+        ])
+        .status()
+        .expect("background cleanup probe starts");
+    assert!(
+        stopped.success(),
+        "XUVA returned while a background process-group member or token remained"
+    );
+    std::fs::remove_dir_all(directory).expect("background fixture is removed");
 }
 
 #[test]

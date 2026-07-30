@@ -268,7 +268,12 @@ system, conversation, output, and model pricing all affect an eventual bill.
   immediate Ctrl+C cannot leave a command starting in the background.
 - WSL2 cancellation state lives under a nonce-named file in a non-symlink,
   user-owned `0700` runtime directory; token files are regular, user-owned
-  `0600` files and are removed after completion.
+  `0600` files. A launcher removes another token only after proving its Linux
+  process group is gone; token age alone is never a deletion condition.
+- WSL2 completion is identity-attested after the launcher has reaped or stopped
+  every member of its process group. Cancellation continues inside Linux even
+  if the Windows `wsl.exe` proxy exits first, and a missing token is not treated
+  as proof of cleanup without that completion attestation.
 - WSL use requires an explicit verified provider and path mapping. WSL1 and
   WSL2 are measured routes, not a default performance claim.
 - Existing Windows and WSL tool installations can be diagnosed on demand.

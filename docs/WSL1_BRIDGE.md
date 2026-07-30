@@ -165,7 +165,10 @@ preserves portable user and path overrides without the previous `setsid` and
 WSL2 retains Linux process-group signal escalation and is never terminated by
 this profile-specific lifecycle. It now uses the same attest-then-permit
 principle around a private cancellation token, preventing an early Ctrl+C from
-racing ahead of token creation.
+racing ahead of token creation. Token cleanup is based on process-group
+liveness, never file age. An identity-matched completion record is written only
+after the launcher has quiesced the full group, so the Windows parent continues
+Linux-side finalization even when the `wsl.exe` proxy exits first.
 
 ## Known Boundary
 
