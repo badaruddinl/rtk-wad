@@ -199,6 +199,9 @@ impl Config {
         };
         let distro = required_setting(&lookup, "XUVA_WSL_DISTRO", default_distro)?;
         let user = optional_setting(&lookup, "XUVA_WSL_USER")?;
+        if let Some(user) = &user {
+            validate_wsl_user(user)?;
+        }
         let rtk_path = optional_absolute_path(&lookup, "XUVA_WSL_RTK_PATH")?;
         let lock_path = required_absolute_path(&lookup, "XUVA_WSL_LOCK_PATH", DEFAULT_LOCK_PATH)?;
         let lock_wait = required_setting(
@@ -387,19 +390,44 @@ fn required_absolute_path(
     Ok(value)
 }
 
+pub(crate) fn validate_wsl_user(value: &str) -> Result<(), String> {
+    let mut bytes = value.bytes();
+    let first = bytes
+        .next()
+        .ok_or_else(|| "WSL user must not be empty".to_owned())?;
+    if !matches!(first, b'a'..=b'z' | b'_')
+        || value.len() > 32
+        || !bytes.all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
+    {
+        return Err(
+            "WSL user must be a lowercase POSIX account name of at most 32 characters".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_linux_path_list(value: &str, name: &str) -> Result<(), String> {
+    if value.split(':').any(|entry| {
+        !entry.starts_with('/')
+            || entry.ends_with('/')
+            || entry[1..]
+                .split('/')
+                .any(|component| matches!(component, "" | "." | ".."))
+    }) {
+        return Err(format!(
+            "{name} must be a colon-separated list of normalized absolute Linux paths"
+        ));
+    }
+    Ok(())
+}
+
 fn optional_linux_path_list(
     lookup: &impl Fn(&str) -> Option<String>,
     name: &str,
 ) -> Result<Option<String>, String> {
     let value = optional_setting(lookup, name)?;
-    if let Some(value) = &value
-        && value
-            .split(':')
-            .any(|entry| entry.is_empty() || !entry.starts_with('/'))
-    {
-        return Err(format!(
-            "{name} must be a colon-separated list of absolute Linux paths"
-        ));
+    if let Some(value) = &value {
+        validate_linux_path_list(value, name)?;
     }
     Ok(value)
 }

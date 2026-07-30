@@ -56,7 +56,12 @@ pub(crate) fn run(arguments: &[OsString]) -> std::io::Result<ExitStatus> {
             "a raw route needs a command",
         ));
     };
-    let executable = match program.to_str() {
+    let executable = raw_executable(program);
+    run_at(&executable, &arguments[1..], None)
+}
+
+pub(crate) fn raw_executable(program: &OsString) -> OsString {
+    match program.to_str() {
         Some("git") => OsString::from("git.exe"),
         Some("npm") => OsString::from("npm.cmd"),
         Some("npx") => OsString::from("npx.cmd"),
@@ -64,8 +69,7 @@ pub(crate) fn run(arguments: &[OsString]) -> std::io::Result<ExitStatus> {
         Some("dart") => OsString::from("dart.bat"),
         Some("flutter") => OsString::from("flutter.bat"),
         _ => program.clone(),
-    };
-    run_at(&executable, &arguments[1..], None)
+    }
 }
 
 pub(crate) fn run_at(

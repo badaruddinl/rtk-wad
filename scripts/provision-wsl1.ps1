@@ -25,6 +25,7 @@ $ripgrepArchiveUrl = "https://github.com/BurntSushi/ripgrep/releases/download/$R
 $ripgrepChecksumUrl = "$ripgrepArchiveUrl.sha256"
 $ripgrepArchive = Join-Path $ImageDirectory $ripgrepArchiveName
 $ripgrepChecksum = Join-Path $ImageDirectory "$ripgrepArchiveName.sha256"
+$installationId = [guid]::NewGuid().ToString()
 
 function Get-WslList {
     return ((& wsl.exe --list --verbose | Out-String) -replace "`0", "")
@@ -128,6 +129,7 @@ user_name=$1
 archive=$2
 rg_archive=$3
 rg_entry=$4
+installation_id=$5
 for command_path in /usr/bin/flock /usr/bin/setsid /usr/bin/tar /usr/bin/env /bin/sh; do
     if [ ! -x "$command_path" ]; then
         printf 'Missing required executable: %s\n' "$command_path" >&2
@@ -145,9 +147,12 @@ home_dir=$(/usr/bin/getent passwd "$user_name" | /usr/bin/cut -d: -f6)
 /bin/chown "$user_name:$user_name" "$home_dir/.local/bin/rg"
 /bin/chmod 0755 "$home_dir/.local/bin/rtk" "$home_dir/.local/bin/rg"
 printf '[automount]\nenabled=true\nroot=/mnt/\noptions=metadata,umask=22,fmask=11\n\n[user]\ndefault=%s\n' "$user_name" > /etc/wsl.conf
+printf 'product=xuva\nschema_version=1\ninstallation_id=%s\ndedicated=true\n' \
+    "$installation_id" > /etc/xuva-dedicated-wsl1
+/bin/chmod 0444 /etc/xuva-dedicated-wsl1
 '@
 
-& wsl.exe -d $DistroName -u root --exec /bin/sh -c $provisionScript "xuva-wsl1-provision" $LinuxUser $rtkArchiveWsl $ripgrepArchiveWsl $ripgrepEntry
+& wsl.exe -d $DistroName -u root --exec /bin/sh -c $provisionScript "xuva-wsl1-provision" $LinuxUser $rtkArchiveWsl $ripgrepArchiveWsl $ripgrepEntry $installationId
 if ($LASTEXITCODE -ne 0) {
     throw "WSL 1 distro provisioning failed with exit code $LASTEXITCODE."
 }
@@ -180,6 +185,7 @@ if (
 Write-Output "Provisioned $DistroName as WSL 1."
 Write-Output "user=$actualUser"
 Write-Output "home=/home/$LinuxUser"
+Write-Output "installation_id=$installationId"
 Write-Output $rtkVersionOutput
 Write-Output $ripgrepVersionOutput
 Write-Output "Use the provisioned route with: xuva --route wsl1 <command>"

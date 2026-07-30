@@ -42,14 +42,59 @@ try {
     }
     Assert-Condition $rootRejected "installer accepted a filesystem root as its bundle directory"
 
+    $sharedDestination = Join-Path $temporaryRoot "shared-bin"
+    New-Item -ItemType Directory -Path $sharedDestination | Out-Null
+    Copy-Item -LiteralPath $Source -Destination (Join-Path $sharedDestination "xuva.exe")
+    Set-Content -LiteralPath (Join-Path $sharedDestination "foreign.exe") -Value "foreign-binary"
+    Set-Content -LiteralPath (Join-Path $sharedDestination "user-script.cmd") -Value "@echo user-owned"
+    $sharedFingerprint = Get-BundleFingerprint $sharedDestination
+    $sharedInstallRejected = $false
+    try {
+        & $install -Destination $sharedDestination -Force -SkipProviderScan
+    } catch {
+        $sharedInstallRejected = $true
+    }
+    Assert-Condition $sharedInstallRejected "installer accepted a shared directory without an ownership marker"
+    Assert-Condition ((Get-BundleFingerprint $sharedDestination) -eq $sharedFingerprint) "rejected shared-directory install changed foreign files"
+    $sharedUninstallRejected = $false
+    try {
+        & $uninstall -Destination $sharedDestination
+    } catch {
+        $sharedUninstallRejected = $true
+    }
+    Assert-Condition $sharedUninstallRejected "uninstaller accepted a shared directory without an ownership marker"
+    Assert-Condition ((Get-BundleFingerprint $sharedDestination) -eq $sharedFingerprint) "rejected shared-directory uninstall changed foreign files"
+
     & $install -Destination $destination -SkipProviderScan
     Assert-Condition (Test-Path -LiteralPath $target) "fresh install did not create the XUVA launcher"
     Assert-Condition (-not (Test-Path -LiteralPath $tokenizerRoot)) "fresh install unexpectedly provisioned the optional tokenizer"
-    foreach ($companion in @("install.ps1", "uninstall.ps1", "verify-package.ps1", "xuva-wsl.sh")) {
+    foreach ($companion in @("install.ps1", "install-lifecycle.ps1", "uninstall.ps1", "verify-package.ps1", "xuva-wsl.sh", ".xuva-installation.json")) {
         Assert-Condition (Test-Path -LiteralPath (Join-Path $destination $companion)) "fresh install omitted $companion"
     }
     $status = & $install -Destination $destination -Status | ConvertFrom-Json
     Assert-Condition ([bool]$status.Installed) "installer status did not report the active bundle"
+    Assert-Condition ([bool]$status.Owned) "installer status did not report a validated ownership marker"
+
+    $foreignPath = Join-Path $destination "foreign.exe"
+    Set-Content -LiteralPath $foreignPath -Value "must-survive"
+    $foreignHash = (Get-FileHash -LiteralPath $foreignPath -Algorithm SHA256).Hash
+    $foreignUpgradeRejected = $false
+    try {
+        & $install -Destination $destination -Force -SkipProviderScan
+    } catch {
+        $foreignUpgradeRejected = $true
+    }
+    Assert-Condition $foreignUpgradeRejected "upgrade accepted a foreign file inside the managed directory"
+    Assert-Condition ((Get-FileHash -LiteralPath $foreignPath -Algorithm SHA256).Hash -eq $foreignHash) "rejected upgrade changed the foreign file"
+    $foreignUninstallRejected = $false
+    try {
+        & $uninstall -Destination $destination
+    } catch {
+        $foreignUninstallRejected = $true
+    }
+    Assert-Condition $foreignUninstallRejected "uninstall accepted a foreign file inside the managed directory"
+    Assert-Condition ((Get-FileHash -LiteralPath $foreignPath -Algorithm SHA256).Hash -eq $foreignHash) "rejected uninstall changed the foreign file"
+    Remove-Item -LiteralPath $foreignPath
 
     Add-Content -LiteralPath (Join-Path $destination "install.ps1") -Value "# previous-bundle-marker"
     Add-Content -LiteralPath (Join-Path $destination "uninstall.ps1") -Value "# previous-bundle-marker"
@@ -115,6 +160,30 @@ try {
         Assert-Condition ((Get-BundleFingerprint $destination) -eq $activeBeforeFailure) "$failurePoint changed the active bundle"
         Assert-Condition ((Get-BundleFingerprint $previousDirectory) -eq $previousBeforeFailure) "$failurePoint changed the rollback bundle"
     }
+
+    $activeBeforeCrash = Get-BundleFingerprint $destination
+    $previousBeforeCrash = Get-BundleFingerprint $previousDirectory
+    $env:XUVA_TEST_MODE = "1"
+    $env:XUVA_TEST_INSTALL_CRASH = "after-current-move"
+    $crashRaised = $false
+    $crashExitCode = 0
+    try {
+        $hostExecutable = (Get-Process -Id $PID).Path
+        & $hostExecutable -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+            -File $install -Destination $destination -Force -SkipProviderScan
+        $crashExitCode = $LASTEXITCODE
+    } catch {
+        $crashRaised = $true
+    } finally {
+        Remove-Item Env:XUVA_TEST_MODE -ErrorAction SilentlyContinue
+        Remove-Item Env:XUVA_TEST_INSTALL_CRASH -ErrorAction SilentlyContinue
+    }
+    Assert-Condition ($crashRaised -or $crashExitCode -ne 0) "crash injection unexpectedly returned success"
+    $interruptedStatus = & $install -Destination $destination -Status | ConvertFrom-Json
+    Assert-Condition ([bool]$interruptedStatus.RecoveryRequired) "interrupted upgrade did not leave a recovery journal"
+    & $install -Destination $destination -Recover
+    Assert-Condition ((Get-BundleFingerprint $destination) -eq $activeBeforeCrash) "recovery did not restore the active bundle"
+    Assert-Condition ((Get-BundleFingerprint $previousDirectory) -eq $previousBeforeCrash) "recovery did not restore the previous bundle"
 
     $activeBeforeRollbackFailure = Get-BundleFingerprint $destination
     $previousBeforeRollbackFailure = Get-BundleFingerprint $previousDirectory
@@ -203,6 +272,7 @@ try {
     $requiredEntries = @(
         "xuva.exe",
         "install.ps1",
+        "install-lifecycle.ps1",
         "install-tokenizer.ps1",
         "uninstall.ps1",
         "verify-package.ps1",

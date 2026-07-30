@@ -28,6 +28,7 @@ try {
     New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
     Copy-Item -LiteralPath $binary -Destination (Join-Path $staging "xuva.exe")
     Copy-Item -LiteralPath (Join-Path $rootPath "scripts\install.ps1") -Destination $staging
+    Copy-Item -LiteralPath (Join-Path $rootPath "scripts\install-lifecycle.ps1") -Destination $staging
     Copy-Item -LiteralPath (Join-Path $rootPath "scripts\install-tokenizer.ps1") -Destination $staging
     Copy-Item -LiteralPath (Join-Path $rootPath "scripts\uninstall.ps1") -Destination $staging
     Copy-Item -LiteralPath (Join-Path $rootPath "scripts\verify-package.ps1") -Destination $staging

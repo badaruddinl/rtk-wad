@@ -21,6 +21,7 @@ $allowed = @(
     "SECURITY.md",
     "SHA256SUMS",
     "install.ps1",
+    "install-lifecycle.ps1",
     "install-tokenizer.ps1",
     "uninstall.ps1",
     "verify-package.ps1",

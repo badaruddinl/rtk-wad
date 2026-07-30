@@ -26,6 +26,8 @@ try {
     Wait-Process -Id $ParentId -ErrorAction SilentlyContinue
     if ($Action -eq 'rollback') {
         & $ScriptPath -Destination $Destination -Rollback
+    } elseif ($Action -eq 'recover') {
+        & $ScriptPath -Destination $Destination -Recover
     } elseif ($Action -eq 'uninstall') {
         & $ScriptPath -Destination $Destination
     } elseif ($Action -eq 'uninstall-path') {
@@ -86,6 +88,13 @@ fn print_status() -> ExitCode {
         "backup_directory": previous,
         "installer_available": directory.join("install.ps1").is_file(),
         "uninstaller_available": directory.join("uninstall.ps1").is_file(),
+        "ownership_marker": directory.join(".xuva-installation.json").is_file(),
+        "recovery_required": directory.parent().is_some_and(|parent| {
+            parent.join(format!(
+                ".{}.transaction.json",
+                directory.file_name().unwrap_or_default().to_string_lossy()
+            )).is_file()
+        }),
         "on_process_path": path_contains(&directory),
     });
     match serde_json::to_string_pretty(&status) {
@@ -198,6 +207,9 @@ fn schedule(action: &str, script_name: &str) -> ExitCode {
 pub(crate) fn command(arguments: &[OsString]) -> Option<ExitCode> {
     match arguments {
         [command, option] if command == "install" && option == "--status" => Some(print_status()),
+        [command, option] if command == "install" && option == "--recover" => {
+            Some(schedule("recover", "install.ps1"))
+        }
         [command] if command == "rollback" => Some(schedule("rollback", "install.ps1")),
         [command] if command == "uninstall" => Some(schedule("uninstall", "uninstall.ps1")),
         [command, option] if command == "uninstall" && option == "--remove-from-path" => {
@@ -220,6 +232,7 @@ mod tests {
     #[test]
     fn recognizes_only_bounded_lifecycle_commands() {
         assert!(command(&[OsString::from("install"), OsString::from("--status")]).is_some());
+        assert!(command(&[OsString::from("install"), OsString::from("--recover")]).is_some());
         assert!(command(&[OsString::from("install"), OsString::from("--force")]).is_none());
         assert!(command(&[OsString::from("rollback"), OsString::from("extra")]).is_none());
     }

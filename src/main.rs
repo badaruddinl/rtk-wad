@@ -30,14 +30,14 @@ use adapters::windows::apply_command_spec;
 #[cfg(test)]
 use bridge::decode_wsl_bridge_fields;
 use bridge::wsl_bridge_request;
+#[cfg(test)]
+use config::ExecutableProfile;
 use config::{
-    Config, DEFAULT_DISTRO, DEFAULT_WSL1_DISTRO, ExecutionEnvironment, InvocationOrigin,
+    Config, DEFAULT_DISTRO, DEFAULT_WSL1_DISTRO, ExecutionEnvironment, GitMode, InvocationOrigin,
     OutputAdapterPreference, PolicyObjective, Route, WslBackend, is_sensitive_environment_name,
 };
-#[cfg(test)]
-use config::{ExecutableProfile, GitMode};
 use metrics::{TokenTotals, XuvaMetrics, xuva_data_root};
-use paths::{translate_arguments_for_provider, windows_path_to_wsl_path};
+use paths::{translate_arguments_with, windows_path_to_wsl_path, wsl_path_to_windows_path};
 use planning::{
     classify_project_path, current_project_location, provider_environment_policy,
     windows_cwd_for_invocation,
@@ -65,19 +65,34 @@ const HELP_ARGUMENT: &str = "--help";
 const SELF_UPDATE_ARGUMENT: &str = "self-update";
 const RELEASE_TAGS_URL: &str = "https://github.com/badaruddinl/xuva.git";
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
-const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 4;
+const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 5;
 const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
 const ROUTE_POLICY_SCHEMA_VERSION: u32 = 2;
-const CALIBRATION_SCHEMA_VERSION: u32 = 2;
+const CALIBRATION_SCHEMA_VERSION: u32 = 3;
 const CALIBRATION_MAX_SAMPLES: usize = 5;
 const CANCEL_SCRIPT: &str = r#"
 if [ -r "$1" ]; then
     worker=$(cat "$1")
+    signal=$2
     case "$worker" in
         *[!0-9]*|'') exit 1 ;;
     esac
-    /bin/kill -INT -- "-$worker"
+    case "$signal" in
+        INT|TERM|KILL) ;;
+        *) exit 2 ;;
+    esac
+    /bin/kill "-$signal" -- "-$worker"
 fi
+"#;
+const CANCEL_PROBE_SCRIPT: &str = r#"
+if [ ! -r "$1" ]; then
+    exit 1
+fi
+worker=$(cat "$1")
+case "$worker" in
+    *[!0-9]*|'') exit 2 ;;
+esac
+/bin/kill -0 -- "-$worker" 2>/dev/null
 "#;
 const LAUNCH_SCRIPT: &str = r#"
 lock_wait=$1
@@ -103,6 +118,16 @@ cleanup() { rm -f "$cancel_token"; }
 trap "cleanup; exit 130" INT TERM
 trap cleanup EXIT
 printf '%s' "$$" > "$cancel_token"
+if [ "$lock_path" = "/tmp/xuva.lock" ]; then
+    lock_root="/tmp/xuva-lock-$(/usr/bin/id -u)"
+    if [ -L "$lock_root" ] || { [ -e "$lock_root" ] && { [ ! -d "$lock_root" ] || [ ! -O "$lock_root" ]; }; }; then
+        printf 'xuva: unsafe per-user lock directory %s\n' "$lock_root" >&2
+        exit 1
+    fi
+    /bin/mkdir -m 0700 -p "$lock_root" || exit 1
+    /bin/chmod 0700 "$lock_root" || exit 1
+    lock_path="$lock_root/dispatcher.lock"
+fi
 exec 9>"$lock_path"
 remaining=$((lock_wait * 10))
 while ! /usr/bin/flock -n 9; do
@@ -130,10 +155,32 @@ rtk_path=$1
 metrics_db_path=$2
 extra_path=$3
 ready_file=$4
-shift 4
+attestation_file=$5
+shift 5
 
 if [ -z "$rtk_path" ]; then
     rtk_path="$HOME/.local/bin/rtk"
+fi
+marker=/etc/xuva-dedicated-wsl1
+if [ ! -r "$marker" ] ||
+   ! /bin/grep -qx 'product=xuva' "$marker" ||
+   ! /bin/grep -qx 'schema_version=1' "$marker" ||
+   ! /bin/grep -qx 'dedicated=true' "$marker"; then
+    printf 'xuva: WSL1 distro lacks a valid dedicated-runtime marker\n' >&2
+    exit 126
+fi
+installation_id=$(/bin/sed -n 's/^installation_id=//p' "$marker")
+case "$installation_id" in
+    ????????-????-????-????-????????????) ;;
+    *) printf 'xuva: WSL1 marker has an invalid installation ID\n' >&2; exit 126 ;;
+esac
+case "$installation_id" in
+    *[!0-9A-Fa-f-]*) printf 'xuva: WSL1 marker has an invalid installation ID\n' >&2; exit 126 ;;
+esac
+if [ -z "$attestation_file" ] ||
+   ! printf '%s' "$installation_id" > "$attestation_file"; then
+    printf 'xuva: unable to attest the dedicated WSL1 runtime\n' >&2
+    exit 126
 fi
 
 user=${USER:-}
@@ -171,6 +218,16 @@ cleanup() { rm -f "$cancel_token"; }
 trap "cleanup; exit 130" INT TERM
 trap cleanup EXIT
 printf '%s' "$$" > "$cancel_token"
+if [ "$lock_path" = "/tmp/xuva.lock" ]; then
+    lock_root="/tmp/xuva-lock-$(/usr/bin/id -u)"
+    if [ -L "$lock_root" ] || { [ -e "$lock_root" ] && { [ ! -d "$lock_root" ] || [ ! -O "$lock_root" ]; }; }; then
+        printf 'xuva-plan: unsafe per-user lock directory %s\n' "$lock_root" >&2
+        exit 1
+    fi
+    /bin/mkdir -m 0700 -p "$lock_root" || exit 1
+    /bin/chmod 0700 "$lock_root" || exit 1
+    lock_path="$lock_root/dispatcher.lock"
+fi
 exec 9>"$lock_path"
 remaining=$((lock_wait * 10))
 while ! /usr/bin/flock -n 9; do
@@ -198,8 +255,30 @@ const WSL1_PLAN_LAUNCH_SCRIPT: &str = r#"
 metrics_db_path=$1
 extra_path=$2
 ready_file=$3
-shift 3
+attestation_file=$4
+shift 4
 
+marker=/etc/xuva-dedicated-wsl1
+if [ ! -r "$marker" ] ||
+   ! /bin/grep -qx 'product=xuva' "$marker" ||
+   ! /bin/grep -qx 'schema_version=1' "$marker" ||
+   ! /bin/grep -qx 'dedicated=true' "$marker"; then
+    printf 'xuva: WSL1 distro lacks a valid dedicated-runtime marker\n' >&2
+    exit 126
+fi
+installation_id=$(/bin/sed -n 's/^installation_id=//p' "$marker")
+case "$installation_id" in
+    ????????-????-????-????-????????????) ;;
+    *) printf 'xuva: WSL1 marker has an invalid installation ID\n' >&2; exit 126 ;;
+esac
+case "$installation_id" in
+    *[!0-9A-Fa-f-]*) printf 'xuva: WSL1 marker has an invalid installation ID\n' >&2; exit 126 ;;
+esac
+if [ -z "$attestation_file" ] ||
+   ! printf '%s' "$installation_id" > "$attestation_file"; then
+    printf 'xuva: unable to attest the dedicated WSL1 runtime\n' >&2
+    exit 126
+fi
 user=${USER:-}
 if [ -n "$extra_path" ]; then
     path_prefix="$extra_path:"
@@ -322,9 +401,14 @@ struct CalibrationEntry {
     #[serde(default)]
     context_signature: String,
     raw_samples_ms: Vec<f64>,
-    native_samples_ms: Vec<f64>,
-    native_input_tokens: i64,
-    native_saved_tokens: i64,
+    native_samples: Vec<NativeCalibrationSample>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NativeCalibrationSample {
+    elapsed_ms: f64,
+    input_tokens: i64,
+    saved_tokens: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -339,8 +423,18 @@ struct CalibrationPlan {
 
 impl CalibrationEntry {
     fn token_savings_percent(&self) -> f64 {
-        if self.native_input_tokens > 0 {
-            (self.native_saved_tokens as f64 / self.native_input_tokens as f64) * 100.0
+        let input_tokens = self
+            .native_samples
+            .iter()
+            .map(|sample| sample.input_tokens)
+            .sum::<i64>();
+        let saved_tokens = self
+            .native_samples
+            .iter()
+            .map(|sample| sample.saved_tokens)
+            .sum::<i64>();
+        if input_tokens > 0 {
+            (saved_tokens as f64 / input_tokens as f64) * 100.0
         } else {
             0.0
         }
@@ -349,14 +443,20 @@ impl CalibrationEntry {
     fn selected_route(&self, objective: PolicyObjective) -> Route {
         select_adaptive_route(
             median(&self.raw_samples_ms),
-            median(&self.native_samples_ms),
+            median(
+                &self
+                    .native_samples
+                    .iter()
+                    .map(|sample| sample.elapsed_ms)
+                    .collect::<Vec<_>>(),
+            ),
             self.token_savings_percent(),
             objective,
         )
     }
 
     fn phase(&self) -> &'static str {
-        if self.raw_samples_ms.is_empty() || self.native_samples_ms.len() < 2 {
+        if self.raw_samples_ms.is_empty() || self.native_samples.len() < 2 {
             "candidate"
         } else if self.raw_samples_ms.len() < 2 {
             "provisional"
@@ -485,7 +585,7 @@ struct SetupTransaction {
 }
 
 fn provider_cache_path() -> PathBuf {
-    xuva_data_root().join("provider-cache-v4.json")
+    xuva_data_root().join("provider-cache-v5.json")
 }
 
 fn unix_seconds() -> u64 {
@@ -600,7 +700,6 @@ fn select_windows_executable(candidates: Vec<String>) -> Option<String> {
     candidates
         .iter()
         .find(|candidate| is_windows_launchable_path(candidate))
-        .or_else(|| candidates.first())
         .cloned()
 }
 
@@ -652,17 +751,22 @@ struct VersionProbe {
     status: ProbeStatus,
 }
 
-fn tool_version(tool: &str, executable: &str, wsl_distro: Option<&str>) -> VersionProbe {
+fn tool_version(
+    tool: &str,
+    executable: &str,
+    wsl_context: Option<(&str, Option<&str>)>,
+) -> VersionProbe {
     let Some(arguments) = version_probe_arguments(tool) else {
         return VersionProbe {
             version: None,
             status: ProbeStatus::NotSupported,
         };
     };
-    let mut command = match wsl_distro {
-        Some(distro) => {
+    let mut command = match wsl_context {
+        Some((distro, user)) => {
             let mut command = Command::new("wsl.exe");
-            command.args(["-d", distro, "--exec", executable]);
+            command.args(wsl_exec_prefix(distro, user));
+            command.arg(executable);
             command
         }
         None => Command::new(executable),
@@ -770,6 +874,7 @@ fn installed_wsl_distributions() -> Vec<(String, Option<u8>)> {
 fn probe_wsl_tool(
     distro: &str,
     wsl_version: Option<u8>,
+    user: Option<&str>,
     tool: &str,
     extra_path: Option<&str>,
     inspect_version: bool,
@@ -777,16 +882,8 @@ fn probe_wsl_tool(
     let script = "if [ -n \"$2\" ]; then PATH=\"$2:$PATH\"; fi; tool_path=$(command -v \"$1\" 2>/dev/null || true); case \"$tool_path\" in /*) [ -f \"$tool_path\" ] && [ -x \"$tool_path\" ] || tool_path= ;; *) tool_path= ;; esac; rtk_path=$(command -v rtk 2>/dev/null || true); case \"$rtk_path\" in /*) [ -f \"$rtk_path\" ] && [ -x \"$rtk_path\" ] || rtk_path= ;; *) rtk_path= ;; esac; tool_identity=$(stat -Lc '%s:%Y' -- \"$tool_path\" 2>/dev/null || true); rtk_identity=$(stat -Lc '%s:%Y' -- \"$rtk_path\" 2>/dev/null || true); printf '%s\\n%s\\n%s\\n%s\\n' \"$tool_path\" \"$rtk_path\" \"$tool_identity\" \"$rtk_identity\"";
     let mut command = Command::new("wsl.exe");
     command
-        .args([
-            "-d",
-            distro,
-            "--exec",
-            "sh",
-            "-c",
-            script,
-            "xuva-provider-probe",
-            tool,
-        ])
+        .args(wsl_exec_prefix(distro, user))
+        .args(["sh", "-c", script, "xuva-provider-probe", tool])
         .arg(extra_path.unwrap_or_default());
     let output = process::run_probe(&mut command);
     let (executable, rtk, executable_identity, rtk_identity) = output
@@ -813,7 +910,7 @@ fn probe_wsl_tool(
                 version: None,
                 status: ProbeStatus::Failed,
             },
-            |path| tool_version(tool, path, Some(distro)),
+            |path| tool_version(tool, path, Some((distro, user))),
         )
     } else {
         VersionProbe {
@@ -822,9 +919,15 @@ fn probe_wsl_tool(
         }
     };
     let executable_version = version_probe.version;
+    let installation_id = (wsl_version == Some(1))
+        .then(|| dedicated_wsl1_installation_id_for(distro))
+        .flatten();
     WslToolProbe {
         distro: distro.to_owned(),
+        user: user.map(str::to_owned),
         wsl_version,
+        dedicated: installation_id.is_some(),
+        installation_id,
         executable_capabilities: version_capabilities(&executable_version),
         executable_version,
         version_probe_status: version_probe.status,
@@ -888,6 +991,7 @@ fn discover_tool(
         let probe = probe_wsl_tool(
             &distro,
             version,
+            config.user.as_deref(),
             tool,
             config.extra_path.as_deref(),
             inspect_versions,
@@ -1006,6 +1110,49 @@ fn mapped_wsl_project_path(distro: &str, user: Option<&str>, linux_path: &str) -
         .ok()
         .filter(|output| output.status.success() && !output.stdout_truncated)
         .and_then(|output| first_output_line(&output.stdout))
+}
+
+fn translate_arguments_to_windows(
+    tool: &str,
+    arguments: &[OsString],
+    config: &Config,
+) -> Vec<OsString> {
+    translate_arguments_with(tool, arguments, |value| {
+        if value.starts_with('/')
+            && matches!(config.invocation_origin, InvocationOrigin::Wsl { .. })
+        {
+            mapped_wsl_project_path(&config.distro, config.user.as_deref(), value)
+                .or_else(|| wsl_path_to_windows_path(value))
+        } else {
+            wsl_path_to_windows_path(value)
+        }
+    })
+}
+
+fn translate_arguments_to_wsl(
+    tool: &str,
+    arguments: &[OsString],
+    config: &Config,
+    target_distro: &str,
+) -> Vec<OsString> {
+    translate_arguments_with(tool, arguments, |value| {
+        if value.starts_with('/') {
+            let InvocationOrigin::Wsl {
+                distro: origin_distro,
+            } = &config.invocation_origin
+            else {
+                return None;
+            };
+            if origin_distro == target_distro {
+                return None;
+            }
+            let windows = mapped_wsl_project_path(origin_distro, config.user.as_deref(), value)?;
+            mapped_windows_project_path(target_distro, config.user.as_deref(), &windows)
+        } else {
+            mapped_windows_project_path(target_distro, config.user.as_deref(), value)
+                .or_else(|| windows_path_to_wsl_path(value))
+        }
+    })
 }
 
 fn wsl_directory_exists(distro: &str, user: Option<&str>, path: &str) -> bool {
@@ -1144,7 +1291,8 @@ fn resolve_tool_provider_from_discovery_with_user(
         && tool != "git")
         .then(|| discovery.windows.native_rtk.clone())
         .flatten();
-    let windows_raw_available = discovery.windows.executable.is_some();
+    let windows_raw_available = discovery.windows.executable.is_some()
+        && windows_provider_has_compatible_semantics(tool, AdapterKind::Raw);
     if let Some(executable) = discovery
         .windows
         .executable
@@ -1152,17 +1300,15 @@ fn resolve_tool_provider_from_discovery_with_user(
         .or(windows_rtk_fallback)
     {
         let project_path = windows_project_path(&project, user);
-        let compatible = windows_provider_has_compatible_semantics(tool);
+        let compatible = windows_probe_has_compatible_provider(tool, &discovery.windows);
         let usable = project_path.is_some() && compatible;
         candidates.push(ProviderCandidate {
             host: ProviderHost::Windows,
             adapters: [
                 windows_raw_available.then_some(AdapterKind::Raw),
-                discovery
-                    .windows
-                    .native_rtk
-                    .is_some()
-                    .then_some(AdapterKind::Rtk),
+                (discovery.windows.native_rtk.is_some()
+                    && windows_provider_has_compatible_semantics(tool, AdapterKind::Rtk))
+                .then_some(AdapterKind::Rtk),
             ]
             .into_iter()
             .flatten()
@@ -1201,7 +1347,8 @@ fn resolve_tool_provider_from_discovery_with_user(
             .flatten();
         if let Some(executable) = probe.executable.clone().or(rtk_fallback) {
             let project_path = wsl_project_path(&project, &probe, user);
-            let usable = project_path.is_some();
+            let dedicated_runtime = host != ProviderHost::Wsl1 || probe.dedicated;
+            let usable = project_path.is_some() && dedicated_runtime;
             candidates.push(ProviderCandidate {
                 host,
                 adapters: [
@@ -1217,7 +1364,9 @@ fn resolve_tool_provider_from_discovery_with_user(
                 rtk: probe.rtk,
                 project_path,
                 usable,
-                reason: if usable {
+                reason: if host == ProviderHost::Wsl1 && !probe.dedicated {
+                    "WSL1 provider is not a verified XUVA-dedicated runtime".to_owned()
+                } else if usable {
                     "WSL toolchain and project path mapping are available".to_owned()
                 } else if project.kind == ProjectLocationKind::Windows {
                     "provider is present but Windows-to-WSL project mapping failed".to_owned()
@@ -1255,11 +1404,21 @@ fn verified_wsl_executable_path(path: String) -> Option<String> {
     path.starts_with('/').then_some(path)
 }
 
-fn windows_provider_has_compatible_semantics(tool: &str) -> bool {
-    !matches!(
-        tool,
-        "awk" | "cat" | "find" | "grep" | "head" | "ls" | "sed" | "tail" | "tree" | "wc"
-    )
+fn windows_provider_has_compatible_semantics(tool: &str, adapter: AdapterKind) -> bool {
+    match adapter {
+        AdapterKind::Raw => !matches!(
+            tool,
+            "awk" | "cat" | "find" | "grep" | "head" | "ls" | "sed" | "tail" | "tree" | "wc"
+        ),
+        AdapterKind::Rtk => true,
+    }
+}
+
+fn windows_probe_has_compatible_provider(tool: &str, windows: &WindowsToolProbe) -> bool {
+    (windows.executable.is_some()
+        && windows_provider_has_compatible_semantics(tool, AdapterKind::Raw))
+        || (windows.native_rtk.is_some()
+            && windows_provider_has_compatible_semantics(tool, AdapterKind::Rtk))
 }
 
 fn requires_raw_posix_provider(tool: &str) -> bool {
@@ -1329,7 +1488,18 @@ fn explicit_executable_plan(
         || (value.len() >= 3 && value.as_bytes()[1] == b':')
         || is_windows_launchable_path(value);
     if windows_path {
-        let resolved = fs::canonicalize(value).map_err(|error| {
+        let mapped_value = if value.starts_with('/') {
+            mapped_wsl_project_path(&config.distro, config.user.as_deref(), value).ok_or_else(
+                || {
+                    format!(
+                        "explicit Windows executable `{value}` could not be mapped by the originating WSL user"
+                    )
+                },
+            )?
+        } else {
+            value.to_owned()
+        };
+        let resolved = fs::canonicalize(&mapped_value).map_err(|error| {
             format!("explicit Windows executable `{value}` is unavailable: {error}")
         })?;
         if !resolved.is_file() || !is_windows_launchable_path(&resolved.to_string_lossy()) {
@@ -1345,7 +1515,7 @@ fn explicit_executable_plan(
             .unwrap_or_default();
         let request = dispatcher::CommandSpec {
             executable: executable.clone(),
-            arguments: translate_arguments_for_provider(tool, tool_arguments, true),
+            arguments: translate_arguments_to_windows(tool, tool_arguments, config),
             cwd: cwd.clone(),
             environment: forwarded_environment(config),
             environment_policy: if matches!(config.invocation_origin, InvocationOrigin::Wsl { .. })
@@ -1399,7 +1569,7 @@ fn explicit_executable_plan(
     let tool = executable.rsplit('/').next().unwrap_or_default();
     let request = dispatcher::CommandSpec {
         executable: OsString::from(&executable),
-        arguments: translate_arguments_for_provider(tool, tool_arguments, false),
+        arguments: translate_arguments_to_wsl(tool, tool_arguments, config, &config.distro),
         cwd: Some(PathBuf::from(&cwd)),
         environment: forwarded_environment(config),
         environment_policy: dispatcher::EnvironmentPolicy::Isolated,
@@ -1440,12 +1610,16 @@ fn windows_tool_is_usable(
     static_route: Route,
     windows: &WindowsToolProbe,
 ) -> bool {
-    windows_provider_has_compatible_semantics(tool)
-        && project.kind != ProjectLocationKind::Wsl
-        && windows.executable.is_some()
+    project.kind != ProjectLocationKind::Wsl
         && match static_route {
-            Route::Raw => true,
-            Route::NativeRtk => windows.native_rtk.is_some(),
+            Route::Raw => {
+                windows.executable.is_some()
+                    && windows_provider_has_compatible_semantics(tool, AdapterKind::Raw)
+            }
+            Route::NativeRtk => {
+                windows.native_rtk.is_some()
+                    && windows_provider_has_compatible_semantics(tool, AdapterKind::Rtk)
+            }
             // WSL routes are legacy route suggestions, not a reason to skip
             // generic candidate resolution when a Windows tool is verified.
             Route::Wsl1 | Route::Wsl2 | Route::Auto => false,
@@ -1473,8 +1647,7 @@ fn provider_dispatch_decision(
     let (windows_discovery, windows_cache) =
         cached_or_discovered_tool(tool, config, false, false, false);
     if project.kind != ProjectLocationKind::Wsl
-        && windows_discovery.windows.executable.is_some()
-        && windows_provider_has_compatible_semantics(tool)
+        && windows_probe_has_compatible_provider(tool, &windows_discovery.windows)
     {
         return provider_dispatch_decision_from_resolution(
             arguments,
@@ -1712,11 +1885,14 @@ fn print_provider_resolution(
     );
     for probe in &resolution.availability.wsl {
         println!(
-            "inspected_distro={};wsl_version={};{}_path={};{}_identity={};version={};probe_status={:?};capabilities={};rtk_path={};rtk_identity={}",
+            "inspected_distro={};user={};wsl_version={};dedicated={};installation_id={};{}_path={};{}_identity={};version={};probe_status={:?};capabilities={};rtk_path={};rtk_identity={}",
             probe.distro,
+            probe.user.as_deref().unwrap_or("default"),
             probe
                 .wsl_version
                 .map_or_else(|| "unknown".to_owned(), |version| version.to_string()),
+            probe.dedicated,
+            probe.installation_id.as_deref().unwrap_or("none"),
             resolution.tool,
             probe.executable.as_deref().unwrap_or("missing"),
             resolution.tool,
@@ -2428,7 +2604,7 @@ fn import_route_policy(source: &Path, config: &Config) -> Result<(), String> {
 }
 
 fn calibration_path() -> PathBuf {
-    xuva_data_root().join("calibration-v2.json")
+    xuva_data_root().join("calibration-v3.json")
 }
 
 fn validate_calibration(file: &CalibrationFile) -> Result<(), String> {
@@ -2441,13 +2617,17 @@ fn validate_calibration(file: &CalibrationFile) -> Result<(), String> {
             || entry.key.trim().is_empty()
             || entry.manifest_version != adapter_contract_id()
             || entry.context_signature.len() != 16
-            || entry.native_input_tokens < 0
-            || entry.native_saved_tokens < 0
             || !entry
                 .raw_samples_ms
                 .iter()
-                .chain(&entry.native_samples_ms)
                 .all(|sample| sample.is_finite() && *sample >= 0.0)
+            || !entry.native_samples.iter().all(|sample| {
+                sample.elapsed_ms.is_finite()
+                    && sample.elapsed_ms >= 0.0
+                    && sample.input_tokens >= 0
+                    && sample.saved_tokens >= 0
+                    && sample.saved_tokens <= sample.input_tokens
+            })
             || !signatures.insert(&entry.signature)
         {
             return Err("calibration state contains invalid local evidence".to_owned());
@@ -2457,7 +2637,7 @@ fn validate_calibration(file: &CalibrationFile) -> Result<(), String> {
 }
 
 fn calibration_for_current_contract(mut file: CalibrationFile) -> Result<CalibrationFile, String> {
-    if file.schema_version == 1 {
+    if file.schema_version < CALIBRATION_SCHEMA_VERSION {
         return Ok(CalibrationFile {
             schema_version: CALIBRATION_SCHEMA_VERSION,
             entries: Vec::new(),
@@ -2613,13 +2793,13 @@ fn calibration_route_for(
             Route::Raw,
             "local calibration candidate: second safe observation uses raw execution",
         ),
-        Some(entry) if entry.native_samples_ms.len() < 2 => (
+        Some(entry) if entry.native_samples.len() < 2 => (
             Route::NativeRtk,
             "local calibration candidate: third safe observation confirms native RTK",
         ),
         Some(entry) if entry.raw_samples_ms.len() < 2 => {
             let selected = entry.selected_route(objective);
-            if entry.raw_samples_ms.len() == 1 && entry.native_samples_ms.len() == 2 {
+            if entry.raw_samples_ms.len() == 1 && entry.native_samples.len() == 2 {
                 (
                     selected,
                     "local calibration provisional choice; validating with one further natural invocation",
@@ -2646,7 +2826,7 @@ fn calibration_route_for(
     (route, reason)
 }
 
-fn cap_samples(samples: &mut Vec<f64>) {
+fn cap_samples<T>(samples: &mut Vec<T>) {
     if samples.len() > CALIBRATION_MAX_SAMPLES {
         let excess = samples.len() - CALIBRATION_MAX_SAMPLES;
         samples.drain(0..excess);
@@ -2682,9 +2862,7 @@ fn record_calibration(
                 manifest_version: plan.manifest_version.clone(),
                 context_signature: plan.context_signature.clone(),
                 raw_samples_ms: Vec::new(),
-                native_samples_ms: Vec::new(),
-                native_input_tokens: 0,
-                native_saved_tokens: 0,
+                native_samples: Vec::new(),
             };
             &mut state.entries[index]
         }
@@ -2695,9 +2873,7 @@ fn record_calibration(
                 manifest_version: plan.manifest_version.clone(),
                 context_signature: plan.context_signature.clone(),
                 raw_samples_ms: Vec::new(),
-                native_samples_ms: Vec::new(),
-                native_input_tokens: 0,
-                native_saved_tokens: 0,
+                native_samples: Vec::new(),
             });
             state.entries.last_mut().expect("entry was just appended")
         }
@@ -2709,14 +2885,12 @@ fn record_calibration(
             cap_samples(&mut entry.raw_samples_ms);
         }
         Route::NativeRtk => {
-            entry.native_samples_ms.push(elapsed_ms);
-            cap_samples(&mut entry.native_samples_ms);
-            entry.native_input_tokens = entry
-                .native_input_tokens
-                .saturating_add(totals.input_tokens);
-            entry.native_saved_tokens = entry
-                .native_saved_tokens
-                .saturating_add(totals.saved_tokens);
+            entry.native_samples.push(NativeCalibrationSample {
+                elapsed_ms,
+                input_tokens: totals.input_tokens,
+                saved_tokens: totals.saved_tokens,
+            });
+            cap_samples(&mut entry.native_samples);
         }
         Route::Wsl1 | Route::Wsl2 | Route::Auto => unreachable!("route was filtered above"),
     }
@@ -2738,7 +2912,7 @@ fn print_calibration(objective: PolicyObjective) -> Result<(), String> {
         println!("phase={}", entry.phase());
         println!("route={}", route.as_str());
         println!("raw_samples={}", entry.raw_samples_ms.len());
-        println!("native_samples={}", entry.native_samples_ms.len());
+        println!("native_samples={}", entry.native_samples.len());
         println!(
             "native_token_savings_percent={:.1}",
             entry.token_savings_percent()
@@ -2752,7 +2926,6 @@ fn is_wsl_path(value: &OsString) -> bool {
     value.to_string_lossy().starts_with('/')
 }
 
-#[cfg(test)]
 fn git_uses_wsl_directory(arguments: &[OsString]) -> bool {
     arguments.windows(2).any(|pair| {
         (pair[0] == "-C" || pair[0] == "--git-dir" || pair[0] == "--work-tree")
@@ -2760,7 +2933,6 @@ fn git_uses_wsl_directory(arguments: &[OsString]) -> bool {
     })
 }
 
-#[cfg(test)]
 fn should_use_native_git(
     arguments: &[OsString],
     config: &Config,
@@ -2851,13 +3023,14 @@ fn rtk_arguments_with_metrics(
 
 #[cfg(test)]
 fn wsl1_rtk_arguments(arguments: Vec<OsString>, config: &Config) -> Vec<OsString> {
-    wsl1_rtk_arguments_with_metrics(arguments, config, None)
+    wsl1_rtk_arguments_with_metrics(arguments, config, None, "/tmp/xuva-test.attestation")
 }
 
 fn wsl1_rtk_arguments_with_metrics(
     arguments: Vec<OsString>,
     config: &Config,
     metrics_db_path: Option<&str>,
+    attestation_path: &str,
 ) -> Vec<OsString> {
     let forwarded = forwarded_rtk_arguments(arguments);
     let mut command = wsl_launch_prefix(config);
@@ -2871,6 +3044,7 @@ fn wsl1_rtk_arguments_with_metrics(
         OsString::from(metrics_db_path.unwrap_or("")),
         OsString::from(config.extra_path.as_deref().unwrap_or("")),
         OsString::from(test_ready_wsl_path().unwrap_or_default()),
+        OsString::from(attestation_path),
     ]);
     command.extend(forwarded);
     command
@@ -2910,32 +3084,45 @@ fn wsl_environment_assignments(
         .collect()
 }
 
+#[derive(Clone, Copy)]
+struct WslLaunchMetadata<'a> {
+    cancel_token: Option<&'a str>,
+    metrics_db_path: Option<&'a str>,
+    wsl1_attestation_path: Option<&'a str>,
+}
+
 fn plan_wsl_arguments_with_metrics(
     executable: &OsString,
     arguments: &[OsString],
     environment: &[(OsString, OsString)],
     config: &Config,
     route: Route,
-    cancel_token: Option<&str>,
-    metrics_db_path: Option<&str>,
+    metadata: WslLaunchMetadata<'_>,
 ) -> Result<Vec<OsString>, std::io::Error> {
     let environment = wsl_environment_assignments(environment)?;
     let mut command = wsl_launch_prefix(config);
     match route {
         Route::Wsl1 => {
+            let attestation_path = metadata.wsl1_attestation_path.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "WSL1 execution plans require a dedicated-runtime attestation path",
+                )
+            })?;
             command.extend([
                 OsString::from("--exec"),
                 OsString::from("/bin/sh"),
                 OsString::from("-c"),
                 OsString::from(WSL1_PLAN_LAUNCH_SCRIPT),
                 OsString::from("xuva-wsl1-plan"),
-                OsString::from(metrics_db_path.unwrap_or("")),
+                OsString::from(metadata.metrics_db_path.unwrap_or("")),
                 OsString::from(config.extra_path.as_deref().unwrap_or("")),
                 OsString::from(test_ready_wsl_path().unwrap_or_default()),
+                OsString::from(attestation_path),
             ]);
         }
         Route::Wsl2 => {
-            let cancel_token = cancel_token.ok_or_else(|| {
+            let cancel_token = metadata.cancel_token.ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "WSL2 execution plans require a cancellation token",
@@ -2952,7 +3139,7 @@ fn plan_wsl_arguments_with_metrics(
                 OsString::from(&config.lock_wait),
                 OsString::from(&config.lock_path),
                 OsString::from(cancel_token),
-                OsString::from(metrics_db_path.unwrap_or("")),
+                OsString::from(metadata.metrics_db_path.unwrap_or("")),
                 OsString::from(config.extra_path.as_deref().unwrap_or("")),
                 OsString::from(test_ready_wsl_path().unwrap_or_default()),
             ]);
@@ -2974,7 +3161,7 @@ fn cancel_token() -> String {
     format!("/tmp/xuva-{}.cancel", std::process::id())
 }
 
-fn cancel_arguments(config: &Config, token: &str) -> Vec<OsString> {
+fn cancel_arguments(config: &Config, token: &str, signal: &str) -> Vec<OsString> {
     let mut command = vec![OsString::from("-d"), OsString::from(&config.distro)];
     if let Some(user) = &config.user {
         command.extend([OsString::from("-u"), OsString::from(user)]);
@@ -2986,6 +3173,7 @@ fn cancel_arguments(config: &Config, token: &str) -> Vec<OsString> {
         OsString::from(CANCEL_SCRIPT),
         OsString::from("xuva-cancel"),
         OsString::from(token),
+        OsString::from(signal),
     ]);
     command
 }
@@ -3064,6 +3252,10 @@ mod windows_lock {
 
     impl Drop for Guard {
         fn drop(&mut self) {
+            super::trace(format!(
+                "releasing WSL1 mutex in process {}",
+                std::process::id()
+            ));
             unsafe {
                 ReleaseMutex(self.handle);
                 CloseHandle(self.handle);
@@ -3099,7 +3291,13 @@ mod windows_lock {
             let milliseconds = u32::try_from(remaining.as_millis().min(50)).unwrap_or(50);
             let result = unsafe { WaitForSingleObject(handle, milliseconds) };
             match result {
-                WAIT_OBJECT_0 | WAIT_ABANDONED => return Ok(Guard { handle }),
+                WAIT_OBJECT_0 | WAIT_ABANDONED => {
+                    super::trace(format!(
+                        "acquired WSL1 mutex in process {}",
+                        std::process::id()
+                    ));
+                    return Ok(Guard { handle });
+                }
                 WAIT_TIMEOUT => {}
                 _ => {
                     unsafe { CloseHandle(handle) };
@@ -3119,28 +3317,177 @@ mod windows_lock {
     }
 }
 
-fn request_linux_interrupt(config: &Config, token: &str) -> std::io::Result<Child> {
-    Command::new("wsl.exe")
-        .args(cancel_arguments(config, token))
-        .spawn()
+fn send_linux_signal(config: &Config, token: &str, signal: &str) -> std::io::Result<bool> {
+    let mut command = Command::new("wsl.exe");
+    command.args(cancel_arguments(config, token, signal));
+    let output = process::run_bounded(
+        &mut command,
+        None,
+        Duration::from_secs(1),
+        process::PROBE_OUTPUT_LIMIT,
+    )?;
+    Ok(output.status.success())
 }
 
-fn terminate_dedicated_wsl1_distro(config: &Config) {
+fn linux_process_group_exists(config: &Config, token: &str) -> std::io::Result<bool> {
+    let mut arguments = vec![OsString::from("-d"), OsString::from(&config.distro)];
+    if let Some(user) = &config.user {
+        arguments.extend([OsString::from("-u"), OsString::from(user)]);
+    }
+    arguments.extend([
+        OsString::from("--exec"),
+        OsString::from("/bin/sh"),
+        OsString::from("-c"),
+        OsString::from(CANCEL_PROBE_SCRIPT),
+        OsString::from("xuva-cancel-probe"),
+        OsString::from(token),
+    ]);
+    let mut command = Command::new("wsl.exe");
+    command.args(arguments);
+    let output = process::run_bounded(
+        &mut command,
+        None,
+        Duration::from_secs(1),
+        process::PROBE_OUTPUT_LIMIT,
+    )?;
+    Ok(output.status.success())
+}
+
+fn dedicated_wsl1_installation_id_for(distro: &str) -> Option<String> {
+    let version = installed_wsl_distributions()
+        .into_iter()
+        .find_map(|(candidate, version)| (candidate == distro).then_some(version))
+        .flatten();
+    if version != Some(1) {
+        return None;
+    }
+    let mut command = Command::new("wsl.exe");
+    command.args([
+        "-d",
+        distro,
+        "-u",
+        "root",
+        "--exec",
+        "/bin/cat",
+        "/etc/xuva-dedicated-wsl1",
+    ]);
+    let output = process::run_probe(&mut command).ok()?;
+    if !output.status.success() || output.stdout_truncated {
+        return None;
+    }
+    let rendered = decode_wsl_output(&output.stdout);
+    let fields = rendered
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .collect::<std::collections::HashMap<_, _>>();
+    if fields.get("product") != Some(&"xuva")
+        || fields.get("schema_version") != Some(&"1")
+        || fields.get("dedicated") != Some(&"true")
+    {
+        return None;
+    }
+    let installation_id = fields.get("installation_id")?.trim();
+    valid_installation_id(installation_id).then(|| installation_id.to_owned())
+}
+
+fn valid_installation_id(installation_id: &str) -> bool {
+    installation_id.len() == 36
+        && installation_id.bytes().enumerate().all(|(index, byte)| {
+            matches!(index, 8 | 13 | 18 | 23) && byte == b'-'
+                || !matches!(index, 8 | 13 | 18 | 23) && byte.is_ascii_hexdigit()
+        })
+}
+
+fn require_wsl1_version(config: &Config) -> std::io::Result<()> {
+    let version = installed_wsl_distributions()
+        .into_iter()
+        .find_map(|(distro, version)| (distro == config.distro).then_some(version))
+        .flatten();
+    (version == Some(1)).then_some(()).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "WSL1 route requires a version-1 distro; refusing to manage {}",
+                config.distro
+            ),
+        )
+    })
+}
+
+struct Wsl1LaunchAttestation {
+    windows_path: PathBuf,
+    wsl_path: String,
+}
+
+impl Wsl1LaunchAttestation {
+    fn new() -> std::io::Result<Self> {
+        let windows_path = env::temp_dir().join(format!(
+            "xuva-wsl1-attestation-{}-{}.txt",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        let _ = fs::remove_file(&windows_path);
+        let wsl_path = windows_path_to_wsl_path(&windows_path.to_string_lossy()).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the Windows temporary directory cannot be mapped into the dedicated WSL1 runtime",
+            )
+        })?;
+        Ok(Self {
+            windows_path,
+            wsl_path,
+        })
+    }
+
+    fn installation_id(&self) -> std::io::Result<String> {
+        let installation_id = fs::read_to_string(&self.windows_path)
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "the WSL1 child did not attest a dedicated runtime before cancellation",
+                )
+            })?
+            .trim()
+            .to_owned();
+        valid_installation_id(&installation_id)
+            .then_some(installation_id)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "the WSL1 child produced an invalid dedicated-runtime attestation",
+                )
+            })
+    }
+}
+
+impl Drop for Wsl1LaunchAttestation {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.windows_path);
+    }
+}
+
+fn terminate_dedicated_wsl1_distro(config: &Config, installation_id: &str) -> std::io::Result<()> {
     trace(format!(
-        "terminating dedicated WSL1 distro {} after cancellation",
-        config.distro
+        "terminating dedicated WSL1 distro {} installation {} after cancellation",
+        config.distro, installation_id
     ));
     let mut command = Command::new("wsl.exe");
     command.args(["--terminate", &config.distro]);
     match process::run_probe(&mut command) {
-        Ok(output) if output.status.success() => {}
-        Ok(output) => trace(format!(
-            "WSL1 terminate returned {}: {}{}",
-            output.status,
-            decode_wsl_output(&output.stdout).trim(),
-            decode_wsl_output(&output.stderr).trim()
-        )),
-        Err(error) => trace(format!("unable to start WSL1 terminate command: {error}")),
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            trace(format!(
+                "WSL1 terminate returned {}: {}{}",
+                output.status,
+                decode_wsl_output(&output.stdout).trim(),
+                decode_wsl_output(&output.stderr).trim()
+            ));
+            Err(std::io::Error::other("WSL1 terminate command failed"))
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -3149,8 +3496,10 @@ fn wait_for_wsl_child(
     config: &Config,
     token: &str,
 ) -> std::io::Result<ExitStatus> {
-    let mut last_interrupt = None;
     let mut cancellation_started = None;
+    let mut interrupt_sent = false;
+    let mut terminate_sent = false;
+    let mut kill_sent = false;
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(status);
@@ -3158,40 +3507,53 @@ fn wait_for_wsl_child(
         if console::requested() {
             cancellation_started.get_or_insert_with(Instant::now);
         }
-        if let Some(started) = cancellation_started
-            && started.elapsed() >= Duration::from_secs(4)
-        {
-            trace(
-                "WSL proxy exceeded the cancellation deadline; terminating only the proxy process",
-            );
-            child.kill()?;
-            return child.wait();
-        }
-        if cancellation_started.is_some()
-            && last_interrupt
-                .is_none_or(|previous: Instant| previous.elapsed() >= Duration::from_secs(1))
-        {
-            match request_linux_interrupt(config, token) {
-                Ok(_interrupt_helper) => {
-                    trace("forwarded Ctrl+C to the isolated Linux process group");
-                }
-                Err(error) => trace(format!("unable to start Linux interrupt helper: {error}")),
+        if let Some(started) = cancellation_started {
+            let elapsed = started.elapsed();
+            if !interrupt_sent {
+                let _ = send_linux_signal(config, token, "INT");
+                trace("sent SIGINT to the isolated Linux process group");
+                interrupt_sent = true;
             }
-            last_interrupt = Some(Instant::now());
+            if elapsed >= Duration::from_millis(1_500) && !terminate_sent {
+                let _ = send_linux_signal(config, token, "TERM");
+                trace("escalated cancellation to SIGTERM inside Linux");
+                terminate_sent = true;
+            }
+            if elapsed >= Duration::from_secs(3) && !kill_sent {
+                let _ = send_linux_signal(config, token, "KILL");
+                trace("escalated cancellation to SIGKILL inside Linux");
+                kill_sent = true;
+            }
+            if elapsed >= Duration::from_secs(4) {
+                let group_survived = linux_process_group_exists(config, token).unwrap_or(true);
+                child.kill()?;
+                let status = child.wait()?;
+                if group_survived {
+                    return Err(std::io::Error::other(
+                        "Linux process group survived SIGINT, SIGTERM, and SIGKILL escalation",
+                    ));
+                }
+                return Ok(status);
+            }
         }
         thread::sleep(Duration::from_millis(50));
     }
 }
 
-fn wait_for_wsl1_child(mut child: Child, config: &Config) -> std::io::Result<ExitStatus> {
+fn wait_for_wsl1_child(
+    mut child: Child,
+    config: &Config,
+    attestation: &Wsl1LaunchAttestation,
+) -> std::io::Result<ExitStatus> {
     let mut interrupted = false;
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(status);
         }
         if console::requested() && !interrupted {
+            let installation_id = attestation.installation_id()?;
             let _ = child.kill();
-            terminate_dedicated_wsl1_distro(config);
+            terminate_dedicated_wsl1_distro(config, &installation_id)?;
             interrupted = true;
         }
         thread::sleep(Duration::from_millis(50));
@@ -3470,13 +3832,13 @@ fn configured_wsl_backend(config: &Config, route: Route) -> Config {
     match route {
         Route::Wsl1 => {
             selected.backend = WslBackend::Wsl1;
-            if selected.distro == DEFAULT_DISTRO {
+            if config.backend != WslBackend::Wsl1 && selected.distro == DEFAULT_DISTRO {
                 selected.distro = DEFAULT_WSL1_DISTRO.to_owned();
             }
         }
         Route::Wsl2 => {
             selected.backend = WslBackend::Wsl2;
-            if selected.distro == DEFAULT_WSL1_DISTRO {
+            if config.backend != WslBackend::Wsl2 && selected.distro == DEFAULT_WSL1_DISTRO {
                 selected.distro = DEFAULT_DISTRO.to_owned();
             }
         }
@@ -3531,6 +3893,52 @@ fn begin_invocation_metrics(
             None
         }
     }
+}
+
+fn static_windows_execution_plan(
+    arguments: &[OsString],
+    config: &Config,
+    route: Route,
+) -> Result<dispatcher::ExecutionPlan, String> {
+    let tool = arguments
+        .first()
+        .ok_or_else(|| "a Windows execution plan needs a command".to_owned())?;
+    let tool_name = tool
+        .to_str()
+        .ok_or_else(|| "cross-host command names must be valid Unicode".to_owned())?;
+    let cwd = windows_cwd_for_invocation(config)?;
+    let raw_executable = adapters::windows::raw_executable(tool);
+    let (candidate_executable, adapter) = match route {
+        Route::Raw => (raw_executable, dispatcher::OutputAdapter::Raw),
+        Route::NativeRtk => {
+            let executable = OsString::from(&config.native_rtk_path);
+            (
+                executable.clone(),
+                dispatcher::OutputAdapter::Rtk { executable },
+            )
+        }
+        Route::Auto | Route::Wsl1 | Route::Wsl2 => {
+            return Err("only Windows raw/native routes can use a static Windows plan".to_owned());
+        }
+    };
+    Ok(dispatcher::ExecutionPlan {
+        request: dispatcher::CommandSpec {
+            executable: tool.clone(),
+            arguments: translate_arguments_to_windows(tool_name, &arguments[1..], config),
+            cwd: Some(cwd.clone()),
+            environment: forwarded_environment(config),
+            environment_policy: dispatcher::EnvironmentPolicy::Isolated,
+            interactive: false,
+        },
+        candidate: dispatcher::RouteCandidate::Windows {
+            executable: candidate_executable,
+            cwd: Some(cwd),
+        },
+        adapter,
+        explanation: vec![dispatcher::DecisionReason(
+            "WSL-origin Windows execution uses an isolated structured plan".to_owned(),
+        )],
+    })
 }
 
 fn run_native_rtk(
@@ -3663,8 +4071,18 @@ fn execution_plan_for_provider_candidate(
     } else {
         provider_adapter(candidate, config.output_adapter)?
     };
-    let route_is_windows = candidate.is_windows();
-    let translated_arguments = translate_arguments_for_provider(tool, arguments, route_is_windows);
+    let translated_arguments = match candidate.host {
+        ProviderHost::Windows => translate_arguments_to_windows(tool, arguments, config),
+        ProviderHost::Wsl1 | ProviderHost::Wsl2 => translate_arguments_to_wsl(
+            tool,
+            arguments,
+            config,
+            candidate
+                .distro
+                .as_deref()
+                .expect("consistent WSL candidates have a distro"),
+        ),
+    };
     let request = dispatcher::CommandSpec {
         executable: OsString::from(tool),
         arguments: translated_arguments,
@@ -3947,17 +4365,26 @@ fn run_wsl_route(
     metrics: Option<&XuvaMetrics>,
 ) -> std::io::Result<ExitStatus> {
     let metrics_path = metrics.and_then(|metrics| {
-        windows_path_to_wsl_path(&metrics.scratch_windows_path().to_string_lossy())
+        let path = metrics.scratch_windows_path().to_string_lossy();
+        mapped_windows_project_path(&config.distro, config.user.as_deref(), &path)
+            .or_else(|| windows_path_to_wsl_path(&path))
     });
     if route == Route::Wsl1 {
-        let _lock = windows_lock::acquire(&config.lock_wait).map_err(std::io::Error::other)?;
-        adapters::wsl1::process(wsl1_rtk_arguments_with_metrics(
+        let lock = windows_lock::acquire(&config.lock_wait).map_err(std::io::Error::other)?;
+        require_wsl1_version(config)?;
+        let attestation = Wsl1LaunchAttestation::new()?;
+        trace("starting attested WSL1 child while holding the global mutex");
+        let result = adapters::wsl1::process(wsl1_rtk_arguments_with_metrics(
             arguments,
             config,
             metrics_path.as_deref(),
+            &attestation.wsl_path,
         ))
         .spawn()
-        .and_then(|child| wait_for_wsl1_child(child, config))
+        .and_then(|child| wait_for_wsl1_child(child, config, &attestation));
+        trace(format!("attested WSL1 child completed with {result:?}"));
+        drop(lock);
+        result
     } else {
         let token = cancel_token();
         adapters::wsl2::process(rtk_arguments_with_metrics(
@@ -3980,22 +4407,33 @@ fn run_wsl_execution_plan(
     metrics: Option<&XuvaMetrics>,
 ) -> std::io::Result<ExitStatus> {
     let metrics_path = metrics.and_then(|metrics| {
-        windows_path_to_wsl_path(&metrics.scratch_windows_path().to_string_lossy())
+        let path = metrics.scratch_windows_path().to_string_lossy();
+        mapped_windows_project_path(&config.distro, config.user.as_deref(), &path)
+            .or_else(|| windows_path_to_wsl_path(&path))
     });
     if route == Route::Wsl1 {
-        let _lock = windows_lock::acquire(&config.lock_wait).map_err(std::io::Error::other)?;
+        let lock = windows_lock::acquire(&config.lock_wait).map_err(std::io::Error::other)?;
+        require_wsl1_version(config)?;
+        let attestation = Wsl1LaunchAttestation::new()?;
         let command = plan_wsl_arguments_with_metrics(
             executable,
             arguments,
             environment,
             config,
             route,
-            None,
-            metrics_path.as_deref(),
+            WslLaunchMetadata {
+                cancel_token: None,
+                metrics_db_path: metrics_path.as_deref(),
+                wsl1_attestation_path: Some(&attestation.wsl_path),
+            },
         )?;
-        adapters::wsl1::process(command)
+        trace("starting attested WSL1 plan while holding the global mutex");
+        let result = adapters::wsl1::process(command)
             .spawn()
-            .and_then(|child| wait_for_wsl1_child(child, config))
+            .and_then(|child| wait_for_wsl1_child(child, config, &attestation));
+        trace(format!("attested WSL1 plan completed with {result:?}"));
+        drop(lock);
+        result
     } else {
         let token = cancel_token();
         let command = plan_wsl_arguments_with_metrics(
@@ -4004,8 +4442,11 @@ fn run_wsl_execution_plan(
             environment,
             config,
             route,
-            Some(&token),
-            metrics_path.as_deref(),
+            WslLaunchMetadata {
+                cancel_token: Some(&token),
+                metrics_db_path: metrics_path.as_deref(),
+                wsl1_attestation_path: None,
+            },
         )?;
         adapters::wsl2::process(command)
             .spawn()
@@ -4083,6 +4524,7 @@ fn print_help() {
     println!();
     println!("lifecycle:");
     println!("  xuva install --status");
+    println!("  xuva install --recover");
     println!("  xuva rollback");
     println!("  xuva uninstall [--remove-from-path]");
     println!();
@@ -4397,6 +4839,27 @@ fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     let mut invocation_config = config.clone();
     invocation_config.environment = environment;
     let current_directory = env::current_dir().ok();
+    let same_host_raw_fast_path = matches!(
+        invocation_config.invocation_origin,
+        InvocationOrigin::Windows
+    ) && !explain
+        && (requested_route == Route::Raw
+            || (requested_route == Route::Auto
+                && !is_verified_read_only_git(&arguments)
+                && should_use_native_git(
+                    &arguments,
+                    &invocation_config,
+                    current_directory.as_deref().and_then(|path| path.to_str()),
+                )));
+    if same_host_raw_fast_path {
+        return match adapters::windows::run(&arguments) {
+            Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+            Err(error) => {
+                eprintln!("xuva: unable to start Windows raw command: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let started = Instant::now();
     let adaptive_context = adaptive_context_signature(&invocation_config);
     let policy = load_route_policy();
@@ -4478,6 +4941,25 @@ fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
             } => {
                 provider_missing = Some(missing_reason.clone());
                 reason = missing_reason;
+            }
+        }
+    }
+    if execution_plan.is_none()
+        && matches!(
+            invocation_config.invocation_origin,
+            InvocationOrigin::Wsl { .. }
+        )
+        && matches!(route, Route::Raw | Route::NativeRtk)
+    {
+        match static_windows_execution_plan(&arguments, &invocation_config, route) {
+            Ok(plan) => {
+                selected_adapter = plan.adapter.clone();
+                execution_plan = Some(plan);
+                reason = "WSL-origin Windows route requires an isolated execution plan".to_owned();
+            }
+            Err(error) => {
+                eprintln!("xuva: {error}");
+                return ExitCode::from(127);
             }
         }
     }
@@ -4656,6 +5138,7 @@ fn main() -> ExitCode {
             distro: bridge.distro.clone(),
         };
         config.distro = bridge.distro;
+        config.user = Some(bridge.origin_user);
         config.cwd = Some(bridge.cwd);
         config.bridge_windows_cwd = bridge.windows_cwd;
         config.extra_path = bridge.extra_path;
@@ -4730,11 +5213,12 @@ mod tests {
     #[test]
     fn wsl_bridge_request_carries_context_and_arguments_without_environment() {
         let request = wsl_bridge_request(&[OsString::from(
-            "--wsl-bridge=djIAVWJ1bnR1AC9tbnQvZC9maXh0dXJlAEQ6XGZpeHR1cmUAL3RtcC9maXh0dXJlAHJhdwAtLWV4cGxhaW4tcm91dGUAZ28AcnVuAHgA",
+            "--wsl-bridge=djMAVWJ1bnR1AGJhZGFyAC9tbnQvZC9maXh0dXJlAEQ6XGZpeHR1cmUAL3RtcC9maXh0dXJlAHJhdwAtLWV4cGxhaW4tcm91dGUAZ28AcnVuAHgA",
         )])
         .expect("bridge payload is valid")
         .expect("argument selects the bridge");
         assert_eq!(request.distro, "Ubuntu");
+        assert_eq!(request.origin_user, "badar");
         assert_eq!(request.cwd, "/mnt/d/fixture");
         assert_eq!(request.windows_cwd.as_deref(), Some(r"D:\fixture"));
         assert_eq!(request.extra_path.as_deref(), Some("/tmp/fixture"));
@@ -4762,8 +5246,11 @@ mod tests {
             )],
             &config,
             Route::Wsl2,
-            Some("/tmp/xuva-plan-test.cancel"),
-            None,
+            WslLaunchMetadata {
+                cancel_token: Some("/tmp/xuva-plan-test.cancel"),
+                metrics_db_path: None,
+                wsl1_attestation_path: None,
+            },
         )
         .expect("WSL plan arguments are valid");
         let executable = arguments
@@ -4941,9 +5428,10 @@ mod tests {
 
     #[test]
     fn cancellation_uses_a_separate_structured_wsl_command() {
-        let arguments = cancel_arguments(&default_config(), "/tmp/rtk-wsl-42.cancel");
+        let arguments = cancel_arguments(&default_config(), "/tmp/rtk-wsl-42.cancel", "TERM");
         assert!(arguments.contains(&OsString::from(CANCEL_SCRIPT)));
         assert!(arguments.contains(&OsString::from("/tmp/rtk-wsl-42.cancel")));
+        assert!(arguments.contains(&OsString::from("TERM")));
     }
 
     #[test]
@@ -5387,9 +5875,11 @@ mod tests {
             manifest_version: adapter_contract_id(),
             context_signature: context.clone(),
             raw_samples_ms: vec![1.0],
-            native_samples_ms: vec![2.0],
-            native_input_tokens: 0,
-            native_saved_tokens: 0,
+            native_samples: vec![NativeCalibrationSample {
+                elapsed_ms: 2.0,
+                input_tokens: 0,
+                saved_tokens: 0,
+            }],
         };
         assert!(calibration_entry_matches(
             &entry,
@@ -5563,6 +6053,13 @@ mod tests {
             ]),
             Some(r"C:\tools\npm.cmd".to_owned())
         );
+        assert_eq!(
+            select_windows_executable(vec![
+                r"C:\tools\script.ps1".to_owned(),
+                r"C:\tools\script.py".to_owned(),
+            ]),
+            None
+        );
     }
 
     #[test]
@@ -5663,7 +6160,10 @@ mod tests {
     fn provider_resolution_requires_a_verified_cross_host_project_mapping() {
         let probe = WslToolProbe {
             distro: "Ubuntu".to_owned(),
+            user: None,
             wsl_version: Some(2),
+            dedicated: false,
+            installation_id: None,
             executable: Some("/usr/bin/go".to_owned()),
             rtk: Some("/home/test/.local/bin/rtk".to_owned()),
             executable_version: None,
@@ -6027,7 +6527,10 @@ mod tests {
                 wsl_probe_complete: true,
                 wsl: vec![WslToolProbe {
                     distro: "Ubuntu-RTK-WSL1".to_owned(),
+                    user: None,
                     wsl_version: Some(1),
+                    dedicated: true,
+                    installation_id: Some("00000000-0000-0000-0000-000000000001".to_owned()),
                     executable: None,
                     rtk: None,
                     executable_version: None,
@@ -6590,12 +7093,10 @@ mod tests {
             Route::NativeRtk,
             &structured
         ));
-        assert!(!windows_tool_is_usable(
-            "find",
-            &windows_project,
-            Route::NativeRtk,
-            &structured
-        ));
+        assert!(
+            windows_tool_is_usable("find", &windows_project, Route::NativeRtk, &structured),
+            "Windows RTK find is a structured adapter, not raw find.exe"
+        );
     }
 
     #[test]
@@ -6687,9 +7188,11 @@ mod tests {
             manifest_version: adapter_contract_id(),
             context_signature: "0123456789abcdef".to_owned(),
             raw_samples_ms: Vec::new(),
-            native_samples_ms: vec![30.0],
-            native_input_tokens: 100,
-            native_saved_tokens: 0,
+            native_samples: vec![NativeCalibrationSample {
+                elapsed_ms: 30.0,
+                input_tokens: 100,
+                saved_tokens: 0,
+            }],
         };
         assert_eq!(
             calibration_route_for(Some(&entry), PolicyObjective::Balanced).0,
@@ -6697,7 +7200,11 @@ mod tests {
         );
 
         entry.raw_samples_ms.push(10.0);
-        entry.native_samples_ms.push(30.0);
+        entry.native_samples.push(NativeCalibrationSample {
+            elapsed_ms: 30.0,
+            input_tokens: 100,
+            saved_tokens: 0,
+        });
         assert_eq!(entry.phase(), "provisional");
         assert_eq!(
             calibration_route_for(Some(&entry), PolicyObjective::Balanced).0,
@@ -6722,9 +7229,11 @@ mod tests {
                 manifest_version: "wad:0.42.0:protocol-1".to_owned(),
                 context_signature: "fedcba9876543210".to_owned(),
                 raw_samples_ms: vec![1.0],
-                native_samples_ms: vec![2.0],
-                native_input_tokens: 10,
-                native_saved_tokens: 5,
+                native_samples: vec![NativeCalibrationSample {
+                    elapsed_ms: 2.0,
+                    input_tokens: 10,
+                    saved_tokens: 5,
+                }],
             }],
         };
 
@@ -6742,9 +7251,18 @@ mod tests {
             manifest_version: adapter_contract_id(),
             context_signature: "0123456789abcdef".to_owned(),
             raw_samples_ms: vec![10.0, 11.0],
-            native_samples_ms: vec![30.0, 31.0],
-            native_input_tokens: 100,
-            native_saved_tokens: 25,
+            native_samples: vec![
+                NativeCalibrationSample {
+                    elapsed_ms: 30.0,
+                    input_tokens: 50,
+                    saved_tokens: 10,
+                },
+                NativeCalibrationSample {
+                    elapsed_ms: 31.0,
+                    input_tokens: 50,
+                    saved_tokens: 15,
+                },
+            ],
         };
         assert_eq!(entry.phase(), "stable");
         assert_eq!(
@@ -6864,14 +7382,24 @@ mod tests {
     #[test]
     fn posix_command_families_do_not_collide_with_windows_system_tools() {
         for tool in ["find", "head", "tail", "grep", "tree"] {
-            assert!(!windows_provider_has_compatible_semantics(tool), "{tool}");
+            assert!(
+                !windows_provider_has_compatible_semantics(tool, AdapterKind::Raw),
+                "{tool}"
+            );
+            assert!(
+                windows_provider_has_compatible_semantics(tool, AdapterKind::Rtk),
+                "{tool}"
+            );
         }
         for tool in ["find", "head", "tail", "tree"] {
             assert!(requires_raw_posix_provider(tool), "{tool}");
         }
         assert!(!requires_raw_posix_provider("grep"));
         for tool in ["git", "cargo", "python3"] {
-            assert!(windows_provider_has_compatible_semantics(tool), "{tool}");
+            assert!(
+                windows_provider_has_compatible_semantics(tool, AdapterKind::Raw),
+                "{tool}"
+            );
         }
     }
 

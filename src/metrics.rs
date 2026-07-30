@@ -5,6 +5,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, params};
 
+const LEDGER_SCHEMA_VERSION: i64 = 1;
+
+fn open_database(path: &Path, purpose: &str) -> Result<Connection, String> {
+    let connection =
+        Connection::open(path).map_err(|error| format!("unable to open {purpose}: {error}"))?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|error| format!("unable to configure {purpose} concurrency: {error}"))?;
+    Ok(connection)
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct TokenTotals {
     pub(crate) commands: i64,
@@ -62,19 +73,23 @@ impl XuvaMetrics {
             ledger_path,
             scratch_path,
         };
-        if !metrics.ledger_path.exists() {
-            metrics.initialize_ledger()?;
-        }
+        metrics.initialize_ledger()?;
         Ok(metrics)
     }
 
     fn initialize_ledger(&self) -> Result<(), String> {
-        let connection = Connection::open(&self.ledger_path)
-            .map_err(|error| format!("unable to open local metrics ledger: {error}"))?;
+        let connection = open_database(&self.ledger_path, "local metrics ledger")?;
+        let schema_version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|error| format!("unable to inspect local metrics schema: {error}"))?;
+        if schema_version > LEDGER_SCHEMA_VERSION {
+            return Err(format!(
+                "local metrics schema {schema_version} is newer than supported version {LEDGER_SCHEMA_VERSION}"
+            ));
+        }
         connection
             .execute_batch(
                 "PRAGMA journal_mode=WAL;
-                 PRAGMA busy_timeout=5000;
                  CREATE TABLE IF NOT EXISTS invocations (
                     id INTEGER PRIMARY KEY,
                     timestamp TEXT NOT NULL,
@@ -88,7 +103,8 @@ impl XuvaMetrics {
                     exit_code INTEGER NOT NULL,
                     measured INTEGER NOT NULL
                  );
-                 CREATE INDEX IF NOT EXISTS idx_invocations_timestamp ON invocations(timestamp);",
+                 CREATE INDEX IF NOT EXISTS idx_invocations_timestamp ON invocations(timestamp);
+                 PRAGMA user_version=1;",
             )
             .map_err(|error| format!("unable to initialize local metrics ledger: {error}"))
     }
@@ -106,9 +122,11 @@ impl XuvaMetrics {
     ) -> Result<TokenTotals, String> {
         let totals = read_upstream_totals(&self.scratch_path)?;
         let measured = i64::from(totals.commands > 0);
-        let connection = Connection::open(&self.ledger_path)
-            .map_err(|error| format!("unable to reopen local metrics ledger: {error}"))?;
-        connection
+        let mut connection = open_database(&self.ledger_path, "local metrics ledger")?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("unable to begin local metrics transaction: {error}"))?;
+        transaction
             .execute(
                 "INSERT INTO invocations (timestamp, route, command_family, commands, input_tokens, output_tokens, saved_tokens, elapsed_ms, exit_code, measured)
                  VALUES (datetime('now'), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -125,6 +143,9 @@ impl XuvaMetrics {
                 ],
             )
             .map_err(|error| format!("unable to record local metrics: {error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("unable to commit local metrics: {error}"))?;
         remove_scratch_database(&self.scratch_path);
         Ok(totals)
     }
@@ -136,8 +157,7 @@ impl XuvaMetrics {
             println!("XUVA Measured Token Accounting\n\nNo RTK-measured commands yet.");
             return Ok(());
         }
-        let connection = Connection::open(&ledger_path)
-            .map_err(|error| format!("unable to open local metrics ledger: {error}"))?;
+        let connection = open_database(&ledger_path, "local metrics ledger")?;
         let totals = connection
             .query_row(
                 "SELECT COUNT(*), COALESCE(SUM(commands), 0), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(saved_tokens), 0), COALESCE(SUM(measured), 0) FROM invocations",
@@ -189,8 +209,7 @@ impl XuvaMetrics {
 }
 
 fn initialize_tracker_template(path: &Path) -> Result<(), String> {
-    let connection = Connection::open(path)
-        .map_err(|error| format!("unable to create RTK metrics template: {error}"))?;
+    let connection = open_database(path, "RTK metrics template")?;
     connection
         .execute_batch(
             "CREATE TABLE IF NOT EXISTS commands (
@@ -224,8 +243,7 @@ fn read_upstream_totals(path: &Path) -> Result<TokenTotals, String> {
     if !path.exists() {
         return Ok(TokenTotals::default());
     }
-    let connection = Connection::open(path)
-        .map_err(|error| format!("unable to read temporary RTK metrics: {error}"))?;
+    let connection = open_database(path, "temporary RTK metrics")?;
     let exists: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'commands'",
@@ -274,5 +292,61 @@ fn cleanup_stale_scratch(directory: &Path) {
         if remove {
             let _ = fs::remove_file(entry.path());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_finish_uses_busy_timeout_and_preserves_every_record() {
+        let root = env::temp_dir().join(format!(
+            "xuva-metrics-concurrency-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("metrics fixture directory is created");
+        let ledger_path = root.join("metrics-v1.sqlite");
+        XuvaMetrics {
+            ledger_path: ledger_path.clone(),
+            scratch_path: root.join("initial-scratch.sqlite"),
+        }
+        .initialize_ledger()
+        .expect("ledger initializes");
+
+        let workers = (0..16)
+            .map(|index| {
+                let ledger_path = ledger_path.clone();
+                let scratch_path = root.join(format!("scratch-{index}.sqlite"));
+                std::thread::spawn(move || {
+                    XuvaMetrics {
+                        ledger_path,
+                        scratch_path,
+                    }
+                    .finish("raw", "fixture", Duration::from_millis(1), 0)
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker
+                .join()
+                .expect("metrics worker does not panic")
+                .expect("metrics record is preserved");
+        }
+        let connection = open_database(&ledger_path, "test ledger").expect("ledger opens");
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM invocations", [], |row| row.get(0))
+            .expect("metrics count reads");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("schema version reads");
+        assert_eq!(count, 16);
+        assert_eq!(version, LEDGER_SCHEMA_VERSION);
+        drop(connection);
+        fs::remove_dir_all(root).expect("metrics fixture is removed");
     }
 }

@@ -51,12 +51,16 @@ result. Later observations retain only the five most recent samples per route.
 
 ## Decision rule
 
-WAD measures end-to-end elapsed time, including dispatcher and local-accounting
-cost. Native RTK token saving comes from the same aggregate RTK tracker counters
-used by `xuva gain`:
+XUVA measures end-to-end elapsed time, including dispatcher and
+local-accounting cost. Each retained native sample stores its own elapsed time,
+input-token count, and saved-token count. The route decision derives token
+saving from the same bounded rolling sample window as latency:
 
 ```text
-native_savings_percent = native_saved_tokens / native_input_tokens * 100
+native_savings_percent =
+    sum(recent_native_samples.saved_tokens)
+    / sum(recent_native_samples.input_tokens)
+    * 100
 ```
 
 The selection is intentionally simple and auditable:
@@ -73,14 +77,14 @@ ground truth.
 
 ## Local state and privacy
 
-P16 supersedes the original v1 location with
-`%LOCALAPPDATA%\xuva\calibration-v2.json`, or the matching isolated
+The current schema supersedes the original v1/v2 locations with
+`%LOCALAPPDATA%\xuva\calibration-v3.json`, or the matching isolated
 `XUVA_STATE_DIR` root. It is atomically replaced and contains:
 
 - a deterministic 64-bit FNV-1a signature of project path plus arguments;
 - a safe command category;
-- bounded raw/native latency samples; and
-- aggregate native RTK input and saved-token counters.
+- bounded raw latency samples; and
+- bounded native samples containing latency plus input/saved-token counters.
 
 It does **not** contain the project path, argument text, command output,
 environment, or raw-output token counts. `xuva calibration show` exposes

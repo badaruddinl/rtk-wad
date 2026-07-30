@@ -6,6 +6,7 @@ param(
     [string]$Wsl2Distro,
     [string]$Wsl2Rtk,
     [string]$Cargo = "cargo.exe",
+    [string]$TestBinary,
     [string]$Root,
     [switch]$RequireBenchmarkMatrix,
     [switch]$AllowDirtyVerification
@@ -42,6 +43,11 @@ $cargoPath = if (Test-Path -LiteralPath $Cargo -PathType Leaf) {
     }
 }
 $source = Join-Path $rootPath "target\release\xuva.exe"
+$testBinaryPath = if ($TestBinary) {
+    (Resolve-Path -LiteralPath $TestBinary -ErrorAction Stop).Path
+} else {
+    $null
+}
 $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("xuva-release-gate-" + [guid]::NewGuid())
 
 function Invoke-Checked {
@@ -93,7 +99,24 @@ try {
     Invoke-Checked -Name "clippy" -Action { & $cargoPath clippy --locked --all-targets -- -D warnings }
     Invoke-Checked -Name "unit tests" -Action { & $cargoPath test --locked --bins -- --test-threads=1 }
     Invoke-Checked -Name "release build" -Action { & $cargoPath build --locked --release --bins }
-    Invoke-Checked -Name "WSL process contract" -Action { & $cargoPath test --locked --test process_contract -- --test-threads=1 }
+    Invoke-Checked -Name "WSL process contract" -Action {
+        $previousTestBinary = $env:XUVA_TEST_BINARY
+        try {
+            if ($testBinaryPath) {
+                $env:XUVA_TEST_BINARY = $testBinaryPath
+                Write-Output "process_contract_binary=$testBinaryPath"
+            } else {
+                Remove-Item Env:XUVA_TEST_BINARY -ErrorAction SilentlyContinue
+            }
+            & $cargoPath test --locked --test process_contract -- --test-threads=1
+        } finally {
+            if ($null -eq $previousTestBinary) {
+                Remove-Item Env:XUVA_TEST_BINARY -ErrorAction SilentlyContinue
+            } else {
+                $env:XUVA_TEST_BINARY = $previousTestBinary
+            }
+        }
+    }
     Invoke-Checked -Name "tokenizer bootstrap contract" -Action { & .\tests\tokenizer-bootstrap-contract.ps1 }
     Invoke-Checked -Name "tokenizer installation contract" -Action { & .\tests\tokenizer-install-contract.ps1 }
     Invoke-Checked -Name "package/recovery contract" -Action { & .\tests\packaging-contract.ps1 }

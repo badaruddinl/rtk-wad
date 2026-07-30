@@ -39,6 +39,7 @@ pub(crate) fn wsl_path_to_windows_path(path: &str) -> Option<String> {
     ))
 }
 
+#[cfg(test)]
 fn translate_path(value: &str, windows: bool) -> Option<String> {
     if windows {
         wsl_path_to_windows_path(value)
@@ -48,7 +49,10 @@ fn translate_path(value: &str, windows: bool) -> Option<String> {
 }
 
 fn translated_path_is_concrete(original: &str, translated: &str) -> bool {
-    Path::new(original).exists() || Path::new(translated).exists()
+    let absolute_contract = Path::new(original).is_absolute()
+        || original.starts_with('/')
+        || original.starts_with(r"\\");
+    absolute_contract && (Path::new(original).exists() || Path::new(translated).exists())
 }
 
 fn flag_takes_path(tool: &str, flag: &str) -> bool {
@@ -81,10 +85,19 @@ fn embedded_path_prefix(tool: &str, argument: &str) -> Option<&'static str> {
 /// Translates only argv positions whose command contract identifies them as
 /// paths. Generic arguments are left untouched unless an exact standalone path
 /// exists on either side of the mapping.
+#[cfg(test)]
 pub(crate) fn translate_arguments_for_provider(
     tool: &str,
     arguments: &[OsString],
     windows: bool,
+) -> Vec<OsString> {
+    translate_arguments_with(tool, arguments, |value| translate_path(value, windows))
+}
+
+pub(crate) fn translate_arguments_with(
+    tool: &str,
+    arguments: &[OsString],
+    mut translate: impl FnMut(&str) -> Option<String>,
 ) -> Vec<OsString> {
     let mut translated = Vec::with_capacity(arguments.len());
     let mut previous_path_flag = false;
@@ -105,7 +118,7 @@ pub(crate) fn translate_arguments_for_provider(
             previous_path_flag || git_pathspecs || (tool == "read" && !value.starts_with('-'));
         if contracted_path {
             translated.push(
-                translate_path(value, windows)
+                translate(value)
                     .map(OsString::from)
                     .unwrap_or_else(|| argument.clone()),
             );
@@ -115,7 +128,7 @@ pub(crate) fn translate_arguments_for_provider(
         if let Some(prefix) = embedded_path_prefix(tool, value) {
             let path = &value[prefix.len()..];
             translated.push(
-                translate_path(path, windows)
+                translate(path)
                     .map(|path| OsString::from(format!("{prefix}{path}")))
                     .unwrap_or_else(|| argument.clone()),
             );
@@ -124,13 +137,13 @@ pub(crate) fn translate_arguments_for_provider(
         }
         if let Some(path) = value.strip_prefix('@')
             && matches!(tool, "cargo" | "rustc" | "go")
-            && let Some(mapped) = translate_path(path, windows)
+            && let Some(mapped) = translate(path)
         {
             translated.push(OsString::from(format!("@{mapped}")));
             previous_path_flag = false;
             continue;
         }
-        if let Some(mapped) = translate_path(value, windows)
+        if let Some(mapped) = translate(value)
             && translated_path_is_concrete(value, &mapped)
         {
             translated.push(OsString::from(mapped));
@@ -166,6 +179,31 @@ mod tests {
             OsString::from("C:\\literal\\that\\does-not-exist")
         );
         assert_eq!(translated[2], OsString::from("@/mnt/c/work/args.rsp"));
+    }
+
+    #[test]
+    fn typed_argument_translation_uses_the_provider_mount_mapping() {
+        let translated = translate_arguments_with(
+            "cargo",
+            &[
+                OsString::from("--manifest-path=/windows/c/work/Cargo.toml"),
+                OsString::from("@/windows/c/work/args.rsp"),
+                OsString::from("/windows/c/not-a-typed-value"),
+            ],
+            |value| {
+                value
+                    .strip_prefix("/windows/c/")
+                    .map(|suffix| format!(r"C:\{}", suffix.replace('/', r"\")))
+            },
+        );
+        assert_eq!(
+            translated,
+            [
+                OsString::from(r"--manifest-path=C:\work\Cargo.toml"),
+                OsString::from(r"@C:\work\args.rsp"),
+                OsString::from("/windows/c/not-a-typed-value"),
+            ]
+        );
     }
 
     #[test]

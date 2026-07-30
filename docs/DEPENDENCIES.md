@@ -2,7 +2,7 @@
 
 ## Rust build contract
 
-The crate declares Rust `1.88.0` as its minimum supported Rust version and CI
+The crate declares Rust `1.95.0` as its minimum supported Rust version and CI
 compiles the locked dependency graph with that toolchain. Reproducible release
 and primary CI builds use the exact Rust `1.97.1` toolchain declared in
 `rust-toolchain.toml`, with `rustfmt` and `clippy`. Release dependency scanning
@@ -10,6 +10,12 @@ uses `cargo-audit 0.22.2`; SBOM generation uses `cargo-cyclonedx 0.5.9`.
 
 These versions are reviewed changes, not floating `stable` aliases. An MSRV
 change must update `Cargo.toml`, CI, tests, and this contract together.
+
+The increase from Rust `1.88.0` is required by the locked
+`libsqlite3-sys 0.38.1` build script used by `rusqlite 0.40.1`: it uses the
+standard `cfg_select!` macro stabilized in Rust `1.95.0`. CI compiles the exact
+locked graph at the declared MSRV so this compatibility boundary cannot drift
+silently.
 
 ## XUVA tokenizer
 

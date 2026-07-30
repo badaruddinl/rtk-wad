@@ -5,7 +5,7 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{
-    Mutex, MutexGuard,
+    Mutex, MutexGuard, OnceLock,
     atomic::{AtomicU64, Ordering},
 };
 use std::thread;
@@ -18,25 +18,81 @@ static XUVA_LAUNCHER_NONCE: AtomicU64 = AtomicU64::new(0);
 // external boundary keeps `cargo test` deterministic without changing the
 // application's own process-concurrency behavior.
 static PROCESS_CONTRACT_LOCK: Mutex<()> = Mutex::new(());
+static WSL_ROUTE_PROOF: OnceLock<()> = OnceLock::new();
 
 unsafe extern "system" {
     fn GenerateConsoleCtrlEvent(ctrl_type: u32, process_group_id: u32) -> i32;
 }
 
 fn launcher() -> &'static str {
-    env!("CARGO_BIN_EXE_xuva")
+    static LAUNCHER: OnceLock<String> = OnceLock::new();
+    LAUNCHER
+        .get_or_init(|| {
+            std::env::var("XUVA_TEST_BINARY")
+                .unwrap_or_else(|_| env!("CARGO_BIN_EXE_xuva").to_owned())
+        })
+        .as_str()
 }
 
 fn command(program: &str) -> Command {
     let mut command = Command::new(launcher());
     command.env("XUVA_WSL_RTK_PATH", program);
-    command.env("XUVA_ROUTE", "wsl2");
     if let Ok(distro) = std::env::var("XUVA_WSL1_TEST_DISTRO") {
+        assert_wsl_version(&distro, 1);
         command
+            .env("XUVA_ROUTE", "wsl1")
             .env("XUVA_WSL_BACKEND", "wsl1")
+            .env("XUVA_WSL_DISTRO", distro);
+    } else {
+        let distro = std::env::var("XUVA_WSL2_TEST_DISTRO").unwrap_or_else(|_| "Ubuntu".to_owned());
+        assert_wsl_version(&distro, 2);
+        command
+            .env("XUVA_ROUTE", "wsl2")
+            .env("XUVA_WSL_BACKEND", "wsl2")
             .env("XUVA_WSL_DISTRO", distro);
     }
     command
+}
+
+fn decode_wsl_list(bytes: &[u8]) -> String {
+    if bytes.chunks_exact(2).any(|pair| pair[1] == 0) {
+        let units = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
+fn assert_wsl_version(distro: &str, expected: u8) {
+    WSL_ROUTE_PROOF.get_or_init(|| {
+        let output = Command::new("wsl.exe")
+            .args(["--list", "--verbose"])
+            .output()
+            .expect("wsl.exe --list --verbose starts");
+        assert!(
+            output.status.success(),
+            "unable to prove the WSL test distro version"
+        );
+        let rendered = decode_wsl_list(&output.stdout).replace('\0', "");
+        let actual = rendered.lines().find_map(|line| {
+            let fields = line
+                .trim()
+                .trim_start_matches('*')
+                .split_whitespace()
+                .collect::<Vec<_>>();
+            (fields.len() >= 3 && fields[0] == distro)
+                .then(|| fields.last().and_then(|value| value.parse::<u8>().ok()))
+                .flatten()
+        });
+        assert_eq!(
+            actual,
+            Some(expected),
+            "configured test distro `{distro}` is not WSL {expected}; inventory:\n{rendered}"
+        );
+    });
 }
 
 fn xuva_launcher() -> (PathBuf, PathBuf) {
@@ -767,12 +823,13 @@ fn native_wsl_origin_runs_explicit_windows_provider_once_with_isolated_environme
         .output()
         .expect("Windows Node lookup starts");
     assert!(node.status.success());
-    let node = String::from_utf8_lossy(&node.stdout)
+    let node_windows_path = String::from_utf8_lossy(&node.stdout)
         .lines()
-        .next()
+        .map(str::trim)
+        .find(|line| line.to_ascii_lowercase().ends_with("node.exe"))
         .expect("Windows Node is installed")
-        .trim()
         .to_owned();
+    let node_wsl_path = map_path(&node_windows_path);
     let script = concat!(
         "const fs=require('fs');",
         "fs.appendFileSync('invocations.txt','1\\n');",
@@ -787,12 +844,11 @@ fn native_wsl_origin_runs_explicit_windows_provider_once_with_isolated_environme
             "--exec",
             "sh",
             "-c",
-            r#"cd "$3"; export GITHUB_TOKEN=must-not-cross AWS_SECRET_ACCESS_KEY=must-not-cross XUVA_WINDOWS_EXE="$1" XUVA_OUTPUT_ADAPTER=raw; exec sh "$2" "$4" -e "$5""#,
+            r#"cd "$3"; export GITHUB_TOKEN=must-not-cross AWS_SECRET_ACCESS_KEY=must-not-cross XUVA_WINDOWS_EXE="$1"; exec sh "$2" --route raw node.exe -e "$4""#,
             "xuva-native-wsl-origin",
             &launcher_path,
             &shim_path,
             &project,
-            &node,
             script,
         ])
         .output()
@@ -814,6 +870,36 @@ fn native_wsl_origin_runs_explicit_windows_provider_once_with_isolated_environme
     assert!(cwd.starts_with(r"\\wsl"));
     assert!(cwd.ends_with(&project.replace('/', "\\").to_ascii_lowercase()));
 
+    let explicit_script = concat!(
+        "const fs=require('fs');",
+        "fs.appendFileSync('invocations.txt','2\\n');",
+        "process.stdout.write(process.env.GITHUB_TOKEN||'isolated');"
+    );
+    let explicit = Command::new("wsl.exe")
+        .args([
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "sh",
+            "-c",
+            r#"cd "$3"; export GITHUB_TOKEN=must-not-cross XUVA_WINDOWS_EXE="$1"; exec sh "$2" --route raw "$4" -e "$5""#,
+            "xuva-explicit-mounted-executable",
+            &launcher_path,
+            &shim_path,
+            &project,
+            &node_wsl_path,
+            explicit_script,
+        ])
+        .output()
+        .expect("mounted /mnt/.../node.exe dispatch starts");
+    assert!(
+        explicit.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&explicit.stdout),
+        String::from_utf8_lossy(&explicit.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&explicit.stdout), "isolated");
+
     let count = Command::new("wsl.exe")
         .args([
             "-d",
@@ -825,7 +911,7 @@ fn native_wsl_origin_runs_explicit_windows_provider_once_with_isolated_environme
         .output()
         .expect("invocation count is readable");
     assert!(count.status.success());
-    assert_eq!(String::from_utf8_lossy(&count.stdout), "1\n");
+    assert_eq!(String::from_utf8_lossy(&count.stdout), "1\n2\n");
 
     let cleanup = Command::new("wsl.exe")
         .args(["-d", "Ubuntu", "--exec", "rm", "-rf", "--", &project])
@@ -1234,6 +1320,12 @@ fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
     let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     let fixture = format!("/tmp/xuva-p7-go-contract-{}-{nonce}", std::process::id());
     assert!(fixture.starts_with("/tmp/xuva-p7-go-contract-"));
+    let identity = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "id", "-un"])
+        .output()
+        .expect("Ubuntu user lookup starts");
+    assert!(identity.status.success());
+    let wsl_user = String::from_utf8_lossy(&identity.stdout).trim().to_owned();
     let setup = Command::new("wsl.exe")
         .args([
             "-d",
@@ -1241,7 +1333,7 @@ fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
             "--exec",
             "sh",
             "-c",
-            r###"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'printf "cwd:%s\n" "$PWD"' 'printf "args:%s|%s\n" "$1" "$2"' 'exit 42' > "$1/go"; chmod 755 "$1/go""###,
+            r###"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'printf "user:%s\n" "$(id -un)"' 'printf "cwd:%s\n" "$PWD"' 'printf "args:%s|%s\n" "$1" "$2"' 'exit 42' > "$1/go"; chmod 755 "$1/go""###,
             "xuva-p7-go-contract",
             &fixture,
         ])
@@ -1270,6 +1362,7 @@ fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
             .env("PATH", &system32)
             .env("XUVA_STATE_DIR", &state)
             .env("XUVA_WSL_DISTRO", "Ubuntu")
+            .env("XUVA_WSL_USER", &wsl_user)
             .env("XUVA_WSL_EXTRA_PATH", &fixture)
             .env("XUVA_OUTPUT_ADAPTER", "raw")
             .env_remove("XUVA_NATIVE_RTK_PATH")
@@ -1347,7 +1440,9 @@ fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
     );
     let doctor_stdout = String::from_utf8_lossy(&doctor.stdout);
     assert!(doctor_stdout.contains("tool=go"));
-    assert!(doctor_stdout.contains("inspected_distro=Ubuntu;wsl_version=2"));
+    assert!(doctor_stdout.contains(&format!(
+        "inspected_distro=Ubuntu;user={wsl_user};wsl_version=2"
+    )));
     assert!(doctor_stdout.contains(&format!("go_path={fixture}/go")));
     assert!(
         doctor_stdout.contains("candidate_0=Wsl2;adapters=[Raw, Rtk];distro=Ubuntu;usable=true")
@@ -1362,6 +1457,7 @@ fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
     );
     assert_eq!(execution.status.code(), Some(42));
     let execution_stdout = String::from_utf8_lossy(&execution.stdout);
+    assert!(execution_stdout.contains(&format!("user:{wsl_user}")));
     assert!(
         execution_stdout.contains(&format!("cwd:{expected_cwd}")),
         "expected CWD {expected_cwd}; stdout: {execution_stdout}; stderr: {}",
@@ -1371,7 +1467,7 @@ fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
 }
 
 #[test]
-fn xuva_profile_selects_one_route_and_uses_a_local_gain_ledger() {
+fn xuva_raw_fast_path_avoids_scratch_and_gain_ledger_io() {
     let _guard = process_contract_guard();
     let (launcher, directory) = xuva_launcher();
     let local_app_data = directory.join("local-app-data");
@@ -1398,12 +1494,9 @@ fn xuva_profile_selects_one_route_and_uses_a_local_gain_ledger() {
     assert!(raw.status.success());
     assert!(String::from_utf8_lossy(&raw.stdout).starts_with("git version "));
     let scratch = local_app_data.join("xuva").join("scratch");
-    let scratch_files = std::fs::read_dir(&scratch)
-        .expect("XUVA scratch directory exists")
-        .count();
-    assert_eq!(
-        scratch_files, 0,
-        "raw routes do not create RTK tracker scratch databases"
+    assert!(
+        !scratch.exists(),
+        "the raw fast path must not create RTK tracker scratch state"
     );
 
     let gain = Command::new(&launcher)
@@ -1414,7 +1507,7 @@ fn xuva_profile_selects_one_route_and_uses_a_local_gain_ledger() {
     assert!(gain.status.success());
     let gain_stdout = String::from_utf8_lossy(&gain.stdout);
     assert!(gain_stdout.contains("XUVA Measured Token Accounting"));
-    assert!(gain_stdout.contains("Invocations: 1"));
+    assert!(gain_stdout.contains("No RTK-measured commands yet."));
 
     std::fs::remove_dir_all(directory).expect("temporary XUVA directory is removed");
 }
@@ -1454,10 +1547,10 @@ fn xuva_calibrates_safe_commands_across_natural_invocations() {
     let fifth = run();
     assert!(fifth.status.success());
 
-    let state_path = state.join("calibration-v2.json");
+    let state_path = state.join("calibration-v3.json");
     let recorded = std::fs::read_to_string(state_path).expect("calibration state is written");
     assert!(recorded.contains("\"raw_samples_ms\": ["));
-    assert!(recorded.contains("\"native_samples_ms\": ["));
+    assert!(recorded.contains("\"native_samples\": ["));
     assert!(!recorded.contains("git status"));
 
     let inspection = Command::new(&launcher)
@@ -1763,8 +1856,9 @@ fn xuva_provider_exec_runs_each_available_verified_provider_without_replay() {
         available_provider_candidate_index(&resolution, "windows", None).is_some(),
         "a missing WSL/RTK fixture must leave the verified Windows raw provider usable"
     );
-    if let Some(wsl_rtk_index) =
-        available_provider_candidate_index(&resolution, "wsl2", Some("Ubuntu"))
+    if std::env::var_os("XUVA_WSL1_TEST_DISTRO").is_none()
+        && let Some(wsl_rtk_index) =
+            available_provider_candidate_index(&resolution, "wsl2", Some("Ubuntu"))
     {
         let wsl_rtk = Command::new(&launcher)
             .env("XUVA_STATE_DIR", &state)
@@ -1784,8 +1878,9 @@ fn xuva_provider_exec_runs_each_available_verified_provider_without_replay() {
         assert!(String::from_utf8_lossy(&wsl_rtk.stdout).starts_with("git version "));
     }
 
-    if let Some(wsl_raw_index) =
-        available_provider_candidate_index(&resolution, "wsl1", Some("Ubuntu-RTK-WSL1"))
+    if std::env::var_os("XUVA_WSL1_TEST_DISTRO").is_some()
+        && let Some(wsl_raw_index) =
+            available_provider_candidate_index(&resolution, "wsl1", Some("Ubuntu-RTK-WSL1"))
     {
         let wsl_raw = Command::new(&launcher)
             .env("XUVA_STATE_DIR", &state)
@@ -1801,7 +1896,12 @@ fn xuva_provider_exec_runs_each_available_verified_provider_without_replay() {
             ])
             .output()
             .expect("WSL raw provider starts");
-        assert!(wsl_raw.status.success());
+        assert!(
+            wsl_raw.status.success(),
+            "stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&wsl_raw.stdout),
+            String::from_utf8_lossy(&wsl_raw.stderr)
+        );
         assert!(String::from_utf8_lossy(&wsl_raw.stdout).starts_with("git version "));
 
         let windows_project = env!("CARGO_MANIFEST_DIR");
@@ -2083,6 +2183,7 @@ fn provisioned_wsl1_bridge_preserves_the_process_contract_when_requested() {
     };
     let literal = "wsl1 space/漢字;and&dollar$HOME\\tail";
     let output = Command::new(launcher())
+        .env("XUVA_ROUTE", "wsl1")
         .env("XUVA_WSL_BACKEND", "wsl1")
         .env("XUVA_WSL_DISTRO", distro)
         .env("XUVA_WSL_RTK_PATH", "/usr/bin/printf")
@@ -2099,15 +2200,47 @@ fn provisioned_wsl1_bridge_preserves_the_process_contract_when_requested() {
 }
 
 #[test]
+fn wsl1_route_rejects_a_non_dedicated_or_wrong_version_override() {
+    let _guard = process_contract_guard();
+    let output = Command::new(launcher())
+        .env("XUVA_ROUTE", "wsl1")
+        .env("XUVA_WSL_BACKEND", "wsl1")
+        .env("XUVA_WSL_DISTRO", "Ubuntu")
+        .env("XUVA_WSL_RTK_PATH", "/usr/bin/printf")
+        .arg("must-not-run")
+        .output()
+        .expect("unsafe WSL1 override validation starts");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("WSL1 route requires a version-1 distro")
+    );
+    let still_available = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "/usr/bin/env", "true"])
+        .status()
+        .expect("ordinary Ubuntu remains available");
+    assert!(
+        still_available.success(),
+        "unsafe WSL1 override validation must not terminate Ubuntu"
+    );
+}
+
+#[test]
 fn ctrl_break_releases_the_global_lock_for_waiting_children() {
     let _guard = process_contract_guard();
     let ready_file = std::env::temp_dir().join(format!("xuva-ready-{}", std::process::id()));
+    let first_stderr_path =
+        std::env::temp_dir().join(format!("xuva-first-stderr-{}", std::process::id()));
     let _ = std::fs::remove_file(&ready_file);
+    let _ = std::fs::remove_file(&first_stderr_path);
+    let first_stderr_file =
+        std::fs::File::create(&first_stderr_path).expect("first stderr file is created");
     let mut first = command("/bin/sh")
         .args(["-c", "sleep 30"])
+        .env("XUVA_WSL_TRACE", "1")
+        .env("XUVA_METRICS", "off")
         .env("XUVA_WSL_TEST_READY_FILE", &ready_file)
         .creation_flags(CREATE_NEW_PROCESS_GROUP)
-        .stderr(Stdio::piped())
+        .stderr(Stdio::from(first_stderr_file))
         .spawn()
         .expect("first launcher starts");
     let ready_deadline = Instant::now() + Duration::from_secs(45);
@@ -2120,18 +2253,15 @@ fn ctrl_break_releases_the_global_lock_for_waiting_children() {
     }
     thread::sleep(Duration::from_secs(3));
     if let Some(status) = first.try_wait().expect("first status is available") {
-        let mut stderr = String::new();
-        first
-            .stderr
-            .take()
-            .expect("first stderr is piped")
-            .read_to_string(&mut stderr)
-            .expect("first stderr reads");
+        let stderr = std::fs::read_to_string(&first_stderr_path)
+            .expect("first stderr is readable after exit");
         panic!("first launcher exited before cancellation: status={status}; stderr={stderr}");
     }
 
     let mut second = command("/usr/bin/printf")
         .args(["released"])
+        .env("XUVA_WSL_TRACE", "1")
+        .env("XUVA_METRICS", "off")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -2145,7 +2275,11 @@ fn ctrl_break_releases_the_global_lock_for_waiting_children() {
             .expect("stderr is piped")
             .read_to_string(&mut stderr)
             .expect("stderr reads");
-        panic!("second launcher did not wait for the lock: status={status}; stderr={stderr}");
+        let first_stderr =
+            std::fs::read_to_string(&first_stderr_path).unwrap_or_else(|_| "<unreadable>".into());
+        panic!(
+            "second launcher did not wait for the lock: status={status}; stderr={stderr}; first_stderr={first_stderr}"
+        );
     }
 
     let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, first.id()) };
@@ -2155,13 +2289,8 @@ fn ctrl_break_releases_the_global_lock_for_waiting_children() {
     );
     let cancellation_started = Instant::now();
     let first_status = first.wait().expect("interrupted launcher exits");
-    let mut first_stderr = String::new();
-    first
-        .stderr
-        .take()
-        .expect("first stderr is piped")
-        .read_to_string(&mut first_stderr)
-        .expect("first stderr reads");
+    let first_stderr =
+        std::fs::read_to_string(&first_stderr_path).expect("first stderr reads after exit");
     assert!(
         cancellation_started.elapsed() < Duration::from_secs(5),
         "interrupted launcher exceeded the cancellation deadline: stderr={first_stderr}"
@@ -2205,6 +2334,80 @@ fn ctrl_break_releases_the_global_lock_for_waiting_children() {
         thread::sleep(Duration::from_millis(100));
     }
     let _ = std::fs::remove_file(ready_file);
+    let _ = std::fs::remove_file(first_stderr_path);
+}
+
+#[test]
+fn wsl2_cancellation_escalates_past_ignored_sigint_and_leaves_no_worker() {
+    if std::env::var_os("XUVA_WSL1_TEST_DISTRO").is_some() {
+        return;
+    }
+    let _guard = process_contract_guard();
+    let distro = std::env::var("XUVA_WSL2_TEST_DISTRO").unwrap_or_else(|_| "Ubuntu".to_owned());
+    let directory = unique_temp_directory("wsl2-signal-escalation");
+    std::fs::create_dir_all(&directory).expect("signal fixture directory is created");
+    let ready_file = directory.join("ready");
+    let pid_file = directory.join("worker.pid");
+    let mapped_pid = Command::new("wsl.exe")
+        .args(["-d", &distro, "--exec", "wslpath", "-a"])
+        .arg(&pid_file)
+        .output()
+        .expect("PID path mapping starts");
+    assert!(mapped_pid.status.success());
+    let mapped_pid = String::from_utf8_lossy(&mapped_pid.stdout)
+        .trim()
+        .to_owned();
+    let mut child = command("/bin/sh")
+        .args([
+            "-c",
+            "trap '' INT; printf '%s' \"$$\" > \"$1\"; while :; do sleep 1; done",
+            "xuva-ignore-int",
+            &mapped_pid,
+        ])
+        .env("XUVA_WSL_TEST_READY_FILE", &ready_file)
+        .creation_flags(CREATE_NEW_PROCESS_GROUP)
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("SIGINT-resistant launcher starts");
+    let ready_deadline = Instant::now() + Duration::from_secs(30);
+    while !ready_file.exists() || !pid_file.exists() {
+        assert!(
+            Instant::now() < ready_deadline,
+            "SIGINT-resistant worker did not become ready"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    let worker_pid = std::fs::read_to_string(&pid_file)
+        .expect("worker PID is readable")
+        .trim()
+        .to_owned();
+    let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
+    assert_ne!(sent, 0, "failed to send CTRL_BREAK_EVENT");
+    let started = Instant::now();
+    let status = child.wait().expect("escalated cancellation completes");
+    assert!(!status.success());
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "SIGINT escalation exceeded its contract"
+    );
+    let probe = Command::new("wsl.exe")
+        .args([
+            "-d",
+            &distro,
+            "--exec",
+            "/bin/sh",
+            "-c",
+            "! /bin/kill -0 \"$1\" 2>/dev/null",
+            "xuva-worker-probe",
+            &worker_pid,
+        ])
+        .status()
+        .expect("worker liveness probe starts");
+    assert!(
+        probe.success(),
+        "Linux worker survived cancellation escalation"
+    );
+    std::fs::remove_dir_all(directory).expect("signal fixture directory is removed");
 }
 
 #[test]

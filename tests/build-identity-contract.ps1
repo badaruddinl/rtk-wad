@@ -11,6 +11,7 @@ $root = (Resolve-Path -LiteralPath $RepositoryRoot).Path
 $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("xuva-build-identity-" + [guid]::NewGuid())
 $contractTarget = Join-Path $temporaryRoot "target"
 $fakeCommit = "0123456789abcdef0123456789abcdef01234567"
+$previousCommitOverride = $env:XUVA_BUILD_COMMIT_OVERRIDE
 try {
     New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
     Push-Location $root
@@ -20,9 +21,12 @@ try {
     $invalidOutput = @(& $Cargo check --locked --bin xuva --target-dir $contractTarget 2>&1)
     $invalidExit = $LASTEXITCODE
     $ErrorActionPreference = "Stop"
-    if ($invalidExit -eq 0 -or
-        -not (($invalidOutput | Out-String).Contains("must be a complete hexadecimal Git object ID"))) {
-        throw "Malformed release commit override was not rejected by build.rs."
+    $renderedInvalidOutput = $invalidOutput | Out-String
+    if ($invalidExit -eq 0) {
+        throw "Malformed release commit override unexpectedly compiled successfully."
+    }
+    if (-not $renderedInvalidOutput.Contains("must be a complete hexadecimal Git object ID")) {
+        throw "Malformed release commit override failed without the expected build.rs validation message.`n$renderedInvalidOutput"
     }
 
     $env:XUVA_BUILD_COMMIT_OVERRIDE = $fakeCommit
@@ -37,7 +41,11 @@ try {
     }
     Write-Output "Build identity contract passed."
 } finally {
-    Remove-Item Env:XUVA_BUILD_COMMIT_OVERRIDE -ErrorAction SilentlyContinue
+    if ($null -eq $previousCommitOverride) {
+        Remove-Item Env:XUVA_BUILD_COMMIT_OVERRIDE -ErrorAction SilentlyContinue
+    } else {
+        $env:XUVA_BUILD_COMMIT_OVERRIDE = $previousCommitOverride
+    }
     Pop-Location -ErrorAction SilentlyContinue
     if ((Test-Path -LiteralPath $temporaryRoot) -and
         $temporaryRoot.StartsWith(
