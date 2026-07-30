@@ -8,10 +8,11 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::PRODUCT_COMMAND;
+use crate::cli_exit::CliExit as ExitCode;
 
 const HELPER_SCRIPT: &str = r#"
 param(

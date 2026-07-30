@@ -1,8 +1,9 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
-use std::process::{Command, ExitCode};
+use std::process::Command;
 use std::time::Duration;
 
+use crate::cli_exit::CliExit as ExitCode;
 use crate::process::run_bounded;
 use crate::{PRODUCT_COMMAND, PRODUCT_NAME};
 
@@ -107,7 +108,7 @@ fn hook(agent: &str, native_rtk_path: &str) -> ExitCode {
     }
     if !output.status.success() {
         let _ = std::io::stdout().write_all(&output.stdout);
-        return ExitCode::from(output.status.code().unwrap_or(1) as u8);
+        return ExitCode::from_status(output.status);
     }
     if output.stdout.iter().all(u8::is_ascii_whitespace) {
         return ExitCode::SUCCESS;

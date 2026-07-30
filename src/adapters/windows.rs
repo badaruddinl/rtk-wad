@@ -203,6 +203,27 @@ mod tests {
     }
 
     #[test]
+    fn raw_process_status_retains_complete_windows_exit_code() {
+        let system_root = std::env::var_os("SYSTEMROOT").expect("Windows has SYSTEMROOT");
+        let cmd = std::path::PathBuf::from(system_root)
+            .join("System32")
+            .join("cmd.exe")
+            .into_os_string();
+        let status = run_at(
+            &cmd,
+            &[
+                OsString::from("/d"),
+                OsString::from("/c"),
+                OsString::from("exit"),
+                OsString::from("3010"),
+            ],
+            None,
+        )
+        .expect("raw Windows fixture starts");
+        assert_eq!(status.code(), Some(3010));
+    }
+
+    #[test]
     fn inherited_process_policy_remains_available_for_same_host_tools() {
         let request = CommandSpec {
             executable: OsString::from("cmd.exe"),

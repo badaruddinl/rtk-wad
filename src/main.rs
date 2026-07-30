@@ -3,7 +3,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitCode, ExitStatus};
+use std::process::{Child, Command, ExitStatus};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 mod adapters;
 mod agent;
 mod bridge;
+mod cli_exit;
 mod config;
 mod dispatcher;
 mod lifecycle;
@@ -30,6 +31,7 @@ use adapters::windows::apply_command_spec;
 #[cfg(test)]
 use bridge::decode_wsl_bridge_fields;
 use bridge::wsl_bridge_request;
+use cli_exit::CliExit as ExitCode;
 #[cfg(test)]
 use config::ExecutableProfile;
 use config::{
@@ -71,38 +73,72 @@ const ROUTE_POLICY_SCHEMA_VERSION: u32 = 2;
 const CALIBRATION_SCHEMA_VERSION: u32 = 3;
 const CALIBRATION_MAX_SAMPLES: usize = 5;
 const CANCEL_SCRIPT: &str = r#"
-if [ -r "$1" ]; then
-    worker=$(cat "$1")
-    signal=$2
-    case "$worker" in
-        *[!0-9]*|'') exit 1 ;;
-    esac
-    case "$signal" in
-        INT|TERM|KILL) ;;
-        *) exit 2 ;;
-    esac
-    /bin/kill "-$signal" -- "-$worker"
+nonce=$1
+signal=$2
+case "$nonce" in
+    *[!0-9a-f]*|'') exit 2 ;;
+esac
+[ "${#nonce}" -eq 32 ] || exit 2
+case "$signal" in
+    INT|TERM|KILL) ;;
+    *) exit 2 ;;
+esac
+uid=$(/usr/bin/id -u) || exit 3
+runtime_root="/tmp/xuva-runtime-$uid"
+if [ -L "$runtime_root" ] || [ ! -d "$runtime_root" ] || [ ! -O "$runtime_root" ]; then
+    exit 3
 fi
+[ "$(/usr/bin/stat -Lc '%u:%a' -- "$runtime_root" 2>/dev/null)" = "$uid:700" ] || exit 3
+cancel_token="$runtime_root/cancel-$nonce.pid"
+if [ -L "$cancel_token" ] || [ ! -f "$cancel_token" ] || [ ! -O "$cancel_token" ]; then
+    exit 4
+fi
+[ "$(/usr/bin/stat -Lc '%u:%a' -- "$cancel_token" 2>/dev/null)" = "$uid:600" ] || exit 4
+worker=$(/bin/cat -- "$cancel_token") || exit 4
+case "$worker" in
+    *[!0-9]*|'') exit 4 ;;
+esac
+/bin/kill "-$signal" -- "-$worker"
 "#;
 const CANCEL_PROBE_SCRIPT: &str = r#"
-if [ ! -r "$1" ]; then
-    exit 1
-fi
-worker=$(cat "$1")
-case "$worker" in
-    *[!0-9]*|'') exit 2 ;;
+nonce=$1
+case "$nonce" in
+    *[!0-9a-f]*|'') exit 2 ;;
 esac
-/bin/kill -0 -- "-$worker" 2>/dev/null
+[ "${#nonce}" -eq 32 ] || exit 2
+uid=$(/usr/bin/id -u) || exit 3
+runtime_root="/tmp/xuva-runtime-$uid"
+if [ -L "$runtime_root" ] || [ ! -d "$runtime_root" ] || [ ! -O "$runtime_root" ]; then
+    exit 3
+fi
+[ "$(/usr/bin/stat -Lc '%u:%a' -- "$runtime_root" 2>/dev/null)" = "$uid:700" ] || exit 3
+cancel_token="$runtime_root/cancel-$nonce.pid"
+if [ -L "$cancel_token" ] || [ ! -f "$cancel_token" ] || [ ! -O "$cancel_token" ]; then
+    exit 4
+fi
+[ "$(/usr/bin/stat -Lc '%u:%a' -- "$cancel_token" 2>/dev/null)" = "$uid:600" ] || exit 4
+worker=$(/bin/cat -- "$cancel_token") || exit 4
+case "$worker" in
+    *[!0-9]*|'') exit 4 ;;
+esac
+if /bin/kill -0 -- "-$worker" 2>/dev/null; then
+    exit 0
+fi
+/bin/rm -f -- "$cancel_token"
+exit 1
 "#;
 const LAUNCH_SCRIPT: &str = r#"
 lock_wait=$1
 lock_path=$2
 rtk_path=$3
-cancel_token=$4
+cancel_nonce=$4
 metrics_db_path=$5
 extra_path=$6
 ready_file=$7
-shift 7
+attestation_file=$8
+permit_file=$9
+launch_delay=${10}
+shift 10
 
 if [ -z "$rtk_path" ]; then
     rtk_path="$HOME/.local/bin/rtk"
@@ -114,10 +150,66 @@ if [ -n "$extra_path" ]; then
 else
     path_prefix=""
 fi
-cleanup() { rm -f "$cancel_token"; }
+case "$cancel_nonce" in
+    *[!0-9a-f]*|'') printf 'xuva: invalid cancellation nonce\n' >&2; exit 1 ;;
+esac
+if [ "${#cancel_nonce}" -ne 32 ]; then
+    printf 'xuva: invalid cancellation nonce length\n' >&2
+    exit 1
+fi
+case "$launch_delay" in
+    0|1|2|3|4|5) ;;
+    *) printf 'xuva: invalid test launch delay\n' >&2; exit 1 ;;
+esac
+if [ "$launch_delay" -ne 0 ]; then
+    /bin/sleep "$launch_delay"
+fi
+uid=$(/usr/bin/id -u) || exit 1
+runtime_root="/tmp/xuva-runtime-$uid"
+umask 077
+if [ -L "$runtime_root" ] || { [ -e "$runtime_root" ] && { [ ! -d "$runtime_root" ] || [ ! -O "$runtime_root" ]; }; }; then
+    printf 'xuva: unsafe per-user runtime directory %s\n' "$runtime_root" >&2
+    exit 1
+fi
+/bin/mkdir -m 0700 -p "$runtime_root" || exit 1
+/bin/chmod 0700 "$runtime_root" || exit 1
+if [ "$(/usr/bin/stat -Lc '%u:%a' -- "$runtime_root" 2>/dev/null)" != "$uid:700" ]; then
+    printf 'xuva: invalid per-user runtime directory ownership or mode\n' >&2
+    exit 1
+fi
+/usr/bin/find "$runtime_root" -maxdepth 1 -type f -name 'cancel-*.pid' -mmin +60 -delete 2>/dev/null || true
+cancel_token="$runtime_root/cancel-$cancel_nonce.pid"
+cleanup() { /bin/rm -f -- "$cancel_token"; }
 trap "cleanup; exit 130" INT TERM
 trap cleanup EXIT
-printf '%s' "$$" > "$cancel_token"
+if [ -e "$cancel_token" ] || [ -L "$cancel_token" ] ||
+   ! (set -C; printf '%s' "$$" > "$cancel_token"); then
+    printf 'xuva: unable to create a private cancellation token\n' >&2
+    exit 1
+fi
+/bin/chmod 0600 "$cancel_token" || { /bin/rm -f -- "$cancel_token"; exit 1; }
+attestation_staging="${attestation_file}.staging"
+if [ -z "$attestation_file" ] || [ -z "$permit_file" ] ||
+   ! printf '%s' "$cancel_nonce" > "$attestation_staging" ||
+   ! /bin/mv -f -- "$attestation_staging" "$attestation_file"; then
+    /bin/rm -f -- "$attestation_staging"
+    printf 'xuva: unable to attest the private cancellation token\n' >&2
+    exit 1
+fi
+remaining=500
+while [ ! -r "$permit_file" ]; do
+    if [ "$remaining" -le 0 ]; then
+        printf 'xuva: parent did not authorize the cancellation-ready launch\n' >&2
+        exit 1
+    fi
+    remaining=$((remaining - 1))
+    /bin/sleep 0.02
+done
+permit_nonce=$(/bin/cat -- "$permit_file") || exit 1
+if [ "$permit_nonce" != "$cancel_nonce" ]; then
+    printf 'xuva: launch permit does not match the cancellation token\n' >&2
+    exit 1
+fi
 if [ "$lock_path" = "/tmp/xuva.lock" ]; then
     lock_root="/tmp/xuva-lock-$(/usr/bin/id -u)"
     if [ -L "$lock_root" ] || { [ -e "$lock_root" ] && { [ ! -d "$lock_root" ] || [ ! -O "$lock_root" ]; }; }; then
@@ -156,10 +248,19 @@ metrics_db_path=$2
 extra_path=$3
 ready_file=$4
 attestation_file=$5
-shift 5
+permit_file=$6
+attestation_delay=$7
+shift 7
 
 if [ -z "$rtk_path" ]; then
     rtk_path="$HOME/.local/bin/rtk"
+fi
+case "$attestation_delay" in
+    0|1|2|3|4|5) ;;
+    *) printf 'xuva: invalid test attestation delay\n' >&2; exit 126 ;;
+esac
+if [ "$attestation_delay" -ne 0 ]; then
+    /bin/sleep "$attestation_delay"
 fi
 marker=/etc/xuva-dedicated-wsl1
 if [ ! -r "$marker" ] ||
@@ -177,9 +278,26 @@ esac
 case "$installation_id" in
     *[!0-9A-Fa-f-]*) printf 'xuva: WSL1 marker has an invalid installation ID\n' >&2; exit 126 ;;
 esac
+attestation_staging="${attestation_file}.staging"
 if [ -z "$attestation_file" ] ||
-   ! printf '%s' "$installation_id" > "$attestation_file"; then
+   ! printf '%s' "$installation_id" > "$attestation_staging" ||
+   ! /bin/mv -f -- "$attestation_staging" "$attestation_file"; then
+    /bin/rm -f -- "$attestation_staging"
     printf 'xuva: unable to attest the dedicated WSL1 runtime\n' >&2
+    exit 126
+fi
+remaining=500
+while [ ! -r "$permit_file" ]; do
+    if [ "$remaining" -le 0 ]; then
+        printf 'xuva: parent did not authorize the attested WSL1 launch\n' >&2
+        exit 126
+    fi
+    remaining=$((remaining - 1))
+    /bin/sleep 0.02
+done
+permit_id=$(/bin/cat -- "$permit_file") || exit 126
+if [ "$permit_id" != "$installation_id" ]; then
+    printf 'xuva: WSL1 launch permit does not match the dedicated runtime\n' >&2
     exit 126
 fi
 
@@ -202,11 +320,14 @@ exec /usr/bin/env -i \
 const PLAN_LAUNCH_SCRIPT: &str = r#"
 lock_wait=$1
 lock_path=$2
-cancel_token=$3
+cancel_nonce=$3
 metrics_db_path=$4
 extra_path=$5
 ready_file=$6
-shift 6
+attestation_file=$7
+permit_file=$8
+launch_delay=$9
+shift 9
 
 user=${USER:-}
 if [ -n "$extra_path" ]; then
@@ -214,10 +335,66 @@ if [ -n "$extra_path" ]; then
 else
     path_prefix=""
 fi
-cleanup() { rm -f "$cancel_token"; }
+case "$cancel_nonce" in
+    *[!0-9a-f]*|'') printf 'xuva-plan: invalid cancellation nonce\n' >&2; exit 1 ;;
+esac
+if [ "${#cancel_nonce}" -ne 32 ]; then
+    printf 'xuva-plan: invalid cancellation nonce length\n' >&2
+    exit 1
+fi
+case "$launch_delay" in
+    0|1|2|3|4|5) ;;
+    *) printf 'xuva-plan: invalid test launch delay\n' >&2; exit 1 ;;
+esac
+if [ "$launch_delay" -ne 0 ]; then
+    /bin/sleep "$launch_delay"
+fi
+uid=$(/usr/bin/id -u) || exit 1
+runtime_root="/tmp/xuva-runtime-$uid"
+umask 077
+if [ -L "$runtime_root" ] || { [ -e "$runtime_root" ] && { [ ! -d "$runtime_root" ] || [ ! -O "$runtime_root" ]; }; }; then
+    printf 'xuva-plan: unsafe per-user runtime directory %s\n' "$runtime_root" >&2
+    exit 1
+fi
+/bin/mkdir -m 0700 -p "$runtime_root" || exit 1
+/bin/chmod 0700 "$runtime_root" || exit 1
+if [ "$(/usr/bin/stat -Lc '%u:%a' -- "$runtime_root" 2>/dev/null)" != "$uid:700" ]; then
+    printf 'xuva-plan: invalid per-user runtime directory ownership or mode\n' >&2
+    exit 1
+fi
+/usr/bin/find "$runtime_root" -maxdepth 1 -type f -name 'cancel-*.pid' -mmin +60 -delete 2>/dev/null || true
+cancel_token="$runtime_root/cancel-$cancel_nonce.pid"
+cleanup() { /bin/rm -f -- "$cancel_token"; }
 trap "cleanup; exit 130" INT TERM
 trap cleanup EXIT
-printf '%s' "$$" > "$cancel_token"
+if [ -e "$cancel_token" ] || [ -L "$cancel_token" ] ||
+   ! (set -C; printf '%s' "$$" > "$cancel_token"); then
+    printf 'xuva-plan: unable to create a private cancellation token\n' >&2
+    exit 1
+fi
+/bin/chmod 0600 "$cancel_token" || { /bin/rm -f -- "$cancel_token"; exit 1; }
+attestation_staging="${attestation_file}.staging"
+if [ -z "$attestation_file" ] || [ -z "$permit_file" ] ||
+   ! printf '%s' "$cancel_nonce" > "$attestation_staging" ||
+   ! /bin/mv -f -- "$attestation_staging" "$attestation_file"; then
+    /bin/rm -f -- "$attestation_staging"
+    printf 'xuva-plan: unable to attest the private cancellation token\n' >&2
+    exit 1
+fi
+remaining=500
+while [ ! -r "$permit_file" ]; do
+    if [ "$remaining" -le 0 ]; then
+        printf 'xuva-plan: parent did not authorize the cancellation-ready launch\n' >&2
+        exit 1
+    fi
+    remaining=$((remaining - 1))
+    /bin/sleep 0.02
+done
+permit_nonce=$(/bin/cat -- "$permit_file") || exit 1
+if [ "$permit_nonce" != "$cancel_nonce" ]; then
+    printf 'xuva-plan: launch permit does not match the cancellation token\n' >&2
+    exit 1
+fi
 if [ "$lock_path" = "/tmp/xuva.lock" ]; then
     lock_root="/tmp/xuva-lock-$(/usr/bin/id -u)"
     if [ -L "$lock_root" ] || { [ -e "$lock_root" ] && { [ ! -d "$lock_root" ] || [ ! -O "$lock_root" ]; }; }; then
@@ -243,21 +420,33 @@ if [ -n "$ready_file" ]; then
 fi
 # Remaining argv is deliberately: KEY=VALUE overlays, executable, then user
 # argv. `env` consumes assignments only until the executable; no shell parses
-# a user command string.
-exec /usr/bin/env -i \
+# a user command string. The launcher remains as the process-group leader so
+# its EXIT trap can remove the private cancellation token.
+/usr/bin/env -i \
     HOME="$HOME" \
     USER="$user" \
     PATH="${path_prefix}$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     RTK_DB_PATH="$metrics_db_path" \
     "$@"
+status=$?
+exit "$status"
 "#;
 const WSL1_PLAN_LAUNCH_SCRIPT: &str = r#"
 metrics_db_path=$1
 extra_path=$2
 ready_file=$3
 attestation_file=$4
-shift 4
+permit_file=$5
+attestation_delay=$6
+shift 6
 
+case "$attestation_delay" in
+    0|1|2|3|4|5) ;;
+    *) printf 'xuva: invalid test attestation delay\n' >&2; exit 126 ;;
+esac
+if [ "$attestation_delay" -ne 0 ]; then
+    /bin/sleep "$attestation_delay"
+fi
 marker=/etc/xuva-dedicated-wsl1
 if [ ! -r "$marker" ] ||
    ! /bin/grep -qx 'product=xuva' "$marker" ||
@@ -274,9 +463,26 @@ esac
 case "$installation_id" in
     *[!0-9A-Fa-f-]*) printf 'xuva: WSL1 marker has an invalid installation ID\n' >&2; exit 126 ;;
 esac
+attestation_staging="${attestation_file}.staging"
 if [ -z "$attestation_file" ] ||
-   ! printf '%s' "$installation_id" > "$attestation_file"; then
+   ! printf '%s' "$installation_id" > "$attestation_staging" ||
+   ! /bin/mv -f -- "$attestation_staging" "$attestation_file"; then
+    /bin/rm -f -- "$attestation_staging"
     printf 'xuva: unable to attest the dedicated WSL1 runtime\n' >&2
+    exit 126
+fi
+remaining=500
+while [ ! -r "$permit_file" ]; do
+    if [ "$remaining" -le 0 ]; then
+        printf 'xuva: parent did not authorize the attested WSL1 launch\n' >&2
+        exit 126
+    fi
+    remaining=$((remaining - 1))
+    /bin/sleep 0.02
+done
+permit_id=$(/bin/cat -- "$permit_file") || exit 126
+if [ "$permit_id" != "$installation_id" ]; then
+    printf 'xuva: WSL1 launch permit does not match the dedicated runtime\n' >&2
     exit 126
 fi
 user=${USER:-}
@@ -1638,6 +1844,13 @@ fn provider_dispatch_decision(
         .first()
         .and_then(|argument| argument.to_str())
         .expect("dispatchable provider tools have a safe Unicode name");
+    // RTK meta commands are adapter-owned subcommands, not external
+    // executables. Let the static RTK route carry them verbatim instead of
+    // asking the generic provider resolver to discover a fake `smart`,
+    // `proxy`, `rewrite`, or similar operating-system executable.
+    if is_rtk_meta_command(tool) {
+        return ProviderDispatchDecision::KeepStaticRoute;
+    }
     let project = current_project_location(config);
     // A Windows project always probes its native executable first. This keeps
     // an unknown command such as `code`, `nvm`, or a user tool out of WSL when
@@ -2988,16 +3201,47 @@ fn test_ready_wsl_path() -> Option<String> {
         .and_then(|path| windows_path_to_wsl_path(&path))
 }
 
+fn test_wsl1_attestation_delay_seconds() -> u8 {
+    if env::var("XUVA_TEST_MODE").as_deref() != Ok("1") {
+        return 0;
+    }
+    env::var("XUVA_TEST_WSL1_ATTESTATION_DELAY_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u8>().ok())
+        .filter(|value| *value <= 5)
+        .unwrap_or(0)
+}
+
+fn test_wsl2_launch_delay_seconds() -> u8 {
+    if env::var("XUVA_TEST_MODE").as_deref() != Ok("1") {
+        return 0;
+    }
+    env::var("XUVA_TEST_WSL2_LAUNCH_DELAY_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u8>().ok())
+        .filter(|value| *value <= 5)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
-fn rtk_arguments(arguments: Vec<OsString>, config: &Config, cancel_token: &str) -> Vec<OsString> {
-    rtk_arguments_with_metrics(arguments, config, cancel_token, None)
+fn rtk_arguments(arguments: Vec<OsString>, config: &Config, cancel_nonce: &str) -> Vec<OsString> {
+    rtk_arguments_with_metrics(
+        arguments,
+        config,
+        cancel_nonce,
+        None,
+        "/tmp/xuva-test.attestation",
+        "/tmp/xuva-test.permit",
+    )
 }
 
 fn rtk_arguments_with_metrics(
     arguments: Vec<OsString>,
     config: &Config,
-    cancel_token: &str,
+    cancel_nonce: &str,
     metrics_db_path: Option<&str>,
+    attestation_path: &str,
+    permit_path: &str,
 ) -> Vec<OsString> {
     let forwarded = forwarded_rtk_arguments(arguments);
     let mut command = wsl_launch_prefix(config);
@@ -3012,10 +3256,13 @@ fn rtk_arguments_with_metrics(
         OsString::from(&config.lock_wait),
         OsString::from(&config.lock_path),
         OsString::from(config.rtk_path.as_deref().unwrap_or("")),
-        OsString::from(cancel_token),
+        OsString::from(cancel_nonce),
         OsString::from(metrics_db_path.unwrap_or("")),
         OsString::from(config.extra_path.as_deref().unwrap_or("")),
         OsString::from(test_ready_wsl_path().unwrap_or_default()),
+        OsString::from(attestation_path),
+        OsString::from(permit_path),
+        OsString::from(test_wsl2_launch_delay_seconds().to_string()),
     ]);
     command.extend(forwarded);
     command
@@ -3023,7 +3270,13 @@ fn rtk_arguments_with_metrics(
 
 #[cfg(test)]
 fn wsl1_rtk_arguments(arguments: Vec<OsString>, config: &Config) -> Vec<OsString> {
-    wsl1_rtk_arguments_with_metrics(arguments, config, None, "/tmp/xuva-test.attestation")
+    wsl1_rtk_arguments_with_metrics(
+        arguments,
+        config,
+        None,
+        "/tmp/xuva-test.attestation",
+        "/tmp/xuva-test.permit",
+    )
 }
 
 fn wsl1_rtk_arguments_with_metrics(
@@ -3031,6 +3284,7 @@ fn wsl1_rtk_arguments_with_metrics(
     config: &Config,
     metrics_db_path: Option<&str>,
     attestation_path: &str,
+    permit_path: &str,
 ) -> Vec<OsString> {
     let forwarded = forwarded_rtk_arguments(arguments);
     let mut command = wsl_launch_prefix(config);
@@ -3045,6 +3299,8 @@ fn wsl1_rtk_arguments_with_metrics(
         OsString::from(config.extra_path.as_deref().unwrap_or("")),
         OsString::from(test_ready_wsl_path().unwrap_or_default()),
         OsString::from(attestation_path),
+        OsString::from(permit_path),
+        OsString::from(test_wsl1_attestation_delay_seconds().to_string()),
     ]);
     command.extend(forwarded);
     command
@@ -3086,9 +3342,10 @@ fn wsl_environment_assignments(
 
 #[derive(Clone, Copy)]
 struct WslLaunchMetadata<'a> {
-    cancel_token: Option<&'a str>,
+    cancel_nonce: Option<&'a str>,
     metrics_db_path: Option<&'a str>,
-    wsl1_attestation_path: Option<&'a str>,
+    attestation_path: Option<&'a str>,
+    permit_path: Option<&'a str>,
 }
 
 fn plan_wsl_arguments_with_metrics(
@@ -3103,10 +3360,16 @@ fn plan_wsl_arguments_with_metrics(
     let mut command = wsl_launch_prefix(config);
     match route {
         Route::Wsl1 => {
-            let attestation_path = metadata.wsl1_attestation_path.ok_or_else(|| {
+            let attestation_path = metadata.attestation_path.ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "WSL1 execution plans require a dedicated-runtime attestation path",
+                )
+            })?;
+            let permit_path = metadata.permit_path.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "WSL1 execution plans require a parent launch-permit path",
                 )
             })?;
             command.extend([
@@ -3119,13 +3382,27 @@ fn plan_wsl_arguments_with_metrics(
                 OsString::from(config.extra_path.as_deref().unwrap_or("")),
                 OsString::from(test_ready_wsl_path().unwrap_or_default()),
                 OsString::from(attestation_path),
+                OsString::from(permit_path),
+                OsString::from(test_wsl1_attestation_delay_seconds().to_string()),
             ]);
         }
         Route::Wsl2 => {
-            let cancel_token = metadata.cancel_token.ok_or_else(|| {
+            let cancel_nonce = metadata.cancel_nonce.ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "WSL2 execution plans require a cancellation token",
+                )
+            })?;
+            let attestation_path = metadata.attestation_path.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "WSL2 execution plans require a cancellation-token attestation path",
+                )
+            })?;
+            let permit_path = metadata.permit_path.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "WSL2 execution plans require a parent launch-permit path",
                 )
             })?;
             command.extend([
@@ -3138,10 +3415,13 @@ fn plan_wsl_arguments_with_metrics(
                 OsString::from("xuva-plan"),
                 OsString::from(&config.lock_wait),
                 OsString::from(&config.lock_path),
-                OsString::from(cancel_token),
+                OsString::from(cancel_nonce),
                 OsString::from(metadata.metrics_db_path.unwrap_or("")),
                 OsString::from(config.extra_path.as_deref().unwrap_or("")),
                 OsString::from(test_ready_wsl_path().unwrap_or_default()),
+                OsString::from(attestation_path),
+                OsString::from(permit_path),
+                OsString::from(test_wsl2_launch_delay_seconds().to_string()),
             ]);
         }
         Route::Auto | Route::Raw | Route::NativeRtk => {
@@ -3157,8 +3437,44 @@ fn plan_wsl_arguments_with_metrics(
     Ok(command)
 }
 
-fn cancel_token() -> String {
-    format!("/tmp/xuva-{}.cancel", std::process::id())
+#[cfg(target_os = "windows")]
+fn cancellation_nonce() -> std::io::Result<String> {
+    use std::ffi::c_void;
+
+    const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x0000_0002;
+    #[link(name = "bcrypt")]
+    unsafe extern "system" {
+        fn BCryptGenRandom(algorithm: *mut c_void, buffer: *mut u8, length: u32, flags: u32)
+        -> i32;
+    }
+
+    let mut bytes = [0_u8; 16];
+    // SAFETY: the null algorithm handle requests the system-preferred RNG and
+    // `bytes` is a valid writable buffer for the exact supplied length.
+    let status = unsafe {
+        BCryptGenRandom(
+            std::ptr::null_mut(),
+            bytes.as_mut_ptr(),
+            bytes.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status != 0 {
+        return Err(std::io::Error::other(format!(
+            "Windows secure random generation failed with NTSTATUS 0x{:08x}",
+            status as u32
+        )));
+    }
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn cancellation_nonce() -> std::io::Result<String> {
+    use std::io::Read;
+
+    let mut bytes = [0_u8; 16];
+    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn cancel_arguments(config: &Config, token: &str, signal: &str) -> Vec<OsString> {
@@ -3414,70 +3730,197 @@ fn require_wsl1_version(config: &Config) -> std::io::Result<()> {
     })
 }
 
-struct Wsl1LaunchAttestation {
-    windows_path: PathBuf,
-    wsl_path: String,
+struct LaunchPermitGuard {
+    attestation_windows_path: PathBuf,
+    attestation_wsl_path: String,
+    permit_windows_path: PathBuf,
+    permit_wsl_path: String,
+    expected_value: String,
 }
 
-impl Wsl1LaunchAttestation {
-    fn new() -> std::io::Result<Self> {
-        let windows_path = env::temp_dir().join(format!(
-            "xuva-wsl1-attestation-{}-{}.txt",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or_default()
+impl LaunchPermitGuard {
+    fn new(label: &str, expected_value: String) -> std::io::Result<Self> {
+        let nonce = cancellation_nonce()?;
+        let root = env::temp_dir();
+        let attestation_windows_path = root.join(format!(
+            "xuva-{label}-attestation-{}-{nonce}.txt",
+            std::process::id()
         ));
-        let _ = fs::remove_file(&windows_path);
-        let wsl_path = windows_path_to_wsl_path(&windows_path.to_string_lossy()).ok_or_else(|| {
+        let permit_windows_path = root.join(format!(
+            "xuva-{label}-permit-{}-{nonce}.txt",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&attestation_windows_path);
+        let _ = fs::remove_file(&permit_windows_path);
+        let attestation_wsl_path = windows_path_to_wsl_path(
+            &attestation_windows_path.to_string_lossy(),
+        )
+        .ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "the Windows temporary directory cannot be mapped into the dedicated WSL1 runtime",
             )
         })?;
+        let permit_wsl_path = windows_path_to_wsl_path(&permit_windows_path.to_string_lossy())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "the Windows temporary directory cannot carry a WSL1 launch permit",
+                )
+            })?;
         Ok(Self {
-            windows_path,
-            wsl_path,
+            attestation_windows_path,
+            attestation_wsl_path,
+            permit_windows_path,
+            permit_wsl_path,
+            expected_value,
         })
     }
 
-    fn installation_id(&self) -> std::io::Result<String> {
-        let installation_id = fs::read_to_string(&self.windows_path)
-            .map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "the WSL1 child did not attest a dedicated runtime before cancellation",
-                )
-            })?
-            .trim()
-            .to_owned();
-        valid_installation_id(&installation_id)
-            .then_some(installation_id)
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "the WSL1 child produced an invalid dedicated-runtime attestation",
-                )
-            })
+    fn is_attested(&self) -> std::io::Result<bool> {
+        let installation_id = match fs::read_to_string(&self.attestation_windows_path) {
+            Ok(value) => value.trim().to_owned(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(std::io::Error::new(
+                    error.kind(),
+                    format!("unable to read the WSL1 child attestation: {error}"),
+                ));
+            }
+        };
+        if installation_id != self.expected_value {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "the WSL child attested a different launch identity",
+            ));
+        }
+        Ok(true)
+    }
+
+    fn authorize(&self) -> std::io::Result<()> {
+        let temporary = self.permit_windows_path.with_extension("tmp");
+        let _ = fs::remove_file(&temporary);
+        fs::write(&temporary, self.expected_value.as_bytes()).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("unable to prepare the WSL1 parent launch permit: {error}"),
+            )
+        })?;
+        fs::rename(&temporary, &self.permit_windows_path).map_err(|error| {
+            let _ = fs::remove_file(&temporary);
+            std::io::Error::new(
+                error.kind(),
+                format!("unable to publish the WSL1 parent launch permit: {error}"),
+            )
+        })
+    }
+
+    fn expected_value(&self) -> &str {
+        &self.expected_value
     }
 }
 
-impl Drop for Wsl1LaunchAttestation {
+impl Drop for LaunchPermitGuard {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.windows_path);
+        let _ = fs::remove_file(&self.attestation_windows_path);
+        let mut attestation_staging = self.attestation_windows_path.as_os_str().to_os_string();
+        attestation_staging.push(".staging");
+        let _ = fs::remove_file(PathBuf::from(attestation_staging));
+        let _ = fs::remove_file(&self.permit_windows_path);
+        let _ = fs::remove_file(self.permit_windows_path.with_extension("tmp"));
     }
 }
 
-fn terminate_dedicated_wsl1_distro(config: &Config, installation_id: &str) -> std::io::Result<()> {
+fn require_dedicated_wsl1_installation(config: &Config) -> std::io::Result<String> {
+    require_wsl1_version(config)?;
+    dedicated_wsl1_installation_id_for(&config.distro).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "WSL1 route requires a valid XUVA dedicated-runtime marker in {}",
+                config.distro
+            ),
+        )
+    })
+}
+
+fn revalidate_dedicated_wsl1_installation(
+    config: &Config,
+    expected_installation_id: &str,
+) -> std::io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match dedicated_wsl1_installation_id_for(&config.distro) {
+            Some(actual) if actual == expected_installation_id => return Ok(()),
+            Some(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "the WSL1 dedicated-runtime identity changed after child launch",
+                ));
+            }
+            None if Instant::now() < deadline => thread::sleep(Duration::from_millis(100)),
+            None => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "unable to revalidate the WSL1 dedicated-runtime identity before termination",
+                ));
+            }
+        }
+    }
+}
+
+fn running_wsl_distributions() -> std::io::Result<Vec<String>> {
+    let mut command = Command::new("wsl.exe");
+    command.args(["--list", "--running", "--quiet"]);
+    let output = process::run_probe(&mut command)?;
+    if !output.status.success() || output.stdout_truncated {
+        return Err(std::io::Error::other(
+            "unable to inspect running WSL distributions",
+        ));
+    }
+    Ok(decode_wsl_output(&output.stdout)
+        .replace('\0', "")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+fn wait_for_wsl_distro_to_stop_within(distro: &str, timeout: Duration) -> std::io::Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let running = running_wsl_distributions()?;
+        if !running.iter().any(|candidate| candidate == distro) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("WSL distro {distro} remained running after termination"),
+            ));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn wait_for_wsl_distro_to_stop(distro: &str) -> std::io::Result<()> {
+    wait_for_wsl_distro_to_stop_within(distro, Duration::from_secs(5))
+}
+
+fn terminate_dedicated_wsl1_distro(
+    config: &Config,
+    expected_installation_id: &str,
+) -> std::io::Result<()> {
+    revalidate_dedicated_wsl1_installation(config, expected_installation_id)?;
     trace(format!(
         "terminating dedicated WSL1 distro {} installation {} after cancellation",
-        config.distro, installation_id
+        config.distro, expected_installation_id
     ));
     let mut command = Command::new("wsl.exe");
     command.args(["--terminate", &config.distro]);
     match process::run_probe(&mut command) {
-        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) if output.status.success() => wait_for_wsl_distro_to_stop(&config.distro),
         Ok(output) => {
             trace(format!(
                 "WSL1 terminate returned {}: {}{}",
@@ -3491,11 +3934,110 @@ fn terminate_dedicated_wsl1_distro(config: &Config, installation_id: &str) -> st
     }
 }
 
+fn stop_cancelled_wsl1_child(
+    child: &mut Child,
+    config: &Config,
+    launch_guard: &LaunchPermitGuard,
+) -> std::io::Result<ExitStatus> {
+    // Stop the Windows proxy first so it cannot outlive XUVA. The Linux-side
+    // command is still blocked on the identity-bound permit at this point.
+    let _ = child.kill();
+    let termination = terminate_dedicated_wsl1_distro(config, launch_guard.expected_value());
+    let proxy_deadline = Instant::now() + Duration::from_secs(3);
+    let proxy_status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Ok(status);
+        }
+        if Instant::now() >= proxy_deadline {
+            break Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the Windows WSL1 proxy remained alive after cancellation",
+            ));
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+
+    if let Err(error) = termination {
+        // An identity change means XUVA must not terminate a potentially
+        // unrelated distro. The unpermitted child self-expires instead, and
+        // XUVA proves that the runtime stopped before returning the failure.
+        let stopped = wait_for_wsl_distro_to_stop_within(&config.distro, Duration::from_secs(12));
+        return Err(match stopped {
+            Ok(()) => error,
+            Err(stop_error) => std::io::Error::other(format!(
+                "{error}; the untrusted WSL1 runtime also failed to stop: {stop_error}"
+            )),
+        });
+    }
+    proxy_status
+}
+
+fn wait_for_wsl1_child(
+    mut child: Child,
+    config: &Config,
+    launch_guard: &LaunchPermitGuard,
+) -> std::io::Result<ExitStatus> {
+    let started = Instant::now();
+    let mut authorized = false;
+    loop {
+        if console::requested() {
+            return stop_cancelled_wsl1_child(&mut child, config, launch_guard);
+        }
+        if !authorized {
+            match launch_guard.is_attested() {
+                Ok(true) => {
+                    if let Err(error) = launch_guard.authorize() {
+                        let cleanup = stop_cancelled_wsl1_child(&mut child, config, launch_guard);
+                        return Err(match cleanup {
+                            Ok(_) => error,
+                            Err(cleanup_error) => std::io::Error::other(format!(
+                                "{error}; WSL1 authorization cleanup failed: {cleanup_error}"
+                            )),
+                        });
+                    }
+                    authorized = true;
+                    trace("authorized an identity-matched WSL1 child");
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    let _ = stop_cancelled_wsl1_child(&mut child, config, launch_guard);
+                    return Err(error);
+                }
+            }
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(error) => {
+                let cleanup = stop_cancelled_wsl1_child(&mut child, config, launch_guard);
+                return Err(match cleanup {
+                    Ok(_) => error,
+                    Err(cleanup_error) => std::io::Error::other(format!(
+                        "{error}; WSL1 child status cleanup failed: {cleanup_error}"
+                    )),
+                });
+            }
+        }
+        if !authorized && started.elapsed() >= Duration::from_secs(10) {
+            let _ = stop_cancelled_wsl1_child(&mut child, config, launch_guard);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "WSL1 child did not attest its dedicated-runtime identity within 10 seconds",
+            ));
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn wait_for_wsl_child(
     mut child: Child,
     config: &Config,
     token: &str,
+    launch_guard: &LaunchPermitGuard,
 ) -> std::io::Result<ExitStatus> {
+    let launched_at = Instant::now();
+    let mut authorized = false;
+    let mut pending_error = None;
     let mut cancellation_started = None;
     let mut interrupt_sent = false;
     let mut terminate_sent = false;
@@ -3507,54 +4049,66 @@ fn wait_for_wsl_child(
         if console::requested() {
             cancellation_started.get_or_insert_with(Instant::now);
         }
+        if !authorized && cancellation_started.is_none() {
+            match launch_guard.is_attested() {
+                Ok(true) => match launch_guard.authorize() {
+                    Ok(()) => {
+                        authorized = true;
+                        trace("authorized a cancellation-ready WSL2 child");
+                    }
+                    Err(error) => {
+                        pending_error = Some(error);
+                        cancellation_started = Some(Instant::now());
+                    }
+                },
+                Ok(false) if launched_at.elapsed() < Duration::from_secs(10) => {}
+                Ok(false) => {
+                    pending_error = Some(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "WSL2 child did not attest its private cancellation token within 10 seconds",
+                    ));
+                    cancellation_started = Some(Instant::now());
+                }
+                Err(error) => {
+                    pending_error = Some(error);
+                    cancellation_started = Some(Instant::now());
+                }
+            }
+        }
         if let Some(started) = cancellation_started {
             let elapsed = started.elapsed();
-            if !interrupt_sent {
-                let _ = send_linux_signal(config, token, "INT");
+            if !interrupt_sent && send_linux_signal(config, token, "INT").unwrap_or(false) {
                 trace("sent SIGINT to the isolated Linux process group");
                 interrupt_sent = true;
             }
-            if elapsed >= Duration::from_millis(1_500) && !terminate_sent {
-                let _ = send_linux_signal(config, token, "TERM");
+            if elapsed >= Duration::from_millis(1_500)
+                && !terminate_sent
+                && send_linux_signal(config, token, "TERM").unwrap_or(false)
+            {
                 trace("escalated cancellation to SIGTERM inside Linux");
                 terminate_sent = true;
             }
-            if elapsed >= Duration::from_secs(3) && !kill_sent {
-                let _ = send_linux_signal(config, token, "KILL");
+            if elapsed >= Duration::from_secs(3)
+                && !kill_sent
+                && send_linux_signal(config, token, "KILL").unwrap_or(false)
+            {
                 trace("escalated cancellation to SIGKILL inside Linux");
                 kill_sent = true;
             }
             if elapsed >= Duration::from_secs(4) {
                 let group_survived = linux_process_group_exists(config, token).unwrap_or(true);
-                child.kill()?;
+                let _ = child.kill();
                 let status = child.wait()?;
                 if group_survived {
                     return Err(std::io::Error::other(
                         "Linux process group survived SIGINT, SIGTERM, and SIGKILL escalation",
                     ));
                 }
+                if let Some(error) = pending_error {
+                    return Err(error);
+                }
                 return Ok(status);
             }
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-}
-
-fn wait_for_wsl1_child(
-    mut child: Child,
-    config: &Config,
-    attestation: &Wsl1LaunchAttestation,
-) -> std::io::Result<ExitStatus> {
-    let mut interrupted = false;
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(status);
-        }
-        if console::requested() && !interrupted {
-            let installation_id = attestation.installation_id()?;
-            let _ = child.kill();
-            terminate_dedicated_wsl1_distro(config, &installation_id)?;
-            interrupted = true;
         }
         thread::sleep(Duration::from_millis(50));
     }
@@ -4350,7 +4904,7 @@ fn provider_exec_command(arguments: &[OsString], config: &Config) -> ExitCode {
     }
     match result {
         Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+        Ok(status) => ExitCode::from_status(status),
         Err(error) => {
             eprintln!("xuva: unable to start provider candidate {index}: {error}");
             ExitCode::FAILURE
@@ -4371,30 +4925,47 @@ fn run_wsl_route(
     });
     if route == Route::Wsl1 {
         let lock = windows_lock::acquire(&config.lock_wait).map_err(std::io::Error::other)?;
-        require_wsl1_version(config)?;
-        let attestation = Wsl1LaunchAttestation::new()?;
-        trace("starting attested WSL1 child while holding the global mutex");
-        let result = adapters::wsl1::process(wsl1_rtk_arguments_with_metrics(
+        let expected_installation_id = require_dedicated_wsl1_installation(config)?;
+        let launch_guard = LaunchPermitGuard::new("wsl1", expected_installation_id)?;
+        if console::requested() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled before the WSL1 child was spawned",
+            ));
+        }
+        trace("starting identity-gated WSL1 child while holding the global mutex");
+        let mut process = adapters::wsl1::process(wsl1_rtk_arguments_with_metrics(
             arguments,
             config,
             metrics_path.as_deref(),
-            &attestation.wsl_path,
-        ))
-        .spawn()
-        .and_then(|child| wait_for_wsl1_child(child, config, &attestation));
-        trace(format!("attested WSL1 child completed with {result:?}"));
+            &launch_guard.attestation_wsl_path,
+            &launch_guard.permit_wsl_path,
+        ));
+        let result = process.spawn().and_then(|child| {
+            trace("spawned identity-gated WSL1 proxy");
+            wait_for_wsl1_child(child, config, &launch_guard)
+        });
+        trace(format!(
+            "identity-gated WSL1 child completed with {result:?}"
+        ));
         drop(lock);
         result
     } else {
-        let token = cancel_token();
+        let token = cancellation_nonce()?;
+        let launch_guard = LaunchPermitGuard::new("wsl2", token.clone())?;
         adapters::wsl2::process(rtk_arguments_with_metrics(
             arguments,
             config,
             &token,
             metrics_path.as_deref(),
+            &launch_guard.attestation_wsl_path,
+            &launch_guard.permit_wsl_path,
         ))
         .spawn()
-        .and_then(|child| wait_for_wsl_child(child, config, &token))
+        .and_then(|child| {
+            trace("spawned cancellation-gated WSL2 proxy");
+            wait_for_wsl_child(child, config, &token, &launch_guard)
+        })
     }
 }
 
@@ -4413,8 +4984,14 @@ fn run_wsl_execution_plan(
     });
     if route == Route::Wsl1 {
         let lock = windows_lock::acquire(&config.lock_wait).map_err(std::io::Error::other)?;
-        require_wsl1_version(config)?;
-        let attestation = Wsl1LaunchAttestation::new()?;
+        let expected_installation_id = require_dedicated_wsl1_installation(config)?;
+        let launch_guard = LaunchPermitGuard::new("wsl1", expected_installation_id)?;
+        if console::requested() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled before the WSL1 plan was spawned",
+            ));
+        }
         let command = plan_wsl_arguments_with_metrics(
             executable,
             arguments,
@@ -4422,20 +4999,25 @@ fn run_wsl_execution_plan(
             config,
             route,
             WslLaunchMetadata {
-                cancel_token: None,
+                cancel_nonce: None,
                 metrics_db_path: metrics_path.as_deref(),
-                wsl1_attestation_path: Some(&attestation.wsl_path),
+                attestation_path: Some(&launch_guard.attestation_wsl_path),
+                permit_path: Some(&launch_guard.permit_wsl_path),
             },
         )?;
-        trace("starting attested WSL1 plan while holding the global mutex");
-        let result = adapters::wsl1::process(command)
-            .spawn()
-            .and_then(|child| wait_for_wsl1_child(child, config, &attestation));
-        trace(format!("attested WSL1 plan completed with {result:?}"));
+        trace("starting identity-gated WSL1 plan while holding the global mutex");
+        let result = adapters::wsl1::process(command).spawn().and_then(|child| {
+            trace("spawned identity-gated WSL1 plan proxy");
+            wait_for_wsl1_child(child, config, &launch_guard)
+        });
+        trace(format!(
+            "identity-gated WSL1 plan completed with {result:?}"
+        ));
         drop(lock);
         result
     } else {
-        let token = cancel_token();
+        let token = cancellation_nonce()?;
+        let launch_guard = LaunchPermitGuard::new("wsl2", token.clone())?;
         let command = plan_wsl_arguments_with_metrics(
             executable,
             arguments,
@@ -4443,14 +5025,16 @@ fn run_wsl_execution_plan(
             config,
             route,
             WslLaunchMetadata {
-                cancel_token: Some(&token),
+                cancel_nonce: Some(&token),
                 metrics_db_path: metrics_path.as_deref(),
-                wsl1_attestation_path: None,
+                attestation_path: Some(&launch_guard.attestation_wsl_path),
+                permit_path: Some(&launch_guard.permit_wsl_path),
             },
         )?;
-        adapters::wsl2::process(command)
-            .spawn()
-            .and_then(|child| wait_for_wsl_child(child, config, &token))
+        adapters::wsl2::process(command).spawn().and_then(|child| {
+            trace("spawned cancellation-gated WSL2 plan proxy");
+            wait_for_wsl_child(child, config, &token, &launch_guard)
+        })
     }
 }
 
@@ -4853,7 +5437,7 @@ fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
                 )));
     if same_host_raw_fast_path {
         return match adapters::windows::run(&arguments) {
-            Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+            Ok(status) => ExitCode::from_status(status),
             Err(error) => {
                 eprintln!("xuva: unable to start Windows raw command: {error}");
                 ExitCode::FAILURE
@@ -5089,7 +5673,7 @@ fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     }
     match result {
         Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+        Ok(status) => ExitCode::from_status(status),
         Err(error) => {
             eprintln!(
                 "xuva: unable to start {} route: {error}",
@@ -5100,7 +5684,7 @@ fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     }
 }
 
-fn main() -> ExitCode {
+fn main_exit() -> ExitCode {
     let original_arguments: Vec<OsString> = env::args_os().skip(1).collect();
     // This is intentionally before bridge decoding and environment parsing:
     // a local version query must remain instant even when WSL is unavailable
@@ -5150,6 +5734,10 @@ fn main() -> ExitCode {
     run_cli(arguments, &config)
 }
 
+fn main() {
+    main_exit().terminate();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5185,7 +5773,7 @@ mod tests {
                 OsString::from("C:\\Program Files\\Example"),
             ],
             &default_config(),
-            "/tmp/test.cancel",
+            "0123456789abcdef0123456789abcdef",
         );
 
         assert!(arguments.contains(&OsString::from("--exec")));
@@ -5247,9 +5835,10 @@ mod tests {
             &config,
             Route::Wsl2,
             WslLaunchMetadata {
-                cancel_token: Some("/tmp/xuva-plan-test.cancel"),
+                cancel_nonce: Some("0123456789abcdef0123456789abcdef"),
                 metrics_db_path: None,
-                wsl1_attestation_path: None,
+                attestation_path: Some("/tmp/xuva-test.attestation"),
+                permit_path: Some("/tmp/xuva-test.permit"),
             },
         )
         .expect("WSL plan arguments are valid");
@@ -5337,7 +5926,7 @@ mod tests {
         let arguments = rtk_arguments(
             vec![OsString::from("stats")],
             &default_config(),
-            "/tmp/test.cancel",
+            "0123456789abcdef0123456789abcdef",
         );
         assert_eq!(arguments.last(), Some(&OsString::from("gain")));
     }
@@ -5364,7 +5953,7 @@ mod tests {
         let arguments = rtk_arguments(
             vec![OsString::from("help")],
             &default_config(),
-            "/tmp/test.cancel",
+            "0123456789abcdef0123456789abcdef",
         );
 
         assert!(arguments.contains(&OsString::from("")));
@@ -5388,7 +5977,11 @@ mod tests {
         })
         .expect("portable config is valid");
 
-        let arguments = rtk_arguments(vec![OsString::from("help")], &config, "/tmp/test.cancel");
+        let arguments = rtk_arguments(
+            vec![OsString::from("help")],
+            &config,
+            "0123456789abcdef0123456789abcdef",
+        );
         assert!(arguments.windows(2).any(|pair| pair == ["-u", "alex"]));
         assert!(
             arguments
@@ -5428,10 +6021,55 @@ mod tests {
 
     #[test]
     fn cancellation_uses_a_separate_structured_wsl_command() {
-        let arguments = cancel_arguments(&default_config(), "/tmp/rtk-wsl-42.cancel", "TERM");
+        let arguments = cancel_arguments(
+            &default_config(),
+            "0123456789abcdef0123456789abcdef",
+            "TERM",
+        );
         assert!(arguments.contains(&OsString::from(CANCEL_SCRIPT)));
-        assert!(arguments.contains(&OsString::from("/tmp/rtk-wsl-42.cancel")));
+        assert!(arguments.contains(&OsString::from("0123456789abcdef0123456789abcdef")));
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| { argument.to_string_lossy().starts_with("/tmp/xuva-") })
+        );
         assert!(arguments.contains(&OsString::from("TERM")));
+    }
+
+    #[test]
+    fn launch_permit_requires_the_exact_attested_identity_and_cleans_up() {
+        let expected = "0123456789abcdef0123456789abcdef".to_owned();
+        let (attestation, permit);
+        {
+            let guard =
+                LaunchPermitGuard::new("unit", expected.clone()).expect("launch guard is created");
+            attestation = guard.attestation_windows_path.clone();
+            permit = guard.permit_windows_path.clone();
+            let mut staging = attestation.as_os_str().to_os_string();
+            staging.push(".staging");
+            fs::write(PathBuf::from(staging), &expected).expect("staged attestation is written");
+            assert!(
+                !guard
+                    .is_attested()
+                    .expect("an unpublished attestation remains invisible")
+            );
+            fs::write(&attestation, "ffffffffffffffffffffffffffffffff")
+                .expect("mismatched attestation is written");
+            let mismatch = guard
+                .is_attested()
+                .expect_err("mismatched launch identity is rejected");
+            assert_eq!(mismatch.kind(), std::io::ErrorKind::PermissionDenied);
+
+            fs::write(&attestation, &expected).expect("matching attestation is written");
+            assert!(guard.is_attested().expect("attestation is readable"));
+            guard.authorize().expect("matching launch is authorized");
+            assert_eq!(
+                fs::read_to_string(&permit).expect("permit is readable"),
+                expected
+            );
+        }
+        assert!(!attestation.exists());
+        assert!(!permit.exists());
     }
 
     #[test]
@@ -5551,6 +6189,21 @@ mod tests {
         assert_eq!(command_surface("go"), CommandSurface::RawNative);
         assert_eq!(command_surface("proxy"), CommandSurface::Wsl1Conservative);
         assert_eq!(command_surface("gain"), CommandSurface::CoreInternal);
+    }
+
+    #[test]
+    fn rtk_meta_commands_never_enter_generic_provider_resolution() {
+        let config = default_config();
+        for command in ["smart", "proxy", "rewrite", "hook"] {
+            let arguments = [OsString::from(command), OsString::from("literal-argument")];
+            assert!(
+                matches!(
+                    provider_dispatch_decision(&arguments, &config, Route::Wsl1),
+                    ProviderDispatchDecision::KeepStaticRoute
+                ),
+                "{command} must remain an adapter-owned RTK command"
+            );
+        }
     }
 
     #[test]

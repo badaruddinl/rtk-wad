@@ -212,6 +212,11 @@ the upstream Windows `run` parser or a single-string `proxy` form are not
 auto-routed to stock Windows RTK. They use WSL1 until their native contracts
 are independently verified.
 
+RTK meta commands such as `smart`, `proxy`, `rewrite`, and `hook` are
+adapter-owned subcommands rather than operating-system executables. Adaptive
+routing keeps their static RTK route and never asks the generic provider
+resolver to discover a fictitious executable with the same name.
+
 `xuva` does not provide an implicit shell mode. If a workflow genuinely
 requires shell syntax, invoke the required shell explicitly and keep it on a
 forced WSL route, for example:
