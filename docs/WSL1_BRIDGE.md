@@ -140,12 +140,15 @@ locking therefore occurred too late. The WSL1 bridge acquires a Windows named
 mutex before launching `wsl.exe`; waiting bridge processes never ask WSL1 to
 create a competing session.
 
-The WSL1 child runs in a separate Windows process group. On Ctrl+C or Ctrl+Break,
-the bridge kills the child proxy, terminates only the dedicated
-`Ubuntu-RTK-WSL1` distro, waits for exit, and then releases the mutex. This resets
-the WSL1 transport before the queued command starts. The distro must remain
-dedicated to RTK because cancellation intentionally ends every process inside
-that isolated runtime.
+The WSL1 child runs in a separate Windows process group. Before the target can
+run, it attests the dedicated installation ID and waits for a matching
+parent-issued launch permit. On Ctrl+C or Ctrl+Break, including immediately
+after `wsl.exe` is spawned, the bridge withholds that permit, kills the Windows
+proxy, revalidates the expected installation ID, terminates only the dedicated
+`Ubuntu-RTK-WSL1` distro, proves it stopped, and then releases the mutex. This
+resets the WSL1 transport before the queued command starts. The distro must
+remain dedicated to RTK because cancellation intentionally ends every process
+inside that isolated runtime.
 
 XUVA proves that the selected distro is version 1 and validates the root-owned
 dedicated-runtime marker before execution and again before termination. A
@@ -159,8 +162,10 @@ user's home and establish a clean environment, then directly executes RTK. This
 preserves portable user and path overrides without the previous `setsid` and
 `flock` startup cost.
 
-WSL2 retains the original Linux process-group signal contract and is never
-terminated by this profile-specific lifecycle.
+WSL2 retains Linux process-group signal escalation and is never terminated by
+this profile-specific lifecycle. It now uses the same attest-then-permit
+principle around a private cancellation token, preventing an early Ctrl+C from
+racing ahead of token creation.
 
 ## Known Boundary
 

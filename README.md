@@ -260,8 +260,15 @@ system, conversation, output, and model pricing all affect an eventual bill.
   writes, credentials, and Windows DNS. Mutations never fall back to WSL.
 - POSIX utilities such as `find`, `head`, and `tail` use raw WSL executables;
   a same-named Windows system tool is not treated as semantically compatible.
-- Drive CWD mapping, exit code propagation, stdout/stderr, Ctrl+C, child
-  processes, and lock release have automated process-contract coverage.
+- Drive CWD mapping, complete 32-bit Windows exit-code propagation,
+  stdout/stderr, Ctrl+C, child processes, and lock release have automated
+  process-contract coverage.
+- WSL1 and WSL2 use an attest-then-permit launch handshake. A target cannot
+  begin until the parent has observed its cancellation boundary, so an
+  immediate Ctrl+C cannot leave a command starting in the background.
+- WSL2 cancellation state lives under a nonce-named file in a non-symlink,
+  user-owned `0700` runtime directory; token files are regular, user-owned
+  `0600` files and are removed after completion.
 - WSL use requires an explicit verified provider and path mapping. WSL1 and
   WSL2 are measured routes, not a default performance claim.
 - Existing Windows and WSL tool installations can be diagnosed on demand.

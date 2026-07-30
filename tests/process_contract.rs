@@ -130,7 +130,8 @@ fn dispatcher_owned_version_never_enters_environment_resolution() {
 
     assert!(
         output.status.success(),
-        "stdout: {}; stderr: {}",
+        "status={}; stdout: {}; stderr: {}",
+        output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -192,6 +193,27 @@ fn metrics_opt_out_keeps_explicit_raw_execution_ledger_free() {
     );
     assert!(!state.join("metrics-v1.sqlite").exists());
     let _ = std::fs::remove_dir_all(state);
+}
+
+#[test]
+fn preserves_complete_windows_child_exit_codes() {
+    let _guard = process_contract_guard();
+    let system_root = std::env::var_os("SYSTEMROOT").expect("Windows has SYSTEMROOT");
+    let cmd = PathBuf::from(system_root).join("System32").join("cmd.exe");
+
+    for expected in [3010, 9009] {
+        let output = Command::new(launcher())
+            .arg(&cmd)
+            .args(["/d", "/c", "exit", &expected.to_string()])
+            .output()
+            .expect("explicit Windows child starts");
+        assert_eq!(
+            output.status.code(),
+            Some(expected),
+            "XUVA truncated the 32-bit Windows status for {expected}; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
@@ -537,7 +559,8 @@ fn dispatches_wsl_only_go_from_powershell_cmd_and_git_bash() {
     for (shell, output) in [("PowerShell", powershell), ("CMD", cmd), ("Git Bash", bash)] {
         assert!(
             output.status.success(),
-            "{shell} stdout: {}; stderr: {}",
+            "{shell} status={}; stdout: {}; stderr: {}",
+            output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -1292,7 +1315,8 @@ fn dispatches_each_remaining_supported_wsl_only_toolchain_raw() {
             .unwrap_or_else(|error| panic!("{tool} dispatcher starts: {error}"));
         assert!(
             output.status.success(),
-            "{tool} stdout: {}; stderr: {}",
+            "{tool} status={}; stdout: {}; stderr: {}",
+            output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -1576,6 +1600,7 @@ fn agent_hook_preserves_rewrite_defer_deny_and_invalid_json_contracts() {
             "if \"%XUVA_HOOK_MODE%\"==\"rewrite\" (echo {\"updatedInput\":{\"command\":\"rtk git status\"}} & exit /b 0)\r\n",
             "if \"%XUVA_HOOK_MODE%\"==\"invalid\" (echo not-json & exit /b 0)\r\n",
             "if \"%XUVA_HOOK_MODE%\"==\"stderr\" (echo upstream-note 1>&2 & exit /b 0)\r\n",
+            "if \"%XUVA_HOOK_MODE%\"==\"exit3010\" (exit /b 3010)\r\n",
             "if \"%XUVA_HOOK_MODE%\"==\"stall\" (ping -n 30 127.0.0.1 >nul & exit /b 0)\r\n",
             "exit /b 0\r\n",
         ),
@@ -1610,6 +1635,14 @@ fn agent_hook_preserves_rewrite_defer_deny_and_invalid_json_contracts() {
         .expect("stderr hook starts");
     assert!(stderr.status.success());
     assert!(String::from_utf8_lossy(&stderr.stderr).contains("upstream-note"));
+
+    let wide_exit = Command::new(&launcher)
+        .env("XUVA_NATIVE_RTK_PATH", &fake_rtk)
+        .env("XUVA_HOOK_MODE", "exit3010")
+        .args(["agent", "hook", "claude"])
+        .output()
+        .expect("wide-exit hook starts");
+    assert_eq!(wide_exit.status.code(), Some(3010));
 
     let invalid = Command::new(&launcher)
         .env("XUVA_NATIVE_RTK_PATH", &fake_rtk)
@@ -2225,6 +2258,206 @@ fn wsl1_route_rejects_a_non_dedicated_or_wrong_version_override() {
 }
 
 #[test]
+fn adaptive_rtk_meta_commands_bypass_external_provider_resolution_and_execute_once() {
+    let _guard = process_contract_guard();
+    let Ok(distro) = std::env::var("XUVA_WSL1_TEST_DISTRO") else {
+        return;
+    };
+    let fixture_root = format!(
+        "/tmp/xuva-meta-contract-{}-{}",
+        std::process::id(),
+        XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed)
+    );
+    let fake_rtk = format!("{fixture_root}/rtk");
+    let script = concat!(
+        "#!/bin/sh\n",
+        "printf 'meta-invocation:%s\\n' \"$*\"\n",
+        "[ \"$1\" != hook ] || exit 37\n",
+        "exit 0\n",
+    );
+    let created = Command::new("wsl.exe")
+        .args([
+            "-d",
+            &distro,
+            "--exec",
+            "/bin/sh",
+            "-c",
+            "umask 077; mkdir -p -- \"$1\"; printf '%s' \"$2\" > \"$3\"; chmod 700 \"$3\"",
+            "xuva-meta-fixture",
+            &fixture_root,
+            script,
+            &fake_rtk,
+        ])
+        .status()
+        .expect("RTK meta fixture setup starts");
+    assert!(created.success());
+
+    let literal = "space;and&dollar$HOME\\漢字";
+    for meta in ["smart", "proxy", "rewrite"] {
+        let output = Command::new(launcher())
+            .env("XUVA_ROUTE", "auto")
+            .env("XUVA_WSL_BACKEND", "wsl1")
+            .env("XUVA_WSL_DISTRO", &distro)
+            .env("XUVA_WSL_RTK_PATH", &fake_rtk)
+            .env("XUVA_METRICS", "off")
+            .args([meta, "--literal", literal])
+            .output()
+            .expect("adaptive RTK meta command starts");
+        assert!(
+            output.status.success(),
+            "{meta}: stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(stdout.matches("meta-invocation:").count(), 1, "{meta}");
+        assert!(stdout.contains(meta), "{meta}: {stdout}");
+        assert!(stdout.contains(literal), "{meta}: {stdout}");
+    }
+
+    let explain = Command::new(launcher())
+        .env("XUVA_ROUTE", "auto")
+        .env("XUVA_WSL_BACKEND", "wsl1")
+        .env("XUVA_WSL_DISTRO", &distro)
+        .env("XUVA_WSL_RTK_PATH", &fake_rtk)
+        .args(["--explain-route", "smart", "--literal", literal])
+        .output()
+        .expect("RTK meta route explanation starts");
+    assert!(explain.status.success());
+    assert!(!String::from_utf8_lossy(&explain.stdout).contains("meta-invocation:"));
+    assert!(
+        String::from_utf8_lossy(&explain.stdout)
+            .to_ascii_lowercase()
+            .contains("wsl1")
+    );
+
+    let failed = Command::new(launcher())
+        .env("XUVA_ROUTE", "auto")
+        .env("XUVA_WSL_BACKEND", "wsl1")
+        .env("XUVA_WSL_DISTRO", &distro)
+        .env("XUVA_WSL_RTK_PATH", &fake_rtk)
+        .env("XUVA_METRICS", "off")
+        .args(["hook", "--literal", literal])
+        .output()
+        .expect("failing RTK meta command starts");
+    assert_eq!(failed.status.code(), Some(37));
+    assert_eq!(
+        String::from_utf8_lossy(&failed.stdout)
+            .matches("meta-invocation:")
+            .count(),
+        1,
+        "a child failure must never replay the RTK meta command"
+    );
+
+    let removed = Command::new("wsl.exe")
+        .args(["-d", &distro, "--exec", "/bin/rm", "-rf", &fixture_root])
+        .status()
+        .expect("RTK meta fixture cleanup starts");
+    assert!(removed.success());
+}
+
+#[test]
+fn immediate_ctrl_break_cannot_authorize_a_wsl1_target() {
+    let _guard = process_contract_guard();
+    let Ok(distro) = std::env::var("XUVA_WSL1_TEST_DISTRO") else {
+        return;
+    };
+    let directory = unique_temp_directory("wsl1-immediate-cancel");
+    std::fs::create_dir_all(&directory).expect("immediate-cancel fixture directory is created");
+    let effect_file = directory.join("target-ran");
+    let stderr_path = directory.join("launcher.stderr");
+    let mapped_effect = Command::new("wsl.exe")
+        .args(["-d", &distro, "--exec", "wslpath", "-a"])
+        .arg(&effect_file)
+        .output()
+        .expect("effect path mapping starts");
+    assert!(mapped_effect.status.success());
+    let mapped_effect = String::from_utf8_lossy(&mapped_effect.stdout)
+        .trim()
+        .to_owned();
+    let stderr_file = std::fs::File::create(&stderr_path).expect("launcher stderr is created");
+    let mut child = command("/bin/sh")
+        .args([
+            "-c",
+            "printf target-executed > \"$1\"; sleep 30",
+            "xuva-immediate-cancel-target",
+            &mapped_effect,
+        ])
+        .env("XUVA_TEST_MODE", "1")
+        .env("XUVA_TEST_WSL1_ATTESTATION_DELAY_SECONDS", "2")
+        .env("XUVA_WSL_TRACE", "1")
+        .env("XUVA_METRICS", "off")
+        .creation_flags(CREATE_NEW_PROCESS_GROUP)
+        .stderr(Stdio::from(stderr_file))
+        .spawn()
+        .expect("identity-gated WSL1 launcher starts");
+
+    let spawned_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let trace = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+        if trace.contains("spawned identity-gated WSL1 proxy") {
+            break;
+        }
+        if let Some(status) = child.try_wait().expect("launcher status is available") {
+            panic!("launcher exited before immediate cancellation: {status}; stderr={trace}");
+        }
+        assert!(
+            Instant::now() < spawned_deadline,
+            "launcher did not expose its post-spawn cancellation boundary: {trace}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
+    assert_ne!(sent, 0, "failed to send immediate CTRL_BREAK_EVENT");
+    let cancelled_at = Instant::now();
+    let status = child.wait().expect("immediate-cancel launcher exits");
+    let stderr = std::fs::read_to_string(&stderr_path).expect("launcher stderr remains readable");
+    assert!(
+        !status.success(),
+        "immediate cancellation succeeded unexpectedly"
+    );
+    assert!(
+        cancelled_at.elapsed() < Duration::from_secs(12),
+        "immediate WSL1 cancellation exceeded its bounded cleanup window: {stderr}"
+    );
+    thread::sleep(Duration::from_secs(3));
+    assert!(
+        !effect_file.exists(),
+        "the identity-gated target started after immediate cancellation"
+    );
+
+    let running = Command::new("wsl.exe")
+        .args(["--list", "--running", "--quiet"])
+        .output()
+        .expect("running distro inventory starts");
+    assert!(running.status.success());
+    let running = decode_wsl_list(&running.stdout).replace('\0', "");
+    assert!(
+        !running.lines().any(|line| line.trim() == distro),
+        "the dedicated WSL1 distro remained running after cancellation: {running}"
+    );
+
+    let next = command("/usr/bin/printf")
+        .args(["%s", "after-immediate-cancel"])
+        .env("XUVA_METRICS", "off")
+        .output()
+        .expect("post-cancel WSL1 invocation starts");
+    assert!(
+        next.status.success(),
+        "mutex or dedicated runtime was not reusable: status={}; stdout={}; stderr={}",
+        next.status,
+        String::from_utf8_lossy(&next.stdout),
+        String::from_utf8_lossy(&next.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&next.stdout),
+        "after-immediate-cancel"
+    );
+    std::fs::remove_dir_all(directory).expect("immediate-cancel fixture is removed");
+}
+
+#[test]
 fn ctrl_break_releases_the_global_lock_for_waiting_children() {
     let _guard = process_contract_guard();
     let ready_file = std::env::temp_dir().join(format!("xuva-ready-{}", std::process::id()));
@@ -2338,6 +2571,106 @@ fn ctrl_break_releases_the_global_lock_for_waiting_children() {
 }
 
 #[test]
+fn immediate_ctrl_break_cannot_authorize_a_wsl2_target_before_token_creation() {
+    if std::env::var_os("XUVA_WSL1_TEST_DISTRO").is_some() {
+        return;
+    }
+    let _guard = process_contract_guard();
+    let distro = std::env::var("XUVA_WSL2_TEST_DISTRO").unwrap_or_else(|_| "Ubuntu".to_owned());
+    let directory = unique_temp_directory("wsl2-immediate-cancel");
+    std::fs::create_dir_all(&directory).expect("WSL2 immediate-cancel fixture is created");
+    let effect_file = directory.join("target-ran");
+    let stderr_path = directory.join("launcher.stderr");
+    let mapped_effect = Command::new("wsl.exe")
+        .args(["-d", &distro, "--exec", "wslpath", "-a"])
+        .arg(&effect_file)
+        .output()
+        .expect("WSL2 effect path mapping starts");
+    assert!(mapped_effect.status.success());
+    let mapped_effect = String::from_utf8_lossy(&mapped_effect.stdout)
+        .trim()
+        .to_owned();
+    let stderr_file = std::fs::File::create(&stderr_path).expect("launcher stderr is created");
+    let mut child = command("/bin/sh")
+        .args([
+            "-c",
+            "printf target-executed > \"$1\"; sleep 30",
+            "xuva-wsl2-immediate-cancel-target",
+            &mapped_effect,
+        ])
+        .env("XUVA_TEST_MODE", "1")
+        .env("XUVA_TEST_WSL2_LAUNCH_DELAY_SECONDS", "2")
+        .env("XUVA_WSL_TRACE", "1")
+        .env("XUVA_METRICS", "off")
+        .creation_flags(CREATE_NEW_PROCESS_GROUP)
+        .stderr(Stdio::from(stderr_file))
+        .spawn()
+        .expect("cancellation-gated WSL2 launcher starts");
+
+    let spawned_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let trace = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+        if trace.contains("spawned cancellation-gated WSL2 proxy") {
+            break;
+        }
+        if let Some(status) = child.try_wait().expect("launcher status is available") {
+            panic!("WSL2 launcher exited before immediate cancellation: {status}; stderr={trace}");
+        }
+        assert!(
+            Instant::now() < spawned_deadline,
+            "WSL2 launcher did not expose its post-spawn boundary: {trace}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
+    assert_ne!(sent, 0, "failed to send immediate WSL2 CTRL_BREAK_EVENT");
+    let cancelled_at = Instant::now();
+    let status = child.wait().expect("immediate WSL2 cancellation exits");
+    let stderr = std::fs::read_to_string(&stderr_path).expect("launcher stderr remains readable");
+    assert!(!status.success());
+    assert!(
+        cancelled_at.elapsed() < Duration::from_secs(7),
+        "immediate WSL2 cancellation exceeded its cleanup window: {stderr}"
+    );
+    thread::sleep(Duration::from_secs(2));
+    assert!(
+        !effect_file.exists(),
+        "the WSL2 target started without a parent launch permit"
+    );
+
+    let no_token = Command::new("wsl.exe")
+        .args([
+            "-d",
+            &distro,
+            "--exec",
+            "/bin/sh",
+            "-c",
+            "root=/tmp/xuva-runtime-$(id -u); set -- \"$root\"/cancel-*.pid; test \"$1\" = \"$root/cancel-*.pid\"",
+        ])
+        .status()
+        .expect("post-cancel token probe starts");
+    assert!(no_token.success(), "the early-cancel token was not removed");
+
+    let next = command("/usr/bin/printf")
+        .args(["%s", "after-wsl2-immediate-cancel"])
+        .env("XUVA_METRICS", "off")
+        .output()
+        .expect("post-cancel WSL2 invocation starts");
+    assert!(
+        next.status.success(),
+        "WSL2 was not reusable after immediate cancellation: status={}; stderr={}",
+        next.status,
+        String::from_utf8_lossy(&next.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&next.stdout),
+        "after-wsl2-immediate-cancel"
+    );
+    std::fs::remove_dir_all(directory).expect("WSL2 immediate-cancel fixture is removed");
+}
+
+#[test]
 fn wsl2_cancellation_escalates_past_ignored_sigint_and_leaves_no_worker() {
     if std::env::var_os("XUVA_WSL1_TEST_DISTRO").is_some() {
         return;
@@ -2371,6 +2704,21 @@ fn wsl2_cancellation_escalates_past_ignored_sigint_and_leaves_no_worker() {
         .expect("SIGINT-resistant launcher starts");
     let ready_deadline = Instant::now() + Duration::from_secs(30);
     while !ready_file.exists() || !pid_file.exists() {
+        if let Some(status) = child
+            .try_wait()
+            .expect("worker launcher status is available")
+        {
+            let mut stderr = String::new();
+            child
+                .stderr
+                .take()
+                .expect("worker launcher stderr is piped")
+                .read_to_string(&mut stderr)
+                .expect("worker launcher stderr reads");
+            panic!(
+                "SIGINT-resistant worker exited before readiness: status={status}; stderr={stderr}"
+            );
+        }
         assert!(
             Instant::now() < ready_deadline,
             "SIGINT-resistant worker did not become ready"
@@ -2381,6 +2729,70 @@ fn wsl2_cancellation_escalates_past_ignored_sigint_and_leaves_no_worker() {
         .expect("worker PID is readable")
         .trim()
         .to_owned();
+    let runtime_contract = Command::new("wsl.exe")
+        .args([
+            "-d",
+            &distro,
+            "--exec",
+            "/bin/sh",
+            "-c",
+            concat!(
+                "set -eu; ",
+                "root=/tmp/xuva-runtime-$(id -u); ",
+                "test -d \"$root\" && test ! -L \"$root\"; ",
+                "test \"$(stat -c '%u:%a' \"$root\")\" = \"$(id -u):700\"; ",
+                "set -- \"$root\"/cancel-*.pid; test \"$#\" -eq 1 && test -f \"$1\" && test ! -L \"$1\"; ",
+                "test \"$(stat -c '%u:%a' \"$1\")\" = \"$(id -u):600\"; ",
+                "name=${1##*/}; nonce=${name#cancel-}; nonce=${nonce%.pid}; ",
+                "test \"${#nonce}\" -eq 32; case \"$nonce\" in *[!0-9a-f]*) exit 21;; esac; ",
+                "value=$(cat \"$1\"); case \"$value\" in ''|*[!0-9]*) exit 22;; esac; ",
+                "printf '%s' \"$root\"",
+            ),
+        ])
+        .output()
+        .expect("private cancellation runtime inspection starts");
+    assert!(
+        runtime_contract.status.success(),
+        "private cancellation runtime contract failed: {}",
+        String::from_utf8_lossy(&runtime_contract.stderr)
+    );
+    let runtime_root = String::from_utf8_lossy(&runtime_contract.stdout)
+        .trim()
+        .to_owned();
+
+    let nobody_exists = Command::new("wsl.exe")
+        .args([
+            "-d",
+            &distro,
+            "--exec",
+            "/usr/bin/getent",
+            "passwd",
+            "nobody",
+        ])
+        .output()
+        .expect("secondary WSL identity probe starts");
+    if nobody_exists.status.success() {
+        let isolated = Command::new("wsl.exe")
+            .args([
+                "-d",
+                &distro,
+                "-u",
+                "nobody",
+                "--exec",
+                "/bin/sh",
+                "-c",
+                "test ! -r \"$1\" && test ! -x \"$1\"",
+                "xuva-runtime-isolation",
+                &runtime_root,
+            ])
+            .status()
+            .expect("cross-user cancellation runtime probe starts");
+        assert!(
+            isolated.success(),
+            "another WSL user could inspect the cancellation runtime"
+        );
+    }
+
     let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
     assert_ne!(sent, 0, "failed to send CTRL_BREAK_EVENT");
     let started = Instant::now();
@@ -2406,6 +2818,23 @@ fn wsl2_cancellation_escalates_past_ignored_sigint_and_leaves_no_worker() {
     assert!(
         probe.success(),
         "Linux worker survived cancellation escalation"
+    );
+    let token_cleanup = Command::new("wsl.exe")
+        .args([
+            "-d",
+            &distro,
+            "--exec",
+            "/bin/sh",
+            "-c",
+            "root=$1; set -- \"$root\"/cancel-*.pid; test \"$1\" = \"$root/cancel-*.pid\"",
+            "xuva-token-cleanup",
+            &runtime_root,
+        ])
+        .status()
+        .expect("cancellation token cleanup probe starts");
+    assert!(
+        token_cleanup.success(),
+        "the per-invocation cancellation token survived child cleanup"
     );
     std::fs::remove_dir_all(directory).expect("signal fixture directory is removed");
 }
@@ -2668,7 +3097,8 @@ fn posix_find_head_and_tail_use_raw_wsl_semantics() {
             .expect("POSIX line utility starts");
         assert!(
             output.status.success(),
-            "argv={arguments:?}; stdout: {}; stderr: {}",
+            "argv={arguments:?}; status={}; stdout: {}; stderr: {}",
+            output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );

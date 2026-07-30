@@ -342,6 +342,46 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn bounded_runner_preserves_batch_output_and_wide_exit_status() {
+        let root = std::env::temp_dir().join(format!("xuva-bounded-batch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("batch fixture directory is created");
+        let script = root.join("fixture.cmd");
+        std::fs::write(
+            &script,
+            "@echo {\"ok\":true}\r\n@if \"%1\"==\"wide\" exit /b 3010\r\n@exit /b 0\r\n",
+        )
+        .expect("batch fixture is written");
+
+        let mut success = Command::new(&script);
+        let success = run_bounded(
+            &mut success,
+            Some(Vec::new()),
+            Duration::from_secs(5),
+            PROBE_OUTPUT_LIMIT,
+        )
+        .expect("successful batch fixture completes");
+        assert!(success.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&success.stdout).trim(),
+            "{\"ok\":true}"
+        );
+
+        let mut wide = Command::new(&script);
+        wide.arg("wide");
+        let wide = run_bounded(
+            &mut wide,
+            Some(Vec::new()),
+            Duration::from_secs(5),
+            PROBE_OUTPUT_LIMIT,
+        )
+        .expect("wide-exit batch fixture completes");
+        assert_eq!(wide.status.code(), Some(3010));
+        std::fs::remove_dir_all(root).expect("batch fixture directory is removed");
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn bounded_runner_kills_a_descendant_that_keeps_inherited_pipes_open() {
         let root =
             std::env::temp_dir().join(format!("xuva-bounded-descendant-{}", std::process::id()));
