@@ -171,7 +171,9 @@ group_has_other_members() {
         process_id=${process_id%/stat}
         [ "$process_id" != "$$" ] || continue
         stat_value=$(/bin/cat -- "$stat_path" 2>/dev/null) || continue
-        stat_fields=${stat_value#*) }
+        # /proc/<pid>/stat wraps comm in parentheses, but comm itself may
+        # contain ") ". Strip through the final delimiter before state.
+        stat_fields=${stat_value##*) }
         set -- $stat_fields
         [ "${3:-}" = "$$" ] && return 0
     done
@@ -185,7 +187,7 @@ signal_other_members() {
         process_id=${process_id%/stat}
         [ "$process_id" != "$$" ] || continue
         stat_value=$(/bin/cat -- "$stat_path" 2>/dev/null) || continue
-        stat_fields=${stat_value#*) }
+        stat_fields=${stat_value##*) }
         set -- $stat_fields
         [ "${3:-}" = "$$" ] || continue
         /bin/kill "-$member_signal" -- "$process_id" 2>/dev/null || true
@@ -221,7 +223,11 @@ finish() {
     trap - EXIT INT TERM
     if ! quiesce_process_group; then
         printf 'xuva: child process group did not quiesce after command completion\n' >&2
-        completion_status=125
+        # Token removal plus any completion record is accepted by the Windows
+        # parent as cleanup proof. Preserve the token and withhold completion
+        # when a member survives so the parent must remain fail-closed.
+        /bin/rm -f -- "$completion_staging"
+        exit 125
     fi
     cleanup
     publish_completion "$completion_status" || {
@@ -443,7 +449,9 @@ group_has_other_members() {
         process_id=${process_id%/stat}
         [ "$process_id" != "$$" ] || continue
         stat_value=$(/bin/cat -- "$stat_path" 2>/dev/null) || continue
-        stat_fields=${stat_value#*) }
+        # /proc/<pid>/stat wraps comm in parentheses, but comm itself may
+        # contain ") ". Strip through the final delimiter before state.
+        stat_fields=${stat_value##*) }
         set -- $stat_fields
         [ "${3:-}" = "$$" ] && return 0
     done
@@ -457,7 +465,7 @@ signal_other_members() {
         process_id=${process_id%/stat}
         [ "$process_id" != "$$" ] || continue
         stat_value=$(/bin/cat -- "$stat_path" 2>/dev/null) || continue
-        stat_fields=${stat_value#*) }
+        stat_fields=${stat_value##*) }
         set -- $stat_fields
         [ "${3:-}" = "$$" ] || continue
         /bin/kill "-$member_signal" -- "$process_id" 2>/dev/null || true
@@ -493,7 +501,10 @@ finish() {
     trap - EXIT INT TERM
     if ! quiesce_process_group; then
         printf 'xuva-plan: child process group did not quiesce after command completion\n' >&2
-        completion_status=125
+        # A completion record is a successful quiescence attestation, not a
+        # generic error report. Keep the token and publish nothing on failure.
+        /bin/rm -f -- "$completion_staging"
+        exit 125
     fi
     cleanup
     publish_completion "$completion_status" || {
@@ -3421,6 +3432,11 @@ fn test_kill_wsl2_proxy_during_cancellation() -> bool {
         && env::var("XUVA_TEST_KILL_WSL2_PROXY_DURING_CANCEL").as_deref() == Ok("1")
 }
 
+fn test_defer_wsl2_proxy_reap_until_cleanup() -> bool {
+    env::var("XUVA_TEST_MODE").as_deref() == Ok("1")
+        && env::var("XUVA_TEST_DEFER_WSL2_PROXY_REAP_UNTIL_CLEANUP").as_deref() == Ok("1")
+}
+
 #[cfg(test)]
 fn rtk_arguments(arguments: Vec<OsString>, config: &Config, cancel_nonce: &str) -> Vec<OsString> {
     rtk_arguments_with_metrics(
@@ -4425,11 +4441,22 @@ fn wait_for_wsl_child(
     let mut proxy_status = None;
     let mut proxy_exited_at = None;
     let mut test_proxy_killed = false;
+    let mut test_proxy_reap_deferred = false;
+    let test_defer_proxy_reap = test_defer_wsl2_proxy_reap_until_cleanup();
+    if test_defer_proxy_reap {
+        trace("test hook armed deferred WSL2 proxy reap");
+    }
     loop {
         if console::requested() {
             cancellation_started.get_or_insert_with(Instant::now);
         }
+        let defer_proxy_reap = test_proxy_killed && test_defer_proxy_reap;
+        if defer_proxy_reap && !test_proxy_reap_deferred {
+            trace("test hook deferred WSL2 proxy reap until Linux cleanup");
+            test_proxy_reap_deferred = true;
+        }
         if proxy_status.is_none()
+            && !defer_proxy_reap
             && let Some(status) = child.try_wait()?
         {
             trace(format!("WSL2 Windows proxy exited with {status}"));
@@ -4535,14 +4562,16 @@ fn wait_for_wsl_child(
                     (Some(LinuxProcessGroupState::TokenUnavailable), Some(_))
                 );
             if cleanup_proven {
-                if proxy_status.is_none() {
+                let status = if let Some(status) = proxy_status {
+                    status
+                } else {
                     let _ = child.kill();
-                    let _ = child.wait()?;
-                }
+                    child.wait()?
+                };
                 if let Some(error) = pending_error {
                     return Err(error);
                 }
-                return Ok(proxy_status.expect("proxy was reaped after Linux cleanup"));
+                return Ok(status);
             }
             if elapsed >= Duration::from_secs(4) && proxy_status.is_none() {
                 let _ = child.kill();
@@ -4552,10 +4581,15 @@ fn wait_for_wsl_child(
                 }
             }
             if elapsed >= Duration::from_secs(15) {
-                if proxy_status.is_none() {
+                let status = if let Some(status) = proxy_status {
+                    status
+                } else {
                     let _ = child.kill();
-                    let _ = child.wait()?;
-                }
+                    child.wait()?
+                };
+                trace(format!(
+                    "reaped WSL2 Windows proxy with {status} after failed cleanup proof"
+                ));
                 let cleanup_error = std::io::Error::other(match group_state {
                     Some(LinuxProcessGroupState::Alive) => {
                         "Linux process group survived SIGINT, SIGTERM, and SIGKILL escalation"
@@ -6619,6 +6653,40 @@ mod tests {
             assert!(script.contains("/bin/kill -0 -- \"-$stale_worker\""));
             assert!(script.contains("group_has_other_members"));
             assert!(script.contains("publish_completion"));
+            assert_eq!(
+                script.matches("stat_fields=${stat_value##*) }").count(),
+                2,
+                "both process-group scans must parse after the final comm delimiter"
+            );
+            assert!(
+                !script.contains("stat_fields=${stat_value#*) }"),
+                "shortest-prefix /proc stat parsing can misread comm containing `) `"
+            );
+
+            let finish = script
+                .split_once("finish() {")
+                .expect("launcher has a finish trap")
+                .1
+                .split_once("trap finish EXIT")
+                .expect("launcher finish trap is installed")
+                .0;
+            let failed_quiescence_exit = finish
+                .find("exit 125")
+                .expect("failed quiescence exits without attestation");
+            let cleanup = finish
+                .find("\n    cleanup\n")
+                .expect("successful quiescence removes its token");
+            let completion = finish
+                .find("\n    publish_completion ")
+                .expect("successful quiescence publishes completion");
+            assert!(
+                failed_quiescence_exit < cleanup && cleanup < completion,
+                "cleanup and completion must remain unreachable after quiescence failure"
+            );
+            assert!(
+                !finish[..failed_quiescence_exit].contains("publish_completion"),
+                "failed quiescence must not publish cleanup proof"
+            );
         }
     }
 

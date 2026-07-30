@@ -3074,6 +3074,7 @@ fn wsl2_cancellation_finishes_after_the_windows_proxy_exits() {
         ])
         .env("XUVA_TEST_MODE", "1")
         .env("XUVA_TEST_KILL_WSL2_PROXY_DURING_CANCEL", "1")
+        .env("XUVA_TEST_DEFER_WSL2_PROXY_REAP_UNTIL_CLEANUP", "1")
         .env("XUVA_WSL_TEST_READY_FILE", &ready_file)
         .env("XUVA_WSL_TRACE", "1")
         .env("XUVA_METRICS", "off")
@@ -3123,6 +3124,10 @@ fn wsl2_cancellation_finishes_after_the_windows_proxy_exits() {
         stderr.contains("test hook terminated the WSL2 Windows proxy"),
         "the Windows proxy did not exit during the cancellation test: {stderr}"
     );
+    assert!(
+        stderr.contains("test hook deferred WSL2 proxy reap until Linux cleanup"),
+        "the cleanup-before-proxy-reap race was not exercised: {stderr}"
+    );
     let stopped = Command::new("wsl.exe")
         .args([
             "-d",
@@ -3148,7 +3153,7 @@ fn wsl2_cancellation_finishes_after_the_windows_proxy_exits() {
 }
 
 #[test]
-fn normal_wsl2_completion_reaps_background_group_members_before_returning() {
+fn normal_wsl2_completion_reaps_orphan_with_proc_stat_delimiter_in_comm() {
     if std::env::var_os("XUVA_WSL1_TEST_DISTRO").is_some() {
         return;
     }
@@ -3169,7 +3174,13 @@ fn normal_wsl2_completion_reaps_background_group_members_before_returning() {
     let output = command("/bin/sh")
         .args([
             "-c",
-            "(trap '' TERM; while :; do sleep 1; done) & printf '%s' \"$!\" > \"$1\"; exit 0",
+            concat!(
+                "( ",
+                "(printf 'xuva) worker' > /proc/self/comm; ",
+                "trap '' TERM; while :; do :; done) & ",
+                "printf '%s' \"$!\" > \"$1\"; ",
+                ") & wait \"$!\"; exit 0",
+            ),
             "xuva-background-worker",
             &mapped_pid,
         ])
@@ -3178,7 +3189,7 @@ fn normal_wsl2_completion_reaps_background_group_members_before_returning() {
         .expect("background-worker command starts");
     assert!(
         output.status.success(),
-        "launcher rejected a successfully quiesced background worker: {}",
+        "launcher rejected an orphan whose /proc comm contains `) `: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let worker_pid = std::fs::read_to_string(&pid_file)
