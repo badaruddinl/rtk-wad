@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 mod adapters;
 mod agent;
 mod bridge;
+mod cli;
 mod cli_exit;
 mod config;
 mod dispatcher;
@@ -21,6 +22,7 @@ mod paths;
 mod planning;
 mod process;
 mod providers;
+mod routing;
 
 pub(crate) const PRODUCT_NAME: &str = "XUVA";
 pub(crate) const PRODUCT_COMMAND: &str = "xuva";
@@ -69,9 +71,6 @@ const RELEASE_TAGS_URL: &str = "https://github.com/badaruddinl/xuva.git";
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 5;
 const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
-const ROUTE_POLICY_SCHEMA_VERSION: u32 = 2;
-const CALIBRATION_SCHEMA_VERSION: u32 = 3;
-const CALIBRATION_MAX_SAMPLES: usize = 5;
 const CANCEL_SCRIPT: &str = include_str!("scripts/cancel.sh");
 const CANCEL_PROBE_SCRIPT: &str = include_str!("scripts/cancel_probe.sh");
 const LAUNCH_SCRIPT: &str = include_str!("scripts/launch.sh");
@@ -110,261 +109,14 @@ fn trace(message: impl AsRef<str>) {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct RoutePolicyFile {
-    schema_version: u32,
-    #[serde(default)]
-    manifest_version: String,
-    #[serde(default)]
-    context_signature: String,
-    evidence: Vec<RoutePolicyEvidence>,
-}
+use routing::{
+    CALIBRATION_MAX_SAMPLES, CALIBRATION_SCHEMA_VERSION, CalibrationEntry, CalibrationFile,
+    CalibrationPlan, NativeCalibrationSample, PolicyContextReport, ROUTE_POLICY_SCHEMA_VERSION,
+    RoutePolicyEvidence, RoutePolicyFile, adaptive_context_signature, calibration_plan,
+    calibration_signature, median, policy_context_report, select_adaptive_route,
+};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RoutePolicyEvidence {
-    key: String,
-    raw_median_ms: f64,
-    candidate_median_ms: f64,
-    token_savings_percent: f64,
-    sample_count: u32,
-}
-
-#[derive(Serialize)]
-struct PolicyContextReport {
-    schema_version: u32,
-    manifest_version: String,
-    context_signature: String,
-}
-
-fn policy_context_report(config: &Config) -> PolicyContextReport {
-    PolicyContextReport {
-        schema_version: ROUTE_POLICY_SCHEMA_VERSION,
-        manifest_version: adapter_contract_id(),
-        context_signature: adaptive_context_signature(config),
-    }
-}
-
-impl RoutePolicyFile {
-    fn route_for(
-        &self,
-        key: &str,
-        context_signature: &str,
-        objective: PolicyObjective,
-    ) -> Option<Route> {
-        let evidence = self.evidence.iter().find(|evidence| evidence.key == key)?;
-        if self.schema_version != ROUTE_POLICY_SCHEMA_VERSION
-            || self.manifest_version != adapter_contract_id()
-            || self.context_signature != context_signature
-            || evidence.sample_count < 5
-        {
-            return None;
-        }
-        Some(select_adaptive_route(
-            Some(evidence.raw_median_ms),
-            Some(evidence.candidate_median_ms),
-            evidence.token_savings_percent,
-            objective,
-        ))
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct CalibrationFile {
-    schema_version: u32,
-    entries: Vec<CalibrationEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CalibrationEntry {
-    signature: String,
-    key: String,
-    #[serde(default)]
-    manifest_version: String,
-    #[serde(default)]
-    context_signature: String,
-    raw_samples_ms: Vec<f64>,
-    native_samples: Vec<NativeCalibrationSample>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct NativeCalibrationSample {
-    elapsed_ms: f64,
-    input_tokens: i64,
-    saved_tokens: i64,
-}
-
-#[derive(Debug, Clone)]
-struct CalibrationPlan {
-    signature: String,
-    key: String,
-    manifest_version: String,
-    context_signature: String,
-    route: Route,
-    reason: &'static str,
-}
-
-impl CalibrationEntry {
-    fn token_savings_percent(&self) -> f64 {
-        let input_tokens = self
-            .native_samples
-            .iter()
-            .map(|sample| sample.input_tokens)
-            .sum::<i64>();
-        let saved_tokens = self
-            .native_samples
-            .iter()
-            .map(|sample| sample.saved_tokens)
-            .sum::<i64>();
-        if input_tokens > 0 {
-            (saved_tokens as f64 / input_tokens as f64) * 100.0
-        } else {
-            0.0
-        }
-    }
-
-    fn selected_route(&self, objective: PolicyObjective) -> Route {
-        select_adaptive_route(
-            median(&self.raw_samples_ms),
-            median(
-                &self
-                    .native_samples
-                    .iter()
-                    .map(|sample| sample.elapsed_ms)
-                    .collect::<Vec<_>>(),
-            ),
-            self.token_savings_percent(),
-            objective,
-        )
-    }
-
-    fn phase(&self) -> &'static str {
-        if self.raw_samples_ms.is_empty() || self.native_samples.len() < 2 {
-            "candidate"
-        } else if self.raw_samples_ms.len() < 2 {
-            "provisional"
-        } else {
-            "stable"
-        }
-    }
-}
-
-fn median(samples: &[f64]) -> Option<f64> {
-    if samples.is_empty() {
-        return None;
-    }
-    let mut sorted = samples.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    let middle = sorted.len() / 2;
-    if sorted.len().is_multiple_of(2) {
-        Some((sorted[middle - 1] + sorted[middle]) / 2.0)
-    } else {
-        Some(sorted[middle])
-    }
-}
-
-fn select_adaptive_route(
-    raw_median_ms: Option<f64>,
-    native_median_ms: Option<f64>,
-    token_savings_percent: f64,
-    objective: PolicyObjective,
-) -> Route {
-    let raw_is_faster = raw_median_ms
-        .zip(native_median_ms)
-        .is_some_and(|(raw, native)| raw <= native);
-    match objective {
-        PolicyObjective::Latency => {
-            if raw_is_faster {
-                Route::Raw
-            } else {
-                Route::NativeRtk
-            }
-        }
-        PolicyObjective::Balanced => {
-            if token_savings_percent >= 25.0 {
-                Route::NativeRtk
-            } else if raw_is_faster {
-                Route::Raw
-            } else {
-                Route::NativeRtk
-            }
-        }
-        PolicyObjective::Tokens => {
-            if token_savings_percent > 0.0 {
-                Route::NativeRtk
-            } else if raw_is_faster {
-                Route::Raw
-            } else {
-                Route::NativeRtk
-            }
-        }
-    }
-}
-
-fn print_command_surface(arguments: &[OsString]) -> ExitCode {
-    if arguments.len() > 2
-        || arguments
-            .get(1)
-            .is_some_and(|argument| argument != "--json")
-    {
-        eprintln!("xuva: usage: surface [--json]");
-        return ExitCode::FAILURE;
-    }
-    let report = command_surface_report();
-    if arguments
-        .get(1)
-        .is_some_and(|argument| argument == "--json")
-    {
-        return match serde_json::to_string_pretty(&report) {
-            Ok(rendered) => {
-                println!("{rendered}");
-                ExitCode::SUCCESS
-            }
-            Err(error) => {
-                eprintln!("xuva: unable to render command surface: {error}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    println!(
-        "{} {} protocol {} command surface: {} adapter command families",
-        report.adapter.name,
-        report.adapter.version,
-        report.adapter.protocol_version,
-        report.upstream_command_count
-    );
-    for row in report.commands {
-        println!(
-            "{}\t{}\t{}",
-            row.command,
-            row.classification.as_str(),
-            row.default_route
-        );
-    }
-    ExitCode::SUCCESS
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-struct SetupPlan {
-    schema_version: u32,
-    tool: String,
-    mode: &'static str,
-    status: &'static str,
-    reason: String,
-    proposed_provider: Option<&'static str>,
-    proposed_command: Option<Vec<String>>,
-    verification_command: Vec<String>,
-    apply: &'static str,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-struct SetupTransaction {
-    schema_version: u32,
-    tool: String,
-    status: String,
-    observed_unix_seconds: u64,
-    command: Option<Vec<String>>,
-    detail: String,
-}
+use cli::{SetupPlan, SetupTransaction, print_command_surface};
 
 fn provider_cache_path() -> PathBuf {
     xuva_data_root().join("provider-cache-v5.json")
@@ -2519,79 +2271,7 @@ fn calibration_key(arguments: &[OsString]) -> Option<&'static str> {
     }
 }
 
-fn calibration_signature(arguments: &[OsString], current_directory: &str) -> String {
-    let mut hash = 0xcbf29ce484222325_u64;
-    let mut append = |value: &str| {
-        for byte in value.as_bytes().iter().copied().chain(std::iter::once(0)) {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-    };
-    append(current_directory);
-    for argument in arguments {
-        append(&argument.to_string_lossy());
-    }
-    format!("{hash:016x}")
-}
 
-fn adaptive_context_signature(config: &Config) -> String {
-    let mut hash = 0xcbf29ce484222325_u64;
-    let mut append = |value: &str| {
-        for byte in value.as_bytes().iter().copied().chain(std::iter::once(0)) {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-    };
-    append(&adapter_contract_id());
-    append(config.environment.as_str());
-    append(config.policy_objective.as_str());
-    append(&config.native_rtk_path);
-    append(&env::var_os("PATH").unwrap_or_default().to_string_lossy());
-    format!("{hash:016x}")
-}
-
-fn calibration_plan(
-    arguments: &[OsString],
-    current_directory: Option<&str>,
-    policy: Option<&RoutePolicyFile>,
-    context_signature: &str,
-    objective: PolicyObjective,
-) -> Result<Option<CalibrationPlan>, String> {
-    let Some(current_directory) = current_directory else {
-        return Ok(None);
-    };
-    if has_wsl_path(arguments)
-        || windows_path_to_wsl_path(current_directory).is_none()
-        || calibration_key(arguments).is_none()
-    {
-        return Ok(None);
-    }
-    let key = calibration_key(arguments).expect("calibration key was checked");
-    if route_policy_key(arguments)
-        .as_deref()
-        .and_then(|policy_key| {
-            policy.and_then(|policy| policy.route_for(policy_key, context_signature, objective))
-        })
-        .is_some()
-    {
-        return Ok(None);
-    }
-    let signature = calibration_signature(arguments, current_directory);
-    let state = load_calibration()?;
-    let entry = state
-        .entries
-        .iter()
-        .find(|entry| calibration_entry_matches(entry, &signature, context_signature));
-    let (route, reason) = calibration_route_for(entry, objective);
-    Ok(Some(CalibrationPlan {
-        signature,
-        key: key.to_owned(),
-        manifest_version: adapter_contract_id(),
-        context_signature: context_signature.to_owned(),
-        route,
-        reason,
-    }))
-}
 
 fn calibration_entry_matches(
     entry: &CalibrationEntry,
@@ -8268,12 +7948,12 @@ mod tests {
     #[test]
     fn local_calibration_signature_does_not_expose_command_text() {
         let arguments = vec![OsString::from("rg"), OsString::from("sensitive value")];
-        let signature = calibration_signature(&arguments, r"E:\work");
+        let signature = calibration_signature(&arguments, Some(r"E:\work"));
         assert_eq!(signature.len(), 16);
         assert!(!signature.contains("sensitive"));
         assert_ne!(
             signature,
-            calibration_signature(&[OsString::from("rg"), OsString::from("other")], r"E:\work")
+            calibration_signature(&[OsString::from("rg"), OsString::from("other")], Some(r"E:\work"))
         );
     }
 
