@@ -309,12 +309,29 @@ pub(crate) fn is_sensitive_environment_name(name: &str) -> bool {
                 | "CREDENTIALS"
                 | "COOKIE"
                 | "AUTH"
+                | "KUBECONFIG"
+                | "ASKPASS"
         )
     });
     sensitive_component
-        || ["TOKEN", "PRIVATE_KEY", "ACCESS_KEY"]
-            .iter()
-            .any(|marker| upper.contains(marker))
+        || [
+            "TOKEN",
+            "PRIVATE_KEY",
+            "ACCESS_KEY",
+            "API_KEY",
+            "CREDENTIAL_FILE",
+            "AUTH_SOCK",
+            "KUBECONFIG",
+            "DOCKER_CONFIG",
+            "USERCONFIG",
+            "GIT_ASKPASS",
+            "AWS_PROFILE",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "STRIPE_API_KEY",
+            "OPENAI_API_KEY",
+        ]
+        .iter()
+        .any(|marker| upper.contains(marker))
 }
 
 fn parse_environment_allowlist(value: Option<&str>) -> Result<Vec<String>, String> {
@@ -430,4 +447,43 @@ fn optional_linux_path_list(
         validate_linux_path_list(value, name)?;
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_sensitive_environment_name() {
+        let sensitive = [
+            "OPENAI_API_KEY",
+            "STRIPE_API_KEY",
+            "KUBECONFIG",
+            "DOCKER_CONFIG",
+            "NPM_CONFIG_USERCONFIG",
+            "SSH_AUTH_SOCK",
+            "GIT_ASKPASS",
+            "AWS_PROFILE",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "MY_DB_PASSWORD",
+            "CLIENT_SECRET",
+            "SESSION_TOKEN",
+            "AUTH_COOKIE",
+            "RSA_PRIVATE_KEY",
+        ];
+        for name in sensitive {
+            assert!(
+                is_sensitive_environment_name(name),
+                "Expected `{name}` to be identified as sensitive"
+            );
+        }
+
+        let non_sensitive = ["RUST_LOG", "PATH", "LANG", "TERM", "EDITOR"];
+        for name in non_sensitive {
+            assert!(
+                !is_sensitive_environment_name(name),
+                "Expected `{name}` to be non-sensitive"
+            );
+        }
+    }
 }

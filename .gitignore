@@ -1,3 +1,5 @@
 /target/
 /benchmarks/results*/
 /.flowpeek/
+/.flopeek/
+/.gemini/

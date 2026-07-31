@@ -58,10 +58,11 @@ otherwise XUVA continues with raw or other verified provider routes.
 
 ## Download the verified Windows binary
 
-The current Windows x86_64 release is `v0.4.1`, using the XUVA product and
-archive names. Development after that release is versioned as a beta until the
-same source SHA completes the hosted and controlled Windows/WSL release gates.
-The archive is not Authenticode-signed; see [release
+The current Windows x86_64 release is `v0.4.3`, using the XUVA product and
+binary identity across launcher, installer, environment variables, and state paths.
+The historic `v0.3.0` archive is retained under its original filename and built from
+the immutable tag, published with a SHA-256 sidecar, and accompanied by a GitHub
+build-provenance attestation. It is not Authenticode-signed; see [release
 provenance](docs/RELEASE_PROVENANCE.md) for the explicit trust boundary.
 
 Supported public-beta runtime targets are Windows 10/11 x86_64 with PowerShell
@@ -72,7 +73,7 @@ discovered, but are not part of the release gate. Source builds require Rust
 
 - [Download the v0.4.3 Windows archive](https://github.com/badaruddinl/xuva/releases/download/v0.4.3/xuva-v0.4.3-windows-x86_64.zip)
 - [Download its SHA-256 sidecar](https://github.com/badaruddinl/xuva/releases/download/v0.4.3/xuva-v0.4.3-windows-x86_64.zip.sha256)
-- [Open the v0.4.1 release record](https://github.com/badaruddinl/xuva/releases/tag/v0.4.1)
+- [Open the v0.4.3 release record](https://github.com/badaruddinl/xuva/releases/tag/v0.4.3)
 
 Verify the archive after downloading it:
 
