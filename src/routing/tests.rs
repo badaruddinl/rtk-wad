@@ -5,7 +5,7 @@ use crate::config::{Config, PolicyObjective, Route};
 use crate::routing::{
     CalibrationEntry, CalibrationFile, NativeCalibrationSample, ROUTE_POLICY_SCHEMA_VERSION,
     RoutePolicyEvidence, RoutePolicyFile, adaptive_context_signature, calibration_plan,
-    calibration_signature, median, select_adaptive_route,
+    calibration_signature, is_calibration_candidate, median, select_adaptive_route,
 };
 
 fn default_config() -> Config {
@@ -130,6 +130,30 @@ fn calibration_plan_bootstraps_only_fail_closed_safe_commands() {
         .is_none(),
         "Git mutations must never enter adaptive calibration"
     );
+}
+
+#[test]
+fn calibration_candidate_check_is_pure_and_fail_closed() {
+    for arguments in [
+        vec![OsString::from("git"), OsString::from("status")],
+        vec![OsString::from("rg"), OsString::from("needle")],
+        vec![OsString::from("npm"), OsString::from("run")],
+        vec![
+            OsString::from("go"),
+            OsString::from("test"),
+            OsString::from("./..."),
+        ],
+    ] {
+        assert!(is_calibration_candidate(&arguments));
+    }
+
+    for arguments in [
+        vec![OsString::from("git"), OsString::from("commit")],
+        vec![OsString::from("npm"), OsString::from("install")],
+        vec![OsString::from("go"), OsString::from("test")],
+    ] {
+        assert!(!is_calibration_candidate(&arguments));
+    }
 }
 
 #[test]

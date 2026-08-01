@@ -316,6 +316,10 @@ pub(crate) fn calibration_plan(
     }))
 }
 
+pub(crate) fn is_calibration_candidate(arguments: &[OsString]) -> bool {
+    calibration_key(arguments).is_some()
+}
+
 fn calibration_key(arguments: &[OsString]) -> Option<String> {
     match arguments.first()?.to_str()? {
         "git" if is_verified_read_only_git(arguments) => Some("git:read-only".to_owned()),

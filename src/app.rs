@@ -4624,8 +4624,15 @@ fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         };
     }
     let started = Instant::now();
-    let adaptive_context = adaptive_context_signature(&invocation_config);
-    let policy = load_route_policy();
+    let policy_eligible = requested_route == Route::Auto && route_policy_key(&arguments).is_some();
+    let calibration_eligible =
+        requested_route == Route::Auto && routing::is_calibration_candidate(&arguments);
+    let adaptive_context = if policy_eligible || calibration_eligible {
+        adaptive_context_signature(&invocation_config)
+    } else {
+        String::new()
+    };
+    let policy = policy_eligible.then(load_route_policy).flatten();
     let (initial_route, initial_reason) = if requested_route == Route::Auto {
         auto_route_for_environment(
             &arguments,
@@ -4640,7 +4647,7 @@ fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     };
     let mut route = initial_route;
     let mut reason = initial_reason.to_owned();
-    let calibration = if requested_route == Route::Auto {
+    let calibration = if calibration_eligible {
         let calibration_state = match load_calibration() {
             Ok(state) => Some(state),
             Err(error) => {

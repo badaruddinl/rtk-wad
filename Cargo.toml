@@ -14,6 +14,11 @@ publish = false
 name = "xuva"
 path = "src/main.rs"
 
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"
+
 [dependencies]
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
