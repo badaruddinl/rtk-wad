@@ -167,8 +167,8 @@ const variants = (workload) => ({
     file: settings.wad,
     args: ["--route", "native-rtk", ...workload.rtk],
     environment: {
-      RTK_WAD_NATIVE_RTK_PATH: settings.nativeRtk,
-      RTK_WAD_STATE_DIR: isolatedWadState,
+      XUVA_NATIVE_RTK_PATH: settings.nativeRtk,
+      XUVA_STATE_DIR: isolatedWadState,
     },
   },
 });
@@ -234,13 +234,13 @@ const policyEvidence = Object.values(candidateSummaries.reduce((grouped, { workl
   };
 }, {}));
 const policyContext = await execute(settings.wad, ["policy", "context"], {
-  RTK_WAD_NATIVE_RTK_PATH: settings.nativeRtk,
-  RTK_WAD_STATE_DIR: isolatedWadState,
+  XUVA_NATIVE_RTK_PATH: settings.nativeRtk,
+  XUVA_STATE_DIR: isolatedWadState,
 });
 requireSuccessful(policyContext, "policy context");
 const parsedPolicyContext = JSON.parse(policyContext.stdout.toString("utf8"));
 if (parsedPolicyContext?.schema_version !== 2
-  || parsedPolicyContext?.manifest_version !== "0.43.0"
+  || parsedPolicyContext?.manifest_version !== "rtk:0.43.0:protocol-1"
   || typeof parsedPolicyContext?.context_signature !== "string"
   || parsedPolicyContext.context_signature.length !== 16) {
   throw new Error("WAD policy context is not compatible with the P16 policy contract");
@@ -254,8 +254,8 @@ writeFileSync(policyOutput, JSON.stringify({
 }, null, 2));
 
 const isolatedImport = await execute(settings.wad, ["policy", "import", policyOutput], {
-  RTK_WAD_NATIVE_RTK_PATH: settings.nativeRtk,
-  RTK_WAD_STATE_DIR: isolatedWadState,
+  XUVA_NATIVE_RTK_PATH: settings.nativeRtk,
+  XUVA_STATE_DIR: isolatedWadState,
 });
 requireSuccessful(isolatedImport, "isolated policy import");
 
@@ -264,8 +264,8 @@ for (const workload of selectedWorkloads) {
     file: settings.wad,
     args: workload.rtk,
     environment: {
-      RTK_WAD_NATIVE_RTK_PATH: settings.nativeRtk,
-      RTK_WAD_STATE_DIR: isolatedWadState,
+      XUVA_NATIVE_RTK_PATH: settings.nativeRtk,
+      XUVA_STATE_DIR: isolatedWadState,
     },
   };
   requireSuccessful(
@@ -324,7 +324,7 @@ console.log(`Wrote ${settings.output}`);
 console.log(`Wrote ${policyOutput}`);
 if (settings.installPolicy) {
   const imported = await execute(settings.wad, ["policy", "import", policyOutput], {
-    RTK_WAD_NATIVE_RTK_PATH: settings.nativeRtk,
+    XUVA_NATIVE_RTK_PATH: settings.nativeRtk,
   });
   if (imported.exit_code !== 0) throw new Error(`Policy import failed: ${imported.stderr}`);
   console.log("Installed the generated local route policy.");

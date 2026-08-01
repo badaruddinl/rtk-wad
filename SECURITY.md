@@ -10,7 +10,7 @@ published release line and the current `master` branch.
 Do not open a public issue for credential exposure, command execution,
 cross-host environment leakage, release provenance, or path-routing defects.
 Use GitHub's **Report a vulnerability** private security-advisory flow for
-`badaruddinl/xuva`.
+`badsleepyday/xuva`.
 
 Include the affected version, operating system and WSL version, exact command
 shape with secrets removed, expected boundary, observed behavior, and a minimal
