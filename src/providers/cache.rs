@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::config::Config;
 use crate::metrics::xuva_data_root;
 use crate::providers::model::{InspectionLevel, ProviderCacheEntry, ProviderCacheFile};
+use crate::state::write_json_atomic;
 
 pub(crate) const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 5;
 pub(crate) const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
@@ -32,20 +33,7 @@ pub(crate) fn load_provider_cache() -> ProviderCacheFile {
 }
 
 pub(crate) fn save_provider_cache(cache: &ProviderCacheFile) -> Result<(), String> {
-    let root = xuva_data_root();
-    fs::create_dir_all(&root)
-        .map_err(|error| format!("unable to create provider cache directory: {error}"))?;
-    let target = provider_cache_path();
-    let temporary = root.join(format!("provider-cache-{}.pending", std::process::id()));
-    let contents = serde_json::to_vec_pretty(cache)
-        .map_err(|error| format!("unable to encode provider cache: {error}"))?;
-    fs::write(&temporary, contents)
-        .map_err(|error| format!("unable to write provider cache: {error}"))?;
-    if target.exists() {
-        let _ = fs::remove_file(&target);
-    }
-    fs::rename(&temporary, &target)
-        .map_err(|error| format!("unable to finalize provider cache: {error}"))
+    write_json_atomic(&provider_cache_path(), cache, "provider cache")
 }
 
 pub(crate) fn cache_entry_is_fresh(

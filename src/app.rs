@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::{
     PRODUCT_COMMAND, adapters, agent, bridge, cli, cli_exit, config, dispatcher, lifecycle,
-    metrics, paths, planning, process, providers, routing,
+    metrics, paths, planning, process, providers, routing, state,
 };
 
 #[cfg(test)]
@@ -1541,18 +1541,7 @@ fn load_setup_transaction() -> Option<SetupTransaction> {
 }
 
 fn write_setup_transaction(transaction: &SetupTransaction) -> Result<(), String> {
-    let destination = setup_transaction_path();
-    let encoded = serde_json::to_string_pretty(transaction)
-        .map_err(|error| format!("unable to encode setup transaction: {error}"))?;
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("unable to create setup transaction directory: {error}"))?;
-    }
-    let temporary = destination.with_extension(format!("{}.new", std::process::id()));
-    fs::write(&temporary, encoded)
-        .map_err(|error| format!("unable to write setup transaction: {error}"))?;
-    fs::rename(&temporary, &destination)
-        .map_err(|error| format!("unable to activate setup transaction: {error}"))
+    state::write_json_atomic(&setup_transaction_path(), transaction, "setup transaction")
 }
 
 fn print_setup_transaction(transaction: Option<&SetupTransaction>, json: bool) -> ExitCode {
@@ -1877,17 +1866,7 @@ fn import_route_policy(source: &Path, config: &Config) -> Result<(), String> {
         None
     };
     let merged = merge_route_policy(existing, incoming);
-    let encoded = serde_json::to_string_pretty(&merged)
-        .map_err(|error| format!("unable to encode merged route policy: {error}"))?;
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("unable to create policy directory: {error}"))?;
-    }
-    let temporary = destination.with_extension(format!("{}.new", std::process::id()));
-    fs::write(&temporary, encoded)
-        .map_err(|error| format!("unable to write policy evidence: {error}"))?;
-    fs::rename(&temporary, &destination)
-        .map_err(|error| format!("unable to activate policy evidence: {error}"))
+    state::write_json_atomic(&destination, &merged, "route policy")
 }
 
 fn calibration_path() -> PathBuf {
@@ -1959,18 +1938,7 @@ fn load_calibration() -> Result<CalibrationFile, String> {
 
 fn save_calibration(file: &CalibrationFile) -> Result<(), String> {
     validate_calibration(file)?;
-    let destination = calibration_path();
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("unable to create calibration directory: {error}"))?;
-    }
-    let encoded = serde_json::to_string_pretty(file)
-        .map_err(|error| format!("unable to encode local calibration state: {error}"))?;
-    let temporary = destination.with_extension(format!("{}.new", std::process::id()));
-    fs::write(&temporary, encoded)
-        .map_err(|error| format!("unable to write local calibration state: {error}"))?;
-    fs::rename(&temporary, &destination)
-        .map_err(|error| format!("unable to activate local calibration state: {error}"))
+    state::write_json_atomic(&calibration_path(), file, "local calibration state")
 }
 
 fn cap_samples<T>(samples: &mut Vec<T>) {
