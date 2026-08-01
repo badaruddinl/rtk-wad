@@ -1,10 +1,9 @@
+use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::thread;
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
-use crate::config::Config;
 use crate::process;
 use crate::providers::model::*;
 
@@ -28,25 +27,28 @@ pub(crate) fn configured_windows_executable(path: &str) -> Option<String> {
 }
 
 pub(crate) fn first_windows_executable(path: &str) -> Option<String> {
-    if Path::new(path).is_file() {
-        return Some(path.to_owned());
-    }
-    let env_path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&env_path) {
-        let candidate = dir.join(path);
-        if candidate.is_file() {
-            return Some(candidate.to_string_lossy().into_owned());
-        }
-        if Path::new(path).extension().is_none() {
-            for ext in ["exe", "cmd", "bat", "com"] {
-                let candidate_ext = dir.join(format!("{path}.{ext}"));
-                if candidate_ext.is_file() {
-                    return Some(candidate_ext.to_string_lossy().into_owned());
-                }
-            }
-        }
-    }
-    None
+    let mut command = Command::new("where.exe");
+    command.arg(path);
+    process::run_probe(&mut command)
+        .ok()
+        .filter(|output| output.status.success() && !output.stdout_truncated)
+        .and_then(|output| {
+            let rendered = String::from_utf8_lossy(&output.stdout);
+            let candidates = rendered
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            select_windows_executable(candidates)
+        })
+}
+
+pub(crate) fn select_windows_executable(candidates: Vec<String>) -> Option<String> {
+    candidates
+        .iter()
+        .find(|candidate| is_windows_launchable_path(candidate))
+        .cloned()
 }
 
 pub(crate) fn windows_binary_identity(path: &str) -> Option<BinaryIdentity> {
@@ -78,20 +80,21 @@ pub(crate) struct VersionProbe {
     pub(crate) status: ProbeStatus,
 }
 
-fn wsl_exec_prefix<'a>(distro: &'a str, user: Option<&'a str>) -> Vec<&'a str> {
-    let mut args = vec!["-d", distro];
-    if let Some(u) = user {
-        args.push("-u");
-        args.push(u);
+fn wsl_exec_prefix(distro: &str, user: Option<&str>) -> Vec<OsString> {
+    let mut args = vec![OsString::from("-d"), OsString::from(distro)];
+    if let Some(user) = user {
+        args.extend([OsString::from("-u"), OsString::from(user)]);
     }
-    args.push("--");
+    args.push(OsString::from("--exec"));
     args
 }
 
-fn first_output_line(bytes: &[u8]) -> Option<String> {
-    let rendered = String::from_utf8_lossy(bytes);
-    let line = rendered.lines().next()?.trim();
-    (!line.is_empty()).then(|| line.to_owned())
+pub(crate) fn first_output_line(bytes: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_owned)
 }
 
 pub(crate) fn tool_version(
@@ -199,7 +202,7 @@ pub(crate) fn is_eligible_wsl_distro(distro: &str) -> bool {
     )
 }
 
-fn decode_wsl_output(bytes: &[u8]) -> String {
+pub(crate) fn decode_wsl_output(bytes: &[u8]) -> String {
     if bytes.chunks_exact(2).any(|pair| pair[1] == 0) {
         let units = bytes
             .chunks_exact(2)
