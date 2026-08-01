@@ -58,7 +58,7 @@ otherwise XUVA continues with raw or other verified provider routes.
 
 ## Download the verified Windows binary
 
-The current Windows x86_64 release is `v0.4.3`, using the XUVA product and
+The current Windows x86_64 release is `v0.4.4`, using the XUVA product and
 binary identity across launcher, installer, environment variables, and state paths.
 The historic `v0.3.0` archive is retained under its original filename and built from
 the immutable tag, published with a SHA-256 sidecar, and accompanied by a GitHub
@@ -71,15 +71,15 @@ distro and its project mapping are verified. Other distributions can be
 discovered, but are not part of the release gate. Source builds require Rust
 1.95.0 or newer; official binaries use the pinned Rust 1.97.1 toolchain.
 
-- [Download the v0.4.3 Windows archive](https://github.com/badsleepyday/xuva/releases/download/v0.4.3/xuva-v0.4.3-windows-x86_64.zip)
-- [Download its SHA-256 sidecar](https://github.com/badsleepyday/xuva/releases/download/v0.4.3/xuva-v0.4.3-windows-x86_64.zip.sha256)
-- [Open the v0.4.3 release record](https://github.com/badsleepyday/xuva/releases/tag/v0.4.3)
+- [Download the v0.4.4 Windows archive](https://github.com/badsleepyday/xuva/releases/download/v0.4.4/xuva-v0.4.4-windows-x86_64.zip)
+- [Download its SHA-256 sidecar](https://github.com/badsleepyday/xuva/releases/download/v0.4.4/xuva-v0.4.4-windows-x86_64.zip.sha256)
+- [Open the v0.4.4 release record](https://github.com/badsleepyday/xuva/releases/tag/v0.4.4)
 
 Verify the archive after downloading it:
 
 ```powershell
-Get-FileHash .\xuva-v0.4.3-windows-x86_64.zip -Algorithm SHA256
-Get-Content .\xuva-v0.4.3-windows-x86_64.zip.sha256
+Get-FileHash .\xuva-v0.4.4-windows-x86_64.zip -Algorithm SHA256
+Get-Content .\xuva-v0.4.4-windows-x86_64.zip.sha256
 ```
 
 Every stable release also requires successful hosted quality gates and a
