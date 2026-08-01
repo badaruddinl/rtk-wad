@@ -1559,6 +1559,18 @@ fn xuva_raw_fast_path_avoids_scratch_and_gain_ledger_io() {
         "the raw fast path must not create RTK tracker scratch state"
     );
 
+    let automatic = Command::new(&launcher)
+        .env("LOCALAPPDATA", &local_app_data)
+        .args(["go", "version"])
+        .output()
+        .expect("XUVA automatic raw route starts");
+    assert!(automatic.status.success());
+    assert!(String::from_utf8_lossy(&automatic.stdout).starts_with("go version "));
+    assert!(
+        !scratch.exists(),
+        "the automatic raw fast path must not create RTK tracker scratch state"
+    );
+
     let gain = Command::new(&launcher)
         .env("LOCALAPPDATA", &local_app_data)
         .arg("gain")

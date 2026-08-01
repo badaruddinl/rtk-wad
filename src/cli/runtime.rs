@@ -209,6 +209,26 @@ pub(crate) fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     } else {
         (requested_route, "explicit route preference")
     };
+    let optimistic_same_host_raw = matches!(
+        invocation_config.invocation_origin,
+        InvocationOrigin::Windows
+    ) && !explain
+        && requested_route == Route::Auto
+        && initial_route == Route::Raw
+        && !policy_eligible
+        && !calibration_eligible;
+    if optimistic_same_host_raw {
+        match adapters::windows::run(&arguments) {
+            Ok(status) => return ExitCode::from_status(status),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                trace("native command was not found; continuing with provider resolution");
+            }
+            Err(error) => {
+                eprintln!("xuva: unable to start Windows raw command: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     let mut route = initial_route;
     let mut reason = initial_reason.to_owned();
     let calibration = if calibration_eligible {
