@@ -3,9 +3,9 @@ use std::ffi::OsString;
 use crate::adapters::rtk::adapter_contract_id;
 use crate::config::{Config, PolicyObjective, Route};
 use crate::routing::{
-    CalibrationEntry, NativeCalibrationSample, ROUTE_POLICY_SCHEMA_VERSION, RoutePolicyEvidence,
-    RoutePolicyFile, adaptive_context_signature, calibration_signature, median,
-    select_adaptive_route,
+    CalibrationEntry, CalibrationFile, NativeCalibrationSample, ROUTE_POLICY_SCHEMA_VERSION,
+    RoutePolicyEvidence, RoutePolicyFile, adaptive_context_signature, calibration_plan,
+    calibration_signature, median, select_adaptive_route,
 };
 
 fn default_config() -> Config {
@@ -71,6 +71,65 @@ fn test_calibration_entry_route_selection() {
         Route::NativeRtk
     );
     assert_eq!(entry.phase(), "stable");
+}
+
+#[test]
+fn calibration_plan_bootstraps_only_fail_closed_safe_commands() {
+    let arguments = vec![OsString::from("git"), OsString::from("status")];
+    let context = "0123456789abcdef";
+    let first = calibration_plan(
+        &arguments,
+        Some("C:\\repo"),
+        None,
+        None,
+        context,
+        PolicyObjective::Balanced,
+    )
+    .expect("calibration planning succeeds")
+    .expect("read-only Git is eligible");
+    assert_eq!(first.route, Route::NativeRtk);
+
+    let state = CalibrationFile {
+        schema_version: super::CALIBRATION_SCHEMA_VERSION,
+        entries: vec![CalibrationEntry {
+            signature: first.signature.clone(),
+            key: first.key.clone(),
+            manifest_version: first.manifest_version.clone(),
+            context_signature: context.to_owned(),
+            raw_samples_ms: Vec::new(),
+            native_samples: vec![NativeCalibrationSample {
+                elapsed_ms: 10.0,
+                input_tokens: 0,
+                saved_tokens: 0,
+            }],
+        }],
+    };
+    let second = calibration_plan(
+        &arguments,
+        Some("C:\\repo"),
+        None,
+        Some(&state),
+        context,
+        PolicyObjective::Balanced,
+    )
+    .expect("calibration planning succeeds")
+    .expect("read-only Git remains eligible");
+    assert_eq!(second.route, Route::Raw);
+
+    let mutation = [OsString::from("git"), OsString::from("commit")];
+    assert!(
+        calibration_plan(
+            &mutation,
+            Some("C:\\repo"),
+            None,
+            None,
+            context,
+            PolicyObjective::Balanced,
+        )
+        .expect("mutation classification succeeds")
+        .is_none(),
+        "Git mutations must never enter adaptive calibration"
+    );
 }
 
 #[test]

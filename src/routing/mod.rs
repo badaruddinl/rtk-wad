@@ -237,18 +237,17 @@ pub(crate) fn calibration_plan(
     arguments: &[OsString],
     current_directory: Option<&str>,
     policy: Option<&RoutePolicyFile>,
+    calibration: Option<&CalibrationFile>,
     context_signature: &str,
     objective: PolicyObjective,
 ) -> Result<Option<CalibrationPlan>, String> {
     let Some(current_directory) = current_directory else {
         return Ok(None);
     };
-    let Some(command) = arguments.first() else {
+    let Some(key) = calibration_key(arguments) else {
         return Ok(None);
     };
-    let command_str = command.to_string_lossy();
     let signature = calibration_signature(arguments, Some(current_directory));
-    let key = command_str.to_string();
 
     if let Some(route) = policy.and_then(|p| p.route_for(&key, context_signature, objective)) {
         return Ok(Some(CalibrationPlan {
@@ -261,7 +260,111 @@ pub(crate) fn calibration_plan(
         }));
     }
 
-    Ok(None)
+    let entry = calibration.and_then(|file| {
+        file.entries.iter().find(|entry| {
+            entry.signature == signature
+                && entry.manifest_version == adapter_contract_id()
+                && entry.context_signature == context_signature
+        })
+    });
+    let (route, reason) = match entry {
+        None => (
+            Route::NativeRtk,
+            "local calibration candidate: first safe observation uses native RTK",
+        ),
+        Some(entry) if entry.raw_samples_ms.is_empty() => (
+            Route::Raw,
+            "local calibration candidate: second safe observation uses raw execution",
+        ),
+        Some(entry) if entry.native_samples.len() < 2 => (
+            Route::NativeRtk,
+            "local calibration candidate: third safe observation confirms native RTK",
+        ),
+        Some(entry) if entry.raw_samples_ms.len() < 2 => {
+            let selected = entry.selected_route(objective);
+            if entry.raw_samples_ms.len() == 1 && entry.native_samples.len() == 2 {
+                (
+                    selected,
+                    "local calibration provisional choice; validating with one further natural invocation",
+                )
+            } else {
+                (
+                    Route::Raw,
+                    "local calibration validation samples raw execution before marking a stable route",
+                )
+            }
+        }
+        Some(entry) => {
+            let selected = entry.selected_route(objective);
+            (
+                selected,
+                if selected == Route::Raw {
+                    "local calibration selected stable lower-latency raw execution"
+                } else {
+                    "local calibration selected stable token-saving native RTK"
+                },
+            )
+        }
+    };
+    Ok(Some(CalibrationPlan {
+        signature,
+        key,
+        manifest_version: adapter_contract_id(),
+        context_signature: context_signature.to_owned(),
+        route,
+        reason,
+    }))
+}
+
+fn calibration_key(arguments: &[OsString]) -> Option<String> {
+    match arguments.first()?.to_str()? {
+        "git" if is_verified_read_only_git(arguments) => Some("git:read-only".to_owned()),
+        "rg" => Some("rg".to_owned()),
+        "npm" if matches!(arguments, [program, subcommand] if program == "npm" && subcommand == "run") => {
+            Some("npm:run-list".to_owned())
+        }
+        "go" if matches!(arguments, [program, subcommand, selector]
+                if program == "go" && subcommand == "test" && selector == "./...") =>
+        {
+            Some("go:test-all".to_owned())
+        }
+        _ => None,
+    }
+}
+
+fn is_verified_read_only_git(arguments: &[OsString]) -> bool {
+    if matches!(
+        arguments,
+        [program, option]
+            if program == "git"
+                && matches!(option.to_str(), Some("--version" | "-v" | "--help" | "-h"))
+    ) {
+        return true;
+    }
+    matches!(
+        git_subcommand(arguments),
+        Some("status" | "log" | "show" | "diff" | "rev-parse" | "ls-files" | "grep")
+    )
+}
+
+fn git_subcommand(arguments: &[OsString]) -> Option<&str> {
+    let mut skip_value = false;
+    for argument in arguments.iter().skip(1) {
+        let value = argument.to_str()?;
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if matches!(value, "-C" | "--git-dir" | "--work-tree" | "-c") {
+            skip_value = true;
+            continue;
+        }
+        if value.starts_with('-') {
+            continue;
+        }
+        return Some(value);
+    }
+    None
 }
 
 #[cfg(test)]

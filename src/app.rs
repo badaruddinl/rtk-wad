@@ -4641,10 +4641,18 @@ fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     let mut route = initial_route;
     let mut reason = initial_reason.to_owned();
     let calibration = if requested_route == Route::Auto {
+        let calibration_state = match load_calibration() {
+            Ok(state) => Some(state),
+            Err(error) => {
+                eprintln!("xuva: local calibration state is unavailable: {error}");
+                None
+            }
+        };
         match calibration_plan(
             &arguments,
             current_directory.as_deref().and_then(|path| path.to_str()),
             policy.as_ref(),
+            calibration_state.as_ref(),
             &adaptive_context,
             invocation_config.policy_objective,
         ) {

@@ -1580,12 +1580,23 @@ fn xuva_calibrates_safe_commands_across_natural_invocations() {
     let fake_rtk = directory.join("fake-rtk.cmd");
     std::fs::write(
         &fake_rtk,
-        "@echo off\r\necho fake-native-rtk %*\r\nexit /b 0\r\n",
+        "@echo off\r\nif \"%~1\"==\"--version\" (echo rtk 0.43.0& exit /b 0)\r\necho fake-native-rtk %*\r\nexit /b 0\r\n",
     )
     .expect("fake native RTK is written");
+    let initialized = Command::new("git.exe")
+        .args(["init", "--quiet"])
+        .current_dir(&directory)
+        .output()
+        .expect("temporary Git repository initialization starts");
+    assert!(
+        initialized.status.success(),
+        "git init stderr: {}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
 
     let run = || {
         Command::new(&launcher)
+            .current_dir(&directory)
             .env("XUVA_STATE_DIR", &state)
             .env("XUVA_NATIVE_RTK_PATH", &fake_rtk)
             .args(["git", "status", "--short"])
@@ -1594,10 +1605,20 @@ fn xuva_calibrates_safe_commands_across_natural_invocations() {
     };
 
     let first = run();
-    assert!(first.status.success());
+    assert!(
+        first.status.success(),
+        "first stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
     assert!(String::from_utf8_lossy(&first.stdout).contains("fake-native-rtk"));
     let second = run();
-    assert!(second.status.success());
+    assert!(
+        second.status.success(),
+        "second stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
     assert!(!String::from_utf8_lossy(&second.stdout).contains("fake-native-rtk"));
     let third = run();
     assert!(third.status.success());
@@ -1872,7 +1893,7 @@ fn xuva_provider_exec_runs_each_available_verified_provider_without_replay() {
     .expect("fake raw provider is written");
     std::fs::write(
         &fake_rtk,
-        "@echo off\r\necho rtk-cwd:%CD%\r\necho rtk-args:%*\r\nexit /b 43\r\n",
+        "@echo off\r\nif \"%~1\"==\"--version\" (echo rtk 0.43.0& exit /b 0)\r\necho rtk-cwd:%CD%\r\necho rtk-args:%*\r\nexit /b 43\r\n",
     )
     .expect("fake native RTK provider is written");
     let inherited_path = std::env::var_os("PATH").expect("PATH is available");
@@ -2167,8 +2188,11 @@ fn xuva_policy_requires_a_matching_local_adapter_context() {
     assert!(String::from_utf8_lossy(&selected.stdout).contains("route=raw"));
 
     let alternate_rtk = directory.join("other-rtk.cmd");
-    std::fs::write(&alternate_rtk, "@echo off\r\nexit /b 0\r\n")
-        .expect("alternate RTK fixture is written");
+    std::fs::write(
+        &alternate_rtk,
+        "@echo off\r\nif \"%~1\"==\"--version\" echo rtk 0.43.0\r\nexit /b 0\r\n",
+    )
+    .expect("alternate RTK fixture is written");
     let invalidated = Command::new(&launcher)
         .env("XUVA_STATE_DIR", &state)
         .env("XUVA_NATIVE_RTK_PATH", &alternate_rtk)
