@@ -3,6 +3,7 @@ use std::env;
 use std::ffi::OsString;
 
 pub(crate) mod calibration;
+pub(crate) mod decision;
 pub(crate) mod policy;
 
 use crate::adapters::rtk::adapter_contract_id;

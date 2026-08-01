@@ -10,6 +10,7 @@ pub mod cli_exit;
 pub mod config;
 pub mod diagnostics;
 pub mod dispatcher;
+pub mod execution;
 pub mod lifecycle;
 pub mod metrics;
 pub mod paths;
