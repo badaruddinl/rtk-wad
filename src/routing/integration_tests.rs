@@ -269,6 +269,22 @@ fn policy_uses_measured_savings_without_permitting_git_mutations() {
     );
     assert_eq!(
         auto_route_with_context(
+            &[
+                OsString::from("rg"),
+                OsString::from("needle"),
+                OsString::from("/mnt/e/work")
+            ],
+            Some(r"E:\work"),
+            Some(&policy),
+            Some(&context),
+            PolicyObjective::Balanced,
+        )
+        .0,
+        Route::Wsl1,
+        "Linux paths retain precedence over an otherwise valid Windows policy"
+    );
+    assert_eq!(
+        auto_route_with_context(
             &[OsString::from("rg"), OsString::from("needle")],
             Some(r"E:\work"),
             Some(&policy),
@@ -349,6 +365,29 @@ fn policy_uses_measured_savings_without_permitting_git_mutations() {
         )
         .0,
         Route::Raw
+    );
+
+    let mutation_policy = RoutePolicyFile {
+        schema_version: ROUTE_POLICY_SCHEMA_VERSION,
+        manifest_version: adapter_contract_id(),
+        context_signature: context.clone(),
+        evidence: vec![RoutePolicyEvidence {
+            key: "git:commit".to_owned(),
+            raw_median_ms: 1.0,
+            candidate_median_ms: 100.0,
+            token_savings_percent: 0.0,
+            sample_count: 5,
+        }],
+    };
+    assert_eq!(
+        authorized_policy_route(
+            &[OsString::from("git"), OsString::from("commit")],
+            Some(&mutation_policy),
+            Some(&context),
+            PolicyObjective::Balanced,
+        ),
+        None,
+        "benchmark evidence cannot authorize a Git mutation fast path"
     );
 }
 

@@ -54,8 +54,8 @@ pub(crate) use crate::providers::resolution::{
     windows_provider_has_compatible_semantics,
 };
 pub(crate) use crate::routing::decision::{
-    auto_route, auto_route_for_environment, auto_route_with_context, is_adapter_only_rtk_command,
-    is_rtk_meta_command, should_use_native_git,
+    authorized_policy_route, auto_route, auto_route_for_environment, auto_route_with_context,
+    is_adapter_only_rtk_command, is_rtk_meta_command, should_use_native_git,
 };
 pub(crate) use crate::routing::{
     ROUTE_POLICY_SCHEMA_VERSION, RoutePolicyEvidence, RoutePolicyFile, adaptive_context_signature,

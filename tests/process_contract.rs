@@ -2176,6 +2176,12 @@ fn xuva_policy_requires_a_matching_local_adapter_context() {
             "candidate_median_ms": 100.0,
             "token_savings_percent": 0.0,
             "sample_count": 5
+        }, {
+            "key": "git:status",
+            "raw_median_ms": 1.0,
+            "candidate_median_ms": 100.0,
+            "token_savings_percent": 0.0,
+            "sample_count": 5
         }]
     });
     let source = directory.join("policy.json");
@@ -2198,6 +2204,21 @@ fn xuva_policy_requires_a_matching_local_adapter_context() {
         .expect("matching policy explanation starts");
     assert!(selected.status.success());
     assert!(String::from_utf8_lossy(&selected.stdout).contains("route=raw"));
+
+    let fast = Command::new(&launcher)
+        .env("XUVA_STATE_DIR", &state)
+        .args(["git", "status", "--short"])
+        .output()
+        .expect("policy-authorized raw fast path starts");
+    assert!(
+        fast.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&fast.stdout),
+        String::from_utf8_lossy(&fast.stderr)
+    );
+    assert!(!state.join("calibration-v3.json").exists());
+    assert!(!state.join("metrics-v1.sqlite").exists());
+    assert!(!state.join("scratch").exists());
 
     let alternate_rtk = directory.join("other-rtk.cmd");
     std::fs::write(

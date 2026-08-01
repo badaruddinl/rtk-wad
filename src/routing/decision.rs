@@ -122,39 +122,15 @@ pub(crate) fn auto_route_with_context(
             "Linux path or WSL working directory requires Linux execution",
         );
     }
-    let policy_key = route_policy_key(arguments);
-    if let Some((_key, route)) = policy_key.as_deref().and_then(|key| {
-        context_signature
-            .and_then(|context| policy.and_then(|policy| policy.route_for(key, context, objective)))
-            .map(|route| (key, route))
-    }) {
-        let permitted = match route {
-            Route::Raw => {
-                command_family(arguments) == "rg"
-                    || is_verified_read_only_git(arguments)
-                    || is_verified_cargo_operation(arguments)
-                    || is_verified_npm_run_list_operation(arguments)
-                    || is_verified_go_test_all_operation(arguments)
-            }
-            Route::NativeRtk => {
-                command_family(arguments) == "rg"
-                    || is_verified_read_only_git(arguments)
-                    || is_verified_cargo_operation(arguments)
-                    || is_verified_npm_run_list_operation(arguments)
-                    || is_verified_go_test_all_operation(arguments)
-            }
-            Route::Wsl1 | Route::Wsl2 | Route::Auto => false,
-        };
-        if permitted {
-            return (
-                route,
-                if route == Route::Raw {
-                    "local benchmark policy selected lower-latency raw execution"
-                } else {
-                    "local benchmark policy selected token-saving native RTK"
-                },
-            );
-        }
+    if let Some(route) = authorized_policy_route(arguments, policy, context_signature, objective) {
+        return (
+            route,
+            if route == Route::Raw {
+                "local benchmark policy selected lower-latency raw execution"
+            } else {
+                "local benchmark policy selected token-saving native RTK"
+            },
+        );
     }
     match command_surface(command_family(arguments)) {
         CommandSurface::RawNative => (
@@ -197,6 +173,22 @@ pub(crate) fn auto_route_with_context(
             ),
         },
     }
+}
+
+pub(crate) fn authorized_policy_route(
+    arguments: &[OsString],
+    policy: Option<&RoutePolicyFile>,
+    context_signature: Option<&str>,
+    objective: PolicyObjective,
+) -> Option<Route> {
+    let key = route_policy_key(arguments)?;
+    let route = policy?.route_for(&key, context_signature?, objective)?;
+    let permitted = command_family(arguments) == "rg"
+        || is_verified_read_only_git(arguments)
+        || is_verified_cargo_operation(arguments)
+        || is_verified_npm_run_list_operation(arguments)
+        || is_verified_go_test_all_operation(arguments);
+    (permitted && matches!(route, Route::Raw | Route::NativeRtk)).then_some(route)
 }
 
 pub(crate) fn is_rtk_meta_command(command: &str) -> bool {

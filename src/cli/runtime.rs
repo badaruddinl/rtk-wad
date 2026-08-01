@@ -25,8 +25,8 @@ use crate::providers::dispatch::{
 };
 use crate::routing::calibration::{load as load_calibration, record as record_calibration};
 use crate::routing::decision::{
-    auto_route_for_environment, command_family, is_verified_read_only_git, route_policy_key,
-    should_use_native_git,
+    authorized_policy_route, auto_route_for_environment, command_family, is_verified_read_only_git,
+    route_policy_key, should_use_native_git,
 };
 use crate::routing::policy::load as load_route_policy;
 use crate::routing::{adaptive_context_signature, calibration_plan};
@@ -197,6 +197,12 @@ pub(crate) fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
         String::new()
     };
     let policy = policy_eligible.then(load_route_policy).flatten();
+    let policy_route = authorized_policy_route(
+        &arguments,
+        policy.as_ref(),
+        Some(&adaptive_context),
+        invocation_config.policy_objective,
+    );
     let (initial_route, initial_reason) = if requested_route == Route::Auto {
         auto_route_for_environment(
             &arguments,
@@ -215,8 +221,7 @@ pub(crate) fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     ) && !explain
         && requested_route == Route::Auto
         && initial_route == Route::Raw
-        && !policy_eligible
-        && !calibration_eligible;
+        && ((!policy_eligible && !calibration_eligible) || policy_route == Some(Route::Raw));
     if optimistic_same_host_raw {
         match adapters::windows::run(&arguments) {
             Ok(status) => return ExitCode::from_status(status),
@@ -231,7 +236,7 @@ pub(crate) fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     }
     let mut route = initial_route;
     let mut reason = initial_reason.to_owned();
-    let calibration = if calibration_eligible {
+    let calibration = if calibration_eligible && policy_route.is_none() {
         let calibration_state = match load_calibration() {
             Ok(state) => Some(state),
             Err(error) => {
