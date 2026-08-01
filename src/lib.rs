@@ -22,3 +22,6 @@ pub mod self_update;
 pub mod setup;
 pub mod state;
 pub mod wsl;
+
+#[cfg(test)]
+mod test_support;

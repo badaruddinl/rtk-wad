@@ -35,3 +35,12 @@ mod tests {
         }
     }
 }
+pub(crate) mod arguments;
+pub(crate) mod authorization;
+pub(crate) mod cancellation;
+#[cfg(test)]
+#[path = "tests.rs"]
+mod integration_tests;
+pub(crate) mod lifecycle;
+pub(crate) mod supervisor;
+pub(crate) mod test_hooks;

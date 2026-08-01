@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 
 use crate::adapters::rtk::{CommandSurface, command_surface};
-use crate::config::{ExecutionEnvironment, PolicyObjective, Route};
+use crate::config::{Config, ExecutionEnvironment, GitMode, PolicyObjective, Route};
 use crate::paths::windows_path_to_wsl_path;
 use crate::providers::resolution::requires_raw_posix_provider;
 use crate::routing::RoutePolicyFile;
@@ -278,5 +278,34 @@ pub(crate) fn auto_route_for_environment(
             "windows-only environment disables automatic WSL routing and uses the native command",
         ),
         CommandSurface::CoreInternal => unreachable!("XUVA core commands were handled above"),
+    }
+}
+
+pub(crate) fn git_uses_wsl_directory(arguments: &[OsString]) -> bool {
+    arguments.windows(2).any(|pair| {
+        (pair[0] == "-C" || pair[0] == "--git-dir" || pair[0] == "--work-tree")
+            && is_wsl_path(&pair[1])
+    })
+}
+
+pub(crate) fn should_use_native_git(
+    arguments: &[OsString],
+    config: &Config,
+    current_directory: Option<&str>,
+) -> bool {
+    if arguments.first().is_none_or(|argument| argument != "git")
+        || git_uses_wsl_directory(arguments)
+    {
+        return false;
+    }
+    match config.git_mode {
+        GitMode::Native => true,
+        GitMode::Wsl => false,
+        GitMode::Auto => {
+            config.cwd.is_none()
+                && current_directory
+                    .and_then(windows_path_to_wsl_path)
+                    .is_some()
+        }
     }
 }

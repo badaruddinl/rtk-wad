@@ -4,6 +4,8 @@ use std::ffi::OsString;
 
 pub(crate) mod calibration;
 pub(crate) mod decision;
+#[cfg(test)]
+mod integration_tests;
 pub(crate) mod policy;
 
 use crate::adapters::rtk::adapter_contract_id;
