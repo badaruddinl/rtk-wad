@@ -144,3 +144,33 @@ pub(crate) fn adapter_contract_id() -> String {
         adapter.name, adapter.version, adapter.protocol_version
     )
 }
+
+pub(crate) fn adapter_version_is_compatible(observed: Option<&str>) -> bool {
+    let Some(observed) = observed else {
+        return false;
+    };
+    let mut fields = observed.split_whitespace();
+    let Some(name) = fields.next() else {
+        return false;
+    };
+    let Some(version) = fields.next() else {
+        return false;
+    };
+    let adapter = &command_manifest().adapter;
+    name.eq_ignore_ascii_case(&adapter.name) && version.trim_start_matches('v') == adapter.version
+}
+
+#[cfg(test)]
+mod tests {
+    use super::adapter_version_is_compatible;
+
+    #[test]
+    fn adapter_identity_requires_the_manifest_name_and_exact_version() {
+        assert!(adapter_version_is_compatible(Some("rtk 0.43.0")));
+        assert!(adapter_version_is_compatible(Some("RTK v0.43.0")));
+        assert!(!adapter_version_is_compatible(Some("rtk 0.42.0")));
+        assert!(!adapter_version_is_compatible(Some("other 0.43.0")));
+        assert!(!adapter_version_is_compatible(Some("0.43.0")));
+        assert!(!adapter_version_is_compatible(None));
+    }
+}

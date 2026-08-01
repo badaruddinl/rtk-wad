@@ -14,7 +14,9 @@ use crate::{
 
 #[cfg(test)]
 use adapters::rtk::command_surface_report;
-use adapters::rtk::{CommandSurface, adapter_contract_id, command_surface};
+use adapters::rtk::{
+    CommandSurface, adapter_contract_id, adapter_version_is_compatible, command_surface,
+};
 #[cfg(test)]
 use adapters::windows::apply_command_spec;
 #[cfg(test)]
@@ -162,6 +164,13 @@ fn probe_wsl_tool(
             let installation_id = lines
                 .next()
                 .filter(|installation_id| valid_installation_id(installation_id));
+            let rtk = rtk.filter(|path| {
+                adapter_version_is_compatible(
+                    tool_version("rtk", path, Some((distro, user)))
+                        .version
+                        .as_deref(),
+                )
+            });
             (
                 executable.clone(),
                 rtk.clone(),
@@ -210,7 +219,9 @@ fn discover_tool(
 ) -> ProviderCacheEntry {
     let executable = if tool == "go" { "go.exe" } else { tool };
     let windows_executable = first_windows_executable(executable);
-    let native_rtk = configured_windows_executable(&config.native_rtk_path);
+    let native_rtk = configured_windows_executable(&config.native_rtk_path).filter(|path| {
+        adapter_version_is_compatible(tool_version("rtk", path, None).version.as_deref())
+    });
     let version_probe = if inspect_versions {
         windows_executable.as_deref().map_or(
             VersionProbe {
