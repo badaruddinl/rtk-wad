@@ -67,7 +67,7 @@ const SETUP_ARGUMENT: &str = "setup";
 const AGENT_ARGUMENT: &str = "agent";
 const HELP_ARGUMENT: &str = "--help";
 const SELF_UPDATE_ARGUMENT: &str = "self-update";
-const RELEASE_TAGS_URL: &str = "https://github.com/badaruddinl/xuva.git";
+const RELEASE_TAGS_URL: &str = "https://github.com/badsleepyday/xuva.git";
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 5;
 const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
@@ -2270,8 +2270,6 @@ fn calibration_key(arguments: &[OsString]) -> Option<&'static str> {
         _ => None,
     }
 }
-
-
 
 fn calibration_entry_matches(
     entry: &CalibrationEntry,
@@ -7953,7 +7951,10 @@ mod tests {
         assert!(!signature.contains("sensitive"));
         assert_ne!(
             signature,
-            calibration_signature(&[OsString::from("rg"), OsString::from("other")], Some(r"E:\work"))
+            calibration_signature(
+                &[OsString::from("rg"), OsString::from("other")],
+                Some(r"E:\work")
+            )
         );
     }
 

@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::ffi::OsString;
-use serde::{Deserialize, Serialize};
 
 use crate::adapters::rtk::adapter_contract_id;
 use crate::config::{Config, PolicyObjective, Route};

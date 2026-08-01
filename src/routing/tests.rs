@@ -66,7 +66,10 @@ fn test_calibration_entry_route_selection() {
         ],
     };
     assert_eq!(entry.token_savings_percent(), 30.0);
-    assert_eq!(entry.selected_route(PolicyObjective::Balanced), Route::NativeRtk);
+    assert_eq!(
+        entry.selected_route(PolicyObjective::Balanced),
+        Route::NativeRtk
+    );
     assert_eq!(entry.phase(), "stable");
 }
 

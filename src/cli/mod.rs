@@ -1,7 +1,7 @@
-use std::ffi::OsString;
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
 
-use crate::adapters::rtk::{command_surface_report};
+use crate::adapters::rtk::command_surface_report;
 use crate::cli_exit::CliExit as ExitCode;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]

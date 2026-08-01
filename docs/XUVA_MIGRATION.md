@@ -2,7 +2,7 @@
 
 Starting with `v0.4.1`, XUVA is the only product identity and launcher:
 
-- Repository: `github.com/badaruddinl/xuva`
+- Repository: `github.com/badsleepyday/xuva`
 - Command and Windows binary: `xuva` / `xuva.exe`
 - WSL origin shim: `scripts/xuva-wsl.sh`
 - Configuration: `XUVA_*` and `XUVA_WSL_*`

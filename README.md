@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/badaruddinl/xuva/actions/workflows/windows-ci.yml"><img src="https://github.com/badaruddinl/xuva/actions/workflows/windows-ci.yml/badge.svg?branch=master" alt="Windows CI" /></a>
-  <a href="https://github.com/badaruddinl/xuva/tags"><img src="https://img.shields.io/github/v/tag/badaruddinl/xuva?sort=semver&label=version" alt="Version tag" /></a>
+  <a href="https://github.com/badsleepyday/xuva/actions/workflows/windows-ci.yml"><img src="https://github.com/badsleepyday/xuva/actions/workflows/windows-ci.yml/badge.svg?branch=master" alt="Windows CI" /></a>
+  <a href="https://github.com/badsleepyday/xuva/tags"><img src="https://img.shields.io/github/v/tag/badsleepyday/xuva?sort=semver&label=version" alt="Version tag" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0 license" /></a>
   <a href="docs/RELEASE_GATE_P20.md"><img src="https://img.shields.io/badge/status-public_beta-orange.svg" alt="Public beta status" /></a>
 </p>
@@ -71,9 +71,9 @@ distro and its project mapping are verified. Other distributions can be
 discovered, but are not part of the release gate. Source builds require Rust
 1.95.0 or newer; official binaries use the pinned Rust 1.97.1 toolchain.
 
-- [Download the v0.4.3 Windows archive](https://github.com/badaruddinl/xuva/releases/download/v0.4.3/xuva-v0.4.3-windows-x86_64.zip)
-- [Download its SHA-256 sidecar](https://github.com/badaruddinl/xuva/releases/download/v0.4.3/xuva-v0.4.3-windows-x86_64.zip.sha256)
-- [Open the v0.4.3 release record](https://github.com/badaruddinl/xuva/releases/tag/v0.4.3)
+- [Download the v0.4.3 Windows archive](https://github.com/badsleepyday/xuva/releases/download/v0.4.3/xuva-v0.4.3-windows-x86_64.zip)
+- [Download its SHA-256 sidecar](https://github.com/badsleepyday/xuva/releases/download/v0.4.3/xuva-v0.4.3-windows-x86_64.zip.sha256)
+- [Open the v0.4.3 release record](https://github.com/badsleepyday/xuva/releases/tag/v0.4.3)
 
 Verify the archive after downloading it:
 
@@ -327,6 +327,7 @@ provenance channel embedded at build time.
 
 | Topic | Reference |
 | --- | --- |
+| Canonical product, security, architecture, CLI UX, and performance rules | [Product and engineering guideline](docs/PRODUCT_ENGINEERING_GUIDELINE.md) |
 | XUVA command migration and compatibility | [Migration notes](docs/XUVA_MIGRATION.md) |
 | Routing, configuration, and local accounting | [XUVA contract](docs/XUVA.md) |
 | Public benchmark comparison | [P20 comparison](docs/BENCHMARK_COMPARISON_P20.md) |
