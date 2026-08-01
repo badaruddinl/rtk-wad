@@ -58,8 +58,8 @@ use providers::model::{
 };
 
 const ADAPTER_INFO_ARGUMENT: &str = "--adapter-info";
+#[cfg(test)]
 const VERSION_ARGUMENT: &str = "--version";
-const EXPLAIN_ROUTE_ARGUMENT: &str = "--explain-route";
 const POLICY_ARGUMENT: &str = "policy";
 const CALIBRATION_ARGUMENT: &str = "calibration";
 const RESOLVE_ARGUMENT: &str = "resolve";
@@ -106,7 +106,10 @@ use routing::{
 #[cfg(test)]
 use routing::{RoutePolicyEvidence, calibration_signature, median, select_adaptive_route};
 
-use cli::{SetupPlan, SetupTransaction, print_command_surface};
+use cli::{
+    SetupPlan, SetupTransaction, is_verbose_version_command, is_version_command, parse_options,
+    print_command_surface, print_verbose_version,
+};
 
 fn probe_wsl_tool(
     distro: &str,
@@ -4413,64 +4416,6 @@ fn run_wsl_execution_plan(
             wait_for_wsl_child(child, config, &token, &launch_guard)
         })
     }
-}
-
-fn parse_options(
-    mut arguments: Vec<OsString>,
-    configured: Route,
-    configured_environment: ExecutionEnvironment,
-) -> Result<(Vec<OsString>, Route, ExecutionEnvironment, bool), String> {
-    let mut route = configured;
-    let mut environment = configured_environment;
-    let mut explain = false;
-    loop {
-        match arguments.first().and_then(|argument| argument.to_str()) {
-            Some("--route") => {
-                if arguments.len() < 2 {
-                    return Err("--route requires auto, raw, native-rtk, wsl1, or wsl2".to_owned());
-                }
-                route = Route::parse(&arguments[1].to_string_lossy())?;
-                arguments.drain(0..2);
-            }
-            Some("--environment") => {
-                if arguments.len() < 2 {
-                    return Err("--environment requires adaptive or windows-only".to_owned());
-                }
-                environment = ExecutionEnvironment::parse(&arguments[1].to_string_lossy())?;
-                arguments.drain(0..2);
-            }
-            Some(EXPLAIN_ROUTE_ARGUMENT) => {
-                explain = true;
-                arguments.remove(0);
-            }
-            _ => return Ok((arguments, route, environment, explain)),
-        }
-    }
-}
-
-fn is_version_command(arguments: &[OsString]) -> bool {
-    arguments.len() == 1
-        && matches!(
-            arguments[0].to_str(),
-            Some(VERSION_ARGUMENT | "version" | "-V")
-        )
-}
-
-fn is_verbose_version_command(arguments: &[OsString]) -> bool {
-    arguments
-        == [
-            OsString::from(VERSION_ARGUMENT),
-            OsString::from("--verbose"),
-        ]
-}
-
-fn print_verbose_version() {
-    println!("{PRODUCT_COMMAND} {}", env!("CARGO_PKG_VERSION"));
-    println!("commit={}", env!("XUVA_BUILD_COMMIT"));
-    println!("target={}", env!("XUVA_BUILD_TARGET"));
-    println!("profile={}", env!("XUVA_BUILD_PROFILE"));
-    println!("provenance={}", env!("XUVA_BUILD_PROVENANCE"));
-    println!("provider_cache_schema={PROVIDER_CACHE_SCHEMA_VERSION}");
 }
 
 fn parsed_version(value: &str) -> Option<((u64, u64, u64), bool)> {

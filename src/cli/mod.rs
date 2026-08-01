@@ -4,6 +4,8 @@ use std::ffi::OsString;
 use crate::PRODUCT_COMMAND;
 use crate::adapters::rtk::command_surface_report;
 use crate::cli_exit::CliExit as ExitCode;
+use crate::config::{ExecutionEnvironment, Route};
+use crate::providers::cache::PROVIDER_CACHE_SCHEMA_VERSION;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct SetupPlan {
@@ -107,8 +109,104 @@ pub(crate) fn print_help() {
     println!("  XUVA preserves argv and never rebuilds a pipeline.");
 }
 
+pub(crate) fn parse_options(
+    mut arguments: Vec<OsString>,
+    configured: Route,
+    configured_environment: ExecutionEnvironment,
+) -> Result<(Vec<OsString>, Route, ExecutionEnvironment, bool), String> {
+    let mut route = configured;
+    let mut environment = configured_environment;
+    let mut explain = false;
+    loop {
+        match arguments.first().and_then(|argument| argument.to_str()) {
+            Some("--route") => {
+                if arguments.len() < 2 {
+                    return Err("--route requires auto, raw, native-rtk, wsl1, or wsl2".to_owned());
+                }
+                route = Route::parse(&arguments[1].to_string_lossy())?;
+                arguments.drain(0..2);
+            }
+            Some("--environment") => {
+                if arguments.len() < 2 {
+                    return Err("--environment requires adaptive or windows-only".to_owned());
+                }
+                environment = ExecutionEnvironment::parse(&arguments[1].to_string_lossy())?;
+                arguments.drain(0..2);
+            }
+            Some("--explain-route") => {
+                explain = true;
+                arguments.remove(0);
+            }
+            _ => return Ok((arguments, route, environment, explain)),
+        }
+    }
+}
+
+pub(crate) fn is_version_command(arguments: &[OsString]) -> bool {
+    arguments.len() == 1 && matches!(arguments[0].to_str(), Some("--version" | "version" | "-V"))
+}
+
+pub(crate) fn is_verbose_version_command(arguments: &[OsString]) -> bool {
+    arguments == [OsString::from("--version"), OsString::from("--verbose")]
+}
+
+pub(crate) fn print_verbose_version() {
+    println!("{PRODUCT_COMMAND} {}", env!("CARGO_PKG_VERSION"));
+    println!("commit={}", env!("XUVA_BUILD_COMMIT"));
+    println!("target={}", env!("XUVA_BUILD_TARGET"));
+    println!("profile={}", env!("XUVA_BUILD_PROFILE"));
+    println!("provenance={}", env!("XUVA_BUILD_PROVENANCE"));
+    println!("provider_cache_schema={PROVIDER_CACHE_SCHEMA_VERSION}");
+}
+
 fn print_usage_error(detail: &str, usage: &str) {
     eprintln!("xuva: {detail}");
     eprintln!("  Usage: {usage}");
     eprintln!("  Try: xuva --help");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_verbose_version_command, is_version_command, parse_options};
+    use crate::config::{ExecutionEnvironment, Route};
+    use std::ffi::OsString;
+
+    #[test]
+    fn options_are_consumed_without_rebuilding_command_arguments() {
+        let command = OsString::from("rg");
+        let literal = OsString::from("value with spaces");
+        let (arguments, route, environment, explain) = parse_options(
+            vec![
+                OsString::from("--route"),
+                OsString::from("raw"),
+                OsString::from("--environment"),
+                OsString::from("windows-only"),
+                OsString::from("--explain-route"),
+                command.clone(),
+                literal.clone(),
+            ],
+            Route::Auto,
+            ExecutionEnvironment::Adaptive,
+        )
+        .expect("options are valid");
+        assert_eq!(arguments, [command, literal]);
+        assert_eq!(route, Route::Raw);
+        assert_eq!(environment, ExecutionEnvironment::WindowsOnly);
+        assert!(explain);
+    }
+
+    #[test]
+    fn version_forms_are_bounded_and_explicit() {
+        for value in ["--version", "version", "-V"] {
+            assert!(is_version_command(&[OsString::from(value)]));
+        }
+        assert!(is_verbose_version_command(&[
+            OsString::from("--version"),
+            OsString::from("--verbose"),
+        ]));
+        assert!(!is_version_command(&[
+            OsString::from("--version"),
+            OsString::from("extra"),
+        ]));
+    }
 }
