@@ -98,10 +98,11 @@ fn trace(message: impl AsRef<str>) {
 
 use routing::{
     CALIBRATION_MAX_SAMPLES, CALIBRATION_SCHEMA_VERSION, CalibrationEntry, CalibrationFile,
-    CalibrationPlan, NativeCalibrationSample, PolicyContextReport, ROUTE_POLICY_SCHEMA_VERSION,
-    RoutePolicyEvidence, RoutePolicyFile, adaptive_context_signature, calibration_plan,
-    calibration_signature, median, policy_context_report, select_adaptive_route,
+    CalibrationPlan, NativeCalibrationSample, ROUTE_POLICY_SCHEMA_VERSION, RoutePolicyFile,
+    adaptive_context_signature, calibration_plan, policy_context_report,
 };
+#[cfg(test)]
+use routing::{RoutePolicyEvidence, calibration_signature, median, select_adaptive_route};
 
 use cli::{SetupPlan, SetupTransaction, print_command_surface};
 
@@ -1959,72 +1960,6 @@ fn save_calibration(file: &CalibrationFile) -> Result<(), String> {
         .map_err(|error| format!("unable to write local calibration state: {error}"))?;
     fs::rename(&temporary, &destination)
         .map_err(|error| format!("unable to activate local calibration state: {error}"))
-}
-
-fn calibration_key(arguments: &[OsString]) -> Option<&'static str> {
-    match command_family(arguments) {
-        "git" if is_verified_read_only_git(arguments) => Some("git:read-only"),
-        "rg" => Some("rg"),
-        "npm" if is_verified_npm_run_list_operation(arguments) => Some("npm:run-list"),
-        "go" if is_verified_go_test_all_operation(arguments) => Some("go:test-all"),
-        _ => None,
-    }
-}
-
-fn calibration_entry_matches(
-    entry: &CalibrationEntry,
-    signature: &str,
-    context_signature: &str,
-) -> bool {
-    entry.signature == signature
-        && entry.manifest_version == adapter_contract_id()
-        && entry.context_signature == context_signature
-}
-
-fn calibration_route_for(
-    entry: Option<&CalibrationEntry>,
-    objective: PolicyObjective,
-) -> (Route, &'static str) {
-    let (route, reason) = match entry {
-        None => (
-            Route::NativeRtk,
-            "local calibration candidate: first safe observation uses native RTK",
-        ),
-        Some(entry) if entry.raw_samples_ms.is_empty() => (
-            Route::Raw,
-            "local calibration candidate: second safe observation uses raw execution",
-        ),
-        Some(entry) if entry.native_samples.len() < 2 => (
-            Route::NativeRtk,
-            "local calibration candidate: third safe observation confirms native RTK",
-        ),
-        Some(entry) if entry.raw_samples_ms.len() < 2 => {
-            let selected = entry.selected_route(objective);
-            if entry.raw_samples_ms.len() == 1 && entry.native_samples.len() == 2 {
-                (
-                    selected,
-                    "local calibration provisional choice; validating with one further natural invocation",
-                )
-            } else {
-                (
-                    Route::Raw,
-                    "local calibration validation samples raw execution before marking a stable route",
-                )
-            }
-        }
-        Some(entry) => {
-            let selected = entry.selected_route(objective);
-            (
-                selected,
-                if selected == Route::Raw {
-                    "local calibration selected stable lower-latency raw execution"
-                } else {
-                    "local calibration selected stable token-saving native RTK"
-                },
-            )
-        }
-    };
-    (route, reason)
 }
 
 fn cap_samples<T>(samples: &mut Vec<T>) {
@@ -6174,29 +6109,6 @@ mod tests {
             policy.route_for("rg", "0123456789abcdef", PolicyObjective::Balanced),
             None
         );
-
-        let entry = CalibrationEntry {
-            signature: "fedcba9876543210".to_owned(),
-            key: "rg".to_owned(),
-            manifest_version: adapter_contract_id(),
-            context_signature: context.clone(),
-            raw_samples_ms: vec![1.0],
-            native_samples: vec![NativeCalibrationSample {
-                elapsed_ms: 2.0,
-                input_tokens: 0,
-                saved_tokens: 0,
-            }],
-        };
-        assert!(calibration_entry_matches(
-            &entry,
-            "fedcba9876543210",
-            &context
-        ));
-        assert!(!calibration_entry_matches(
-            &entry,
-            "fedcba9876543210",
-            "0123456789abcdef"
-        ));
     }
 
     #[test]
@@ -7482,50 +7394,6 @@ mod tests {
     }
 
     #[test]
-    fn local_calibration_bootstraps_then_requires_validation_before_stable() {
-        assert_eq!(
-            calibration_route_for(None, PolicyObjective::Balanced).0,
-            Route::NativeRtk
-        );
-
-        let mut entry = CalibrationEntry {
-            signature: "0123456789abcdef".to_owned(),
-            key: "rg".to_owned(),
-            manifest_version: adapter_contract_id(),
-            context_signature: "0123456789abcdef".to_owned(),
-            raw_samples_ms: Vec::new(),
-            native_samples: vec![NativeCalibrationSample {
-                elapsed_ms: 30.0,
-                input_tokens: 100,
-                saved_tokens: 0,
-            }],
-        };
-        assert_eq!(
-            calibration_route_for(Some(&entry), PolicyObjective::Balanced).0,
-            Route::Raw
-        );
-
-        entry.raw_samples_ms.push(10.0);
-        entry.native_samples.push(NativeCalibrationSample {
-            elapsed_ms: 30.0,
-            input_tokens: 100,
-            saved_tokens: 0,
-        });
-        assert_eq!(entry.phase(), "provisional");
-        assert_eq!(
-            calibration_route_for(Some(&entry), PolicyObjective::Balanced).0,
-            Route::Raw
-        );
-
-        entry.raw_samples_ms.push(10.0);
-        assert_eq!(entry.phase(), "stable");
-        assert_eq!(
-            calibration_route_for(Some(&entry), PolicyObjective::Balanced).0,
-            Route::Raw
-        );
-    }
-
-    #[test]
     fn local_calibration_discards_stale_adapter_contract_without_failing() {
         let stale = CalibrationFile {
             schema_version: CALIBRATION_SCHEMA_VERSION,
@@ -7591,34 +7459,6 @@ mod tests {
         assert_ne!(
             adaptive_context_signature(&balanced),
             adaptive_context_signature(&latency)
-        );
-    }
-
-    #[test]
-    fn local_calibration_is_limited_to_safe_command_contracts() {
-        assert_eq!(
-            calibration_key(&[OsString::from("git"), OsString::from("status")]),
-            Some("git:read-only")
-        );
-        assert_eq!(
-            calibration_key(&[OsString::from("rg"), OsString::from("needle")]),
-            Some("rg")
-        );
-        assert_eq!(
-            calibration_key(&[
-                OsString::from("go"),
-                OsString::from("test"),
-                OsString::from("./...")
-            ]),
-            Some("go:test-all")
-        );
-        assert_eq!(
-            calibration_key(&[OsString::from("cargo"), OsString::from("test")]),
-            None
-        );
-        assert_eq!(
-            calibration_key(&[OsString::from("git"), OsString::from("commit")]),
-            None
         );
     }
 
