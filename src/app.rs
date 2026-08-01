@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -33,10 +33,14 @@ use planning::{
     classify_project_path, current_project_location, provider_environment_policy,
     windows_cwd_for_invocation,
 };
+use providers::cache::{
+    PROVIDER_CACHE_SCHEMA_VERSION, PROVIDER_CACHE_TTL_SECONDS, cache_entry_is_fresh,
+    discovery_context_signature, load_provider_cache, save_provider_cache, unix_seconds,
+};
 use providers::model::{
     AdapterKind, BinaryIdentity, InspectionLevel, ProbeStatus, ProjectLocation,
-    ProjectLocationKind, ProviderCacheEntry, ProviderCacheFile, ProviderCandidate, ProviderHost,
-    ProviderResolution, WindowsToolProbe, WslToolProbe,
+    ProjectLocationKind, ProviderCacheEntry, ProviderCandidate, ProviderHost, ProviderResolution,
+    WindowsToolProbe, WslToolProbe,
 };
 
 const ADAPTER_INFO_ARGUMENT: &str = "--adapter-info";
@@ -56,8 +60,6 @@ const HELP_ARGUMENT: &str = "--help";
 const SELF_UPDATE_ARGUMENT: &str = "self-update";
 const RELEASE_TAGS_URL: &str = "https://github.com/badsleepyday/xuva.git";
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
-const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 5;
-const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
 const CANCEL_SCRIPT: &str = include_str!("scripts/cancel.sh");
 const CANCEL_PROBE_SCRIPT: &str = include_str!("scripts/cancel_probe.sh");
 const LAUNCH_SCRIPT: &str = include_str!("scripts/launch.sh");
@@ -104,92 +106,6 @@ use routing::{
 };
 
 use cli::{SetupPlan, SetupTransaction, print_command_surface};
-
-fn provider_cache_path() -> PathBuf {
-    xuva_data_root().join("provider-cache-v5.json")
-}
-
-fn unix_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default()
-}
-
-fn load_provider_cache() -> ProviderCacheFile {
-    fs::read_to_string(provider_cache_path())
-        .ok()
-        .and_then(|contents| serde_json::from_str::<ProviderCacheFile>(&contents).ok())
-        .filter(|cache| cache.schema_version == PROVIDER_CACHE_SCHEMA_VERSION)
-        .unwrap_or(ProviderCacheFile {
-            schema_version: PROVIDER_CACHE_SCHEMA_VERSION,
-            entries: Vec::new(),
-        })
-}
-
-fn save_provider_cache(cache: &ProviderCacheFile) -> Result<(), String> {
-    let root = xuva_data_root();
-    fs::create_dir_all(&root)
-        .map_err(|error| format!("unable to create provider cache directory: {error}"))?;
-    let target = provider_cache_path();
-    let temporary = root.join(format!("provider-cache-{}.pending", std::process::id()));
-    let contents = serde_json::to_vec_pretty(cache)
-        .map_err(|error| format!("unable to encode provider cache: {error}"))?;
-    fs::write(&temporary, contents)
-        .map_err(|error| format!("unable to write provider cache: {error}"))?;
-    if target.exists() {
-        let _ = fs::remove_file(&target);
-    }
-    fs::rename(&temporary, &target)
-        .map_err(|error| format!("unable to finalize provider cache: {error}"))
-}
-
-fn cache_entry_is_fresh(
-    entry: &ProviderCacheEntry,
-    now: u64,
-    context_signature: &str,
-    validate_versions: bool,
-) -> bool {
-    let required_level = if validate_versions {
-        InspectionLevel::Version
-    } else {
-        InspectionLevel::Identity
-    };
-    now.saturating_sub(entry.observed_unix_seconds) <= PROVIDER_CACHE_TTL_SECONDS
-        && entry.context_signature == context_signature
-        && entry.inspection_level >= required_level
-}
-
-fn discovery_context_signature(config: &Config, require_wsl: bool) -> String {
-    let path_value = env::var_os("PATH").unwrap_or_default();
-    let path_ext_value = env::var_os("PATHEXT").unwrap_or_default();
-    let path = path_value.to_string_lossy();
-    let path_ext = path_ext_value.to_string_lossy();
-    let configured = format!(
-        "{}:{}:{}:{}:{}",
-        config.distro,
-        config.user.as_deref().unwrap_or_default(),
-        config.native_rtk_path,
-        config.extra_path.as_deref().unwrap_or_default(),
-        if require_wsl {
-            "wsl-inventory-required"
-        } else {
-            "windows-only"
-        },
-    );
-    stable_signature(&[&path, &path_ext, &configured])
-}
-
-fn stable_signature(parts: &[&str]) -> String {
-    let mut state: u64 = 0xcbf2_9ce4_8422_2325;
-    for part in parts {
-        for byte in part.bytes().chain(std::iter::once(0xff)) {
-            state ^= u64::from(byte);
-            state = state.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    format!("{state:016x}")
-}
 
 fn first_output_line(output: &[u8]) -> Option<String> {
     String::from_utf8_lossy(output)
