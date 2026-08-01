@@ -204,37 +204,37 @@ token-saving threshold; `latency` chooses the lower measured median, while
 of the local evidence context, so changing it cannot reuse an incompatible
 calibration decision.
 
-## Benchmark result: token saving *and* latency
+## Benchmark result: adaptive latency after policy optimization
 
-The public benchmark does not claim that XUVA is universally faster. It uses
-five warmed measurements on the recorded Windows host and `tiktoken==0.12.0`
-over combined stdout and stderr. `Tokens saved` is always `raw tokens -
-XUVA auto tokens` for the same command form.
+The current public-corpus result uses ripgrep `14.1.1` at commit
+`4649aa9700619f94cf9c66876e9549d83420e16c`, one warm-up, and ten rotating
+measurements for each of four variants. All 160 measured executions completed
+successfully. Token counts use `tiktoken==0.12.0` over combined stdout and
+stderr. These host-specific measurements are evidence, not a universal speed
+claim.
 
-| Workload | Raw Windows | XUVA auto | Raw → auto tokens | Tokens saved | Saving | Automatic route |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `git status --short --branch` | 127.613 ms | 266.283 ms | 37 → 37 | 0 | 0.0% | Raw |
-| `git log --oneline -100` | 126.856 ms | 309.754 ms | 864 → 864 | 0 | 0.0% | Raw |
-| Focused `rg` | 71.723 ms | 138.457 ms | 94 → 94 | 0 | 0.0% | Raw |
-| Broad `rg` | 69.994 ms | 293.102 ms | 3,164 → 2,082 | 1,082 | 34.2% | Native RTK |
+| Workload | Raw Windows | Stock native RTK | XUVA forced native RTK | XUVA auto | Auto before optimization | Improvement |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `git status --short --branch` | 117.131 ms | 246.456 ms | 381.150 ms | 156.747 ms | 202.347 ms | 22.5% |
+| `git log --oneline -100` | 117.853 ms | 222.613 ms | 323.696 ms | 120.110 ms | 186.744 ms | 35.7% |
+| Focused `rg` (`RegexBuilder`) | 70.981 ms | 152.018 ms | 258.906 ms | 76.571 ms | 142.504 ms | 46.3% |
+| Broad `rg` (`fn|struct|impl|use|pub`) | 67.374 ms | 205.275 ms | 285.143 ms | 88.693 ms | 149.887 ms | 40.8% |
 
-```mermaid
-flowchart LR
-    A[Four measured workloads] --> B[git status, git log, focused rg]
-    B --> C[Raw Windows selected\n0 tokens saved]
-    A --> D[Broad rg]
-    D --> E[Native RTK selected\n1,082 tokens saved / 34.2%\nwith measured latency cost]
-```
+This corpus produced identical raw and automatic token counts: 6 tokens for
+Git status, 11 for Git log, 119 for focused `rg`, and 137,700 for broad `rg`.
+The validated policy therefore selected raw execution for all four workloads.
+After commit `1830454`, a matching raw policy bypasses calibration, metrics,
+scratch, and provider I/O while retaining structured argv, WSL-path precedence,
+and `NotFound`-only provider fallback. XUVA auto is now within 1.9% of raw for
+Git log and 7.9% for focused `rg`; Git status and broad `rg` remain 33.8% and
+31.6% above raw on this host.
 
-Three of four measured workloads save no tokens, so XUVA keeps them raw.
-Broad `rg` saves 1,082 tokens (34.2%) and clears the documented 25% token-first
-threshold despite being slower on this host. See the versioned
+See the reproducible [benchmark protocol](benchmarks/README.md), the versioned
 [comparison and methodology](docs/BENCHMARK_COMPARISON_P20.md), the
 [full Windows/WSL matrix](docs/BENCHMARK_CORE_MATRIX_P18_2026-07-25.md), and
-[machine-readable evidence](benchmarks/evidence/p18-comparison-summary.json).
-A separate [public ripgrep corpus measurement](docs/P21_PUBLIC_RIPGREP_BENCHMARK.md)
-records a zero-saving result; it is retained precisely because benchmark claims
-must remain corpus-specific and falsifiable.
+[machine-readable historical evidence](benchmarks/evidence/p18-comparison-summary.json).
+Older results remain intentionally available because token savings and latency
+are corpus-, pattern-, provider-, and host-specific.
 
 ### Read `gain` honestly
 
