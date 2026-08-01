@@ -13,10 +13,10 @@ use crate::{
 };
 
 #[cfg(test)]
+use adapters::rtk::adapter_contract_id;
+#[cfg(test)]
 use adapters::rtk::command_surface_report;
-use adapters::rtk::{
-    CommandSurface, adapter_contract_id, adapter_version_is_compatible, command_surface,
-};
+use adapters::rtk::{CommandSurface, adapter_version_is_compatible, command_surface};
 #[cfg(test)]
 use adapters::windows::apply_command_spec;
 #[cfg(test)]
@@ -96,13 +96,15 @@ fn trace(message: impl AsRef<str>) {
     }
 }
 
-use routing::{
-    CALIBRATION_MAX_SAMPLES, CALIBRATION_SCHEMA_VERSION, CalibrationEntry, CalibrationFile,
-    CalibrationPlan, NativeCalibrationSample, ROUTE_POLICY_SCHEMA_VERSION, RoutePolicyFile,
-    adaptive_context_signature, calibration_plan, policy_context_report,
+use routing::calibration::{
+    load as load_calibration, print as print_calibration, record as record_calibration,
 };
+use routing::policy::{import as import_route_policy, load as load_route_policy};
 #[cfg(test)]
-use routing::{RoutePolicyEvidence, calibration_signature, median, select_adaptive_route};
+use routing::{ROUTE_POLICY_SCHEMA_VERSION, RoutePolicyEvidence, calibration_signature};
+use routing::{
+    RoutePolicyFile, adaptive_context_signature, calibration_plan, policy_context_report,
+};
 
 use cli::{
     SetupPlan, SetupTransaction, is_verbose_version_command, is_version_command, parse_options,
@@ -1770,274 +1772,6 @@ fn setup_command(arguments: &[OsString], config: &Config) -> ExitCode {
         return ExitCode::from(2);
     }
     apply_setup_plan(&plan, config, json)
-}
-
-fn policy_path() -> PathBuf {
-    env::var_os("XUVA_POLICY_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| xuva_data_root().join("route-policy-v2.json"))
-}
-
-fn load_route_policy() -> Option<RoutePolicyFile> {
-    let path = policy_path();
-    let contents = fs::read_to_string(path).ok()?;
-    let policy = serde_json::from_str(&contents).ok()?;
-    validate_route_policy(&policy).ok()?;
-    Some(policy)
-}
-
-fn validate_route_policy(policy: &RoutePolicyFile) -> Result<(), String> {
-    if policy.schema_version != ROUTE_POLICY_SCHEMA_VERSION
-        || policy.manifest_version != adapter_contract_id()
-        || policy.context_signature.len() != 16
-        || policy.evidence.is_empty()
-    {
-        return Err("policy evidence must use the current schema, manifest, context, and non-empty evidence".to_owned());
-    }
-    let mut keys = HashSet::new();
-    for evidence in &policy.evidence {
-        if evidence.key.trim().is_empty()
-            || evidence.sample_count == 0
-            || !evidence.raw_median_ms.is_finite()
-            || !evidence.candidate_median_ms.is_finite()
-            || !evidence.token_savings_percent.is_finite()
-            || evidence.raw_median_ms < 0.0
-            || evidence.candidate_median_ms < 0.0
-        {
-            return Err("policy evidence contains an invalid measurement".to_owned());
-        }
-        if !keys.insert(&evidence.key) {
-            return Err(format!(
-                "policy evidence contains duplicate key {}",
-                evidence.key
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn merge_route_policy(
-    existing: Option<RoutePolicyFile>,
-    incoming: RoutePolicyFile,
-) -> RoutePolicyFile {
-    let RoutePolicyFile {
-        manifest_version,
-        context_signature,
-        evidence: incoming_evidence,
-        ..
-    } = incoming;
-    let mut evidence = existing.map_or_else(Vec::new, |policy| policy.evidence);
-    for next in incoming_evidence {
-        if let Some(index) = evidence.iter().position(|current| current.key == next.key) {
-            evidence[index] = next;
-        } else {
-            evidence.push(next);
-        }
-    }
-    evidence.sort_by(|left, right| left.key.cmp(&right.key));
-    RoutePolicyFile {
-        schema_version: ROUTE_POLICY_SCHEMA_VERSION,
-        manifest_version,
-        context_signature,
-        evidence,
-    }
-}
-
-fn import_route_policy(source: &Path, config: &Config) -> Result<(), String> {
-    let contents = fs::read_to_string(source)
-        .map_err(|error| format!("unable to read policy evidence: {error}"))?;
-    let incoming: RoutePolicyFile = serde_json::from_str(&contents)
-        .map_err(|error| format!("invalid policy evidence: {error}"))?;
-    validate_route_policy(&incoming)?;
-    let expected_context = adaptive_context_signature(config);
-    if incoming.context_signature != expected_context {
-        return Err("policy evidence was measured for a different local adapter context; run `xuva policy context` and re-benchmark".to_owned());
-    }
-    let destination = policy_path();
-    let existing = if destination.exists() {
-        let contents = fs::read_to_string(&destination)
-            .map_err(|error| format!("unable to read existing route policy: {error}"))?;
-        let policy = serde_json::from_str(&contents)
-            .map_err(|error| format!("existing route policy is invalid: {error}"))?;
-        validate_route_policy(&policy)
-            .map_err(|error| format!("existing route policy is invalid: {error}"))?;
-        if policy.context_signature != incoming.context_signature {
-            return Err("existing policy belongs to a different local adapter context; remove or relocate it before importing new evidence".to_owned());
-        }
-        Some(policy)
-    } else {
-        None
-    };
-    let merged = merge_route_policy(existing, incoming);
-    state::write_json_atomic(&destination, &merged, "route policy")
-}
-
-fn calibration_path() -> PathBuf {
-    xuva_data_root().join("calibration-v3.json")
-}
-
-fn validate_calibration(file: &CalibrationFile) -> Result<(), String> {
-    if file.schema_version != CALIBRATION_SCHEMA_VERSION {
-        return Err("calibration state uses an unsupported schema version".to_owned());
-    }
-    let mut signatures = HashSet::new();
-    for entry in &file.entries {
-        if entry.signature.len() != 16
-            || entry.key.trim().is_empty()
-            || entry.manifest_version != adapter_contract_id()
-            || entry.context_signature.len() != 16
-            || !entry
-                .raw_samples_ms
-                .iter()
-                .all(|sample| sample.is_finite() && *sample >= 0.0)
-            || !entry.native_samples.iter().all(|sample| {
-                sample.elapsed_ms.is_finite()
-                    && sample.elapsed_ms >= 0.0
-                    && sample.input_tokens >= 0
-                    && sample.saved_tokens >= 0
-                    && sample.saved_tokens <= sample.input_tokens
-            })
-            || !signatures.insert(&entry.signature)
-        {
-            return Err("calibration state contains invalid local evidence".to_owned());
-        }
-    }
-    Ok(())
-}
-
-fn calibration_for_current_contract(mut file: CalibrationFile) -> Result<CalibrationFile, String> {
-    if file.schema_version < CALIBRATION_SCHEMA_VERSION {
-        return Ok(CalibrationFile {
-            schema_version: CALIBRATION_SCHEMA_VERSION,
-            entries: Vec::new(),
-        });
-    }
-    if file.schema_version != CALIBRATION_SCHEMA_VERSION {
-        return Err("calibration state uses an unsupported schema version".to_owned());
-    }
-
-    // Adapter upgrades intentionally invalidate measurements made against the
-    // previous contract. They are stale evidence, not corrupt user state.
-    file.entries
-        .retain(|entry| entry.manifest_version == adapter_contract_id());
-    validate_calibration(&file)?;
-    Ok(file)
-}
-
-fn load_calibration() -> Result<CalibrationFile, String> {
-    let path = calibration_path();
-    if !path.exists() {
-        return Ok(CalibrationFile {
-            schema_version: CALIBRATION_SCHEMA_VERSION,
-            entries: Vec::new(),
-        });
-    }
-    let contents = fs::read_to_string(&path)
-        .map_err(|error| format!("unable to read local calibration state: {error}"))?;
-    let file: CalibrationFile = serde_json::from_str(&contents)
-        .map_err(|error| format!("local calibration state is invalid: {error}"))?;
-    calibration_for_current_contract(file)
-}
-
-fn save_calibration(file: &CalibrationFile) -> Result<(), String> {
-    validate_calibration(file)?;
-    state::write_json_atomic(&calibration_path(), file, "local calibration state")
-}
-
-fn cap_samples<T>(samples: &mut Vec<T>) {
-    if samples.len() > CALIBRATION_MAX_SAMPLES {
-        let excess = samples.len() - CALIBRATION_MAX_SAMPLES;
-        samples.drain(0..excess);
-    }
-}
-
-fn record_calibration(
-    plan: &CalibrationPlan,
-    executed_route: Route,
-    elapsed: Duration,
-    exit_code: i32,
-    totals: TokenTotals,
-) -> Result<(), String> {
-    if exit_code != 0 || !matches!(executed_route, Route::Raw | Route::NativeRtk) {
-        return Ok(());
-    }
-    let mut state = load_calibration()?;
-    let entry = match state
-        .entries
-        .iter()
-        .position(|entry| entry.signature == plan.signature)
-    {
-        Some(index)
-            if state.entries[index].manifest_version == plan.manifest_version
-                && state.entries[index].context_signature == plan.context_signature =>
-        {
-            &mut state.entries[index]
-        }
-        Some(index) => {
-            state.entries[index] = CalibrationEntry {
-                signature: plan.signature.clone(),
-                key: plan.key.clone(),
-                manifest_version: plan.manifest_version.clone(),
-                context_signature: plan.context_signature.clone(),
-                raw_samples_ms: Vec::new(),
-                native_samples: Vec::new(),
-            };
-            &mut state.entries[index]
-        }
-        None => {
-            state.entries.push(CalibrationEntry {
-                signature: plan.signature.clone(),
-                key: plan.key.clone(),
-                manifest_version: plan.manifest_version.clone(),
-                context_signature: plan.context_signature.clone(),
-                raw_samples_ms: Vec::new(),
-                native_samples: Vec::new(),
-            });
-            state.entries.last_mut().expect("entry was just appended")
-        }
-    };
-    let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
-    match executed_route {
-        Route::Raw => {
-            entry.raw_samples_ms.push(elapsed_ms);
-            cap_samples(&mut entry.raw_samples_ms);
-        }
-        Route::NativeRtk => {
-            entry.native_samples.push(NativeCalibrationSample {
-                elapsed_ms,
-                input_tokens: totals.input_tokens,
-                saved_tokens: totals.saved_tokens,
-            });
-            cap_samples(&mut entry.native_samples);
-        }
-        Route::Wsl1 | Route::Wsl2 | Route::Auto => unreachable!("route was filtered above"),
-    }
-    save_calibration(&state)
-}
-
-fn print_calibration(objective: PolicyObjective) -> Result<(), String> {
-    let state = load_calibration()?;
-    if state.entries.is_empty() {
-        println!("No local adaptive calibration evidence is recorded.");
-        return Ok(());
-    }
-    println!("XUVA Local Adaptive Calibration");
-    println!();
-    for entry in &state.entries {
-        let route = entry.selected_route(objective);
-        println!("key={}", entry.key);
-        println!("signature={}", entry.signature);
-        println!("phase={}", entry.phase());
-        println!("route={}", route.as_str());
-        println!("raw_samples={}", entry.raw_samples_ms.len());
-        println!("native_samples={}", entry.native_samples.len());
-        println!(
-            "native_token_savings_percent={:.1}",
-            entry.token_savings_percent()
-        );
-        println!();
-    }
-    Ok(())
 }
 
 fn is_wsl_path(value: &OsString) -> bool {
@@ -5826,79 +5560,6 @@ mod tests {
     }
 
     #[test]
-    fn policy_import_merge_preserves_other_evidence_and_replaces_same_key() {
-        let existing = RoutePolicyFile {
-            schema_version: ROUTE_POLICY_SCHEMA_VERSION,
-            manifest_version: adapter_contract_id(),
-            context_signature: "0123456789abcdef".to_owned(),
-            evidence: vec![
-                RoutePolicyEvidence {
-                    key: "cargo:check".to_owned(),
-                    raw_median_ms: 10.0,
-                    candidate_median_ms: 20.0,
-                    token_savings_percent: 1.0,
-                    sample_count: 5,
-                },
-                RoutePolicyEvidence {
-                    key: "rg".to_owned(),
-                    raw_median_ms: 20.0,
-                    candidate_median_ms: 30.0,
-                    token_savings_percent: 80.0,
-                    sample_count: 5,
-                },
-            ],
-        };
-        let incoming = RoutePolicyFile {
-            schema_version: ROUTE_POLICY_SCHEMA_VERSION,
-            manifest_version: adapter_contract_id(),
-            context_signature: "0123456789abcdef".to_owned(),
-            evidence: vec![
-                RoutePolicyEvidence {
-                    key: "npm:run-list".to_owned(),
-                    raw_median_ms: 30.0,
-                    candidate_median_ms: 40.0,
-                    token_savings_percent: 0.0,
-                    sample_count: 5,
-                },
-                RoutePolicyEvidence {
-                    key: "rg".to_owned(),
-                    raw_median_ms: 5.0,
-                    candidate_median_ms: 10.0,
-                    token_savings_percent: 90.0,
-                    sample_count: 5,
-                },
-            ],
-        };
-        let merged = merge_route_policy(Some(existing), incoming);
-        assert_eq!(
-            merged
-                .evidence
-                .iter()
-                .map(|evidence| evidence.key.as_str())
-                .collect::<Vec<_>>(),
-            vec!["cargo:check", "npm:run-list", "rg"]
-        );
-        let rg = merged
-            .evidence
-            .iter()
-            .find(|evidence| evidence.key == "rg")
-            .expect("new measurement replaces rg");
-        assert_eq!(rg.token_savings_percent, 90.0);
-        assert_eq!(
-            merged.route_for("cargo:check", "0123456789abcdef", PolicyObjective::Balanced,),
-            Some(Route::Raw)
-        );
-        assert_eq!(
-            merged.route_for(
-                "npm:run-list",
-                "0123456789abcdef",
-                PolicyObjective::Balanced,
-            ),
-            Some(Route::Raw)
-        );
-    }
-
-    #[test]
     fn adaptive_evidence_is_bound_to_manifest_and_local_adapter_context() {
         let default = default_config();
         let context = adaptive_context_signature(&default);
@@ -7208,64 +6869,6 @@ mod tests {
             plan.adapter,
             dispatcher::OutputAdapter::Rtk { .. }
         ));
-    }
-
-    #[test]
-    fn local_calibration_discards_stale_adapter_contract_without_failing() {
-        let stale = CalibrationFile {
-            schema_version: CALIBRATION_SCHEMA_VERSION,
-            entries: vec![CalibrationEntry {
-                signature: "0123456789abcdef".to_owned(),
-                key: "rg".to_owned(),
-                manifest_version: "wad:0.42.0:protocol-1".to_owned(),
-                context_signature: "fedcba9876543210".to_owned(),
-                raw_samples_ms: vec![1.0],
-                native_samples: vec![NativeCalibrationSample {
-                    elapsed_ms: 2.0,
-                    input_tokens: 10,
-                    saved_tokens: 5,
-                }],
-            }],
-        };
-
-        let migrated =
-            calibration_for_current_contract(stale).expect("stale evidence is safely ignored");
-        assert_eq!(migrated.schema_version, CALIBRATION_SCHEMA_VERSION);
-        assert!(migrated.entries.is_empty());
-    }
-
-    #[test]
-    fn local_calibration_prioritizes_measured_token_savings() {
-        let entry = CalibrationEntry {
-            signature: "0123456789abcdef".to_owned(),
-            key: "rg".to_owned(),
-            manifest_version: adapter_contract_id(),
-            context_signature: "0123456789abcdef".to_owned(),
-            raw_samples_ms: vec![10.0, 11.0],
-            native_samples: vec![
-                NativeCalibrationSample {
-                    elapsed_ms: 30.0,
-                    input_tokens: 50,
-                    saved_tokens: 10,
-                },
-                NativeCalibrationSample {
-                    elapsed_ms: 31.0,
-                    input_tokens: 50,
-                    saved_tokens: 15,
-                },
-            ],
-        };
-        assert_eq!(entry.phase(), "stable");
-        assert_eq!(
-            entry.selected_route(PolicyObjective::Balanced),
-            Route::NativeRtk
-        );
-        assert_eq!(entry.selected_route(PolicyObjective::Latency), Route::Raw);
-        assert_eq!(
-            select_adaptive_route(Some(10.0), Some(30.0), 1.0, PolicyObjective::Tokens,),
-            Route::NativeRtk
-        );
-        assert_eq!(median(&[1.0, 3.0]), Some(2.0));
     }
 
     #[test]
