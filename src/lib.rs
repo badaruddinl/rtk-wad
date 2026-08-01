@@ -3,6 +3,7 @@ pub const PRODUCT_COMMAND: &str = "xuva";
 
 pub mod adapters;
 pub mod agent;
+pub mod app;
 pub mod bridge;
 pub mod cli;
 pub mod cli_exit;
