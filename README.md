@@ -218,7 +218,7 @@ claim.
 | `git status --short --branch` | 117.131 ms | 246.456 ms | 381.150 ms | 156.747 ms | 202.347 ms | 22.5% |
 | `git log --oneline -100` | 117.853 ms | 222.613 ms | 323.696 ms | 120.110 ms | 186.744 ms | 35.7% |
 | Focused `rg` (`RegexBuilder`) | 70.981 ms | 152.018 ms | 258.906 ms | 76.571 ms | 142.504 ms | 46.3% |
-| Broad `rg` (`fn|struct|impl|use|pub`) | 67.374 ms | 205.275 ms | 285.143 ms | 88.693 ms | 149.887 ms | 40.8% |
+| Broad `rg` (<code>fn&#124;struct&#124;impl&#124;use&#124;pub</code>) | 67.374 ms | 205.275 ms | 285.143 ms | 88.693 ms | 149.887 ms | 40.8% |
 
 This corpus produced identical raw and automatic token counts: 6 tokens for
 Git status, 11 for Git log, 119 for focused `rg`, and 137,700 for broad `rg`.
