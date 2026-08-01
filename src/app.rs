@@ -4559,27 +4559,6 @@ fn print_verbose_version() {
     println!("provider_cache_schema={PROVIDER_CACHE_SCHEMA_VERSION}");
 }
 
-fn print_help() {
-    println!("XUVA {}", env!("CARGO_PKG_VERSION"));
-    println!("usage: xuva [--explain-route] <command> [<argv>...]");
-    println!();
-    println!("diagnostics:");
-    println!("  xuva --explain-route <command> [<argv>...]");
-    println!("  xuva doctor <tool> [--json] [--refresh]");
-    println!("  xuva self-update --check");
-    println!("  xuva surface");
-    println!();
-    println!("lifecycle:");
-    println!("  xuva install --status");
-    println!("  xuva install --recover");
-    println!("  xuva rollback");
-    println!("  xuva uninstall [--remove-from-path]");
-    println!();
-    println!(
-        "Shell operators are owned by the invoking shell. XUVA preserves argv and never rebuilds a pipeline."
-    );
-}
-
 fn parsed_version(value: &str) -> Option<((u64, u64, u64), bool)> {
     let value = value.trim().trim_start_matches('v');
     let (core, prerelease) = match value.split_once('-') {
@@ -4713,7 +4692,7 @@ fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     }
     if arguments.len() == 1 && matches!(arguments[0].to_str(), Some(HELP_ARGUMENT | "help" | "-h"))
     {
-        print_help();
+        cli::print_help();
         return ExitCode::SUCCESS;
     }
     if let Some(result) = lifecycle::command(&arguments) {
