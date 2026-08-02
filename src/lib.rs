@@ -7,6 +7,7 @@ pub mod app;
 pub mod bridge;
 pub mod cli;
 pub mod cli_exit;
+pub mod command;
 pub mod config;
 pub mod diagnostics;
 pub mod dispatcher;

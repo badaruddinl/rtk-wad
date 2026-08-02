@@ -360,7 +360,7 @@ pub(crate) fn is_calibration_candidate(arguments: &[OsString]) -> bool {
 
 fn calibration_key(arguments: &[OsString]) -> Option<String> {
     match arguments.first()?.to_str()? {
-        "git" if is_verified_read_only_git(arguments) => Some("git:read-only".to_owned()),
+        "git" if decision::is_verified_read_only_git(arguments) => Some("git:read-only".to_owned()),
         "rg" => Some("rg".to_owned()),
         "npm" if matches!(arguments, [program, subcommand] if program == "npm" && subcommand == "run") => {
             Some("npm:run-list".to_owned())
@@ -372,41 +372,6 @@ fn calibration_key(arguments: &[OsString]) -> Option<String> {
         }
         _ => None,
     }
-}
-
-fn is_verified_read_only_git(arguments: &[OsString]) -> bool {
-    if matches!(
-        arguments,
-        [program, option]
-            if program == "git"
-                && matches!(option.to_str(), Some("--version" | "-v" | "--help" | "-h"))
-    ) {
-        return true;
-    }
-    matches!(
-        git_subcommand(arguments),
-        Some("status" | "log" | "show" | "diff" | "rev-parse" | "ls-files" | "grep")
-    )
-}
-
-fn git_subcommand(arguments: &[OsString]) -> Option<&str> {
-    let mut skip_value = false;
-    for argument in arguments.iter().skip(1) {
-        let value = argument.to_str()?;
-        if skip_value {
-            skip_value = false;
-            continue;
-        }
-        if matches!(value, "-C" | "--git-dir" | "--work-tree" | "-c") {
-            skip_value = true;
-            continue;
-        }
-        if value.starts_with('-') {
-            continue;
-        }
-        return Some(value);
-    }
-    None
 }
 
 #[cfg(test)]
