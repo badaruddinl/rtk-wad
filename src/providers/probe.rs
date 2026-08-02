@@ -22,6 +22,22 @@ use super::model::{
 };
 
 const WSL1_MARKER_VALIDATOR_SCRIPT: &str = include_str!("../scripts/wsl1_marker_validator.sh");
+// WSL2 can require more than the generic five-second subprocess budget when a
+// stopped distro is activated. This is an availability bound only: successful
+// warm probes return immediately, and provider identity validation remains
+// unchanged.
+const WSL_PROVIDER_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn test_wsl_provider_probe_delay_seconds() -> u8 {
+    if std::env::var("XUVA_TEST_MODE").as_deref() != Ok("1") {
+        return 0;
+    }
+    std::env::var("XUVA_TEST_WSL_PROVIDER_PROBE_DELAY_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u8>().ok())
+        .filter(|value| *value <= 15)
+        .unwrap_or(0)
+}
 
 pub(crate) fn verified_wsl_executable_path(path: String) -> Option<String> {
     path.starts_with('/').then_some(path)
@@ -36,6 +52,8 @@ pub(crate) fn probe_wsl_tool(
     inspect_version: bool,
 ) -> WslToolProbe {
     let script = concat!(
+        "case \"$5\" in 0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15) ;; *) exit 2 ;; esac; ",
+        "[ \"$5\" -eq 0 ] || /bin/sleep \"$5\"; ",
         "if [ -n \"$2\" ]; then PATH=\"$2:$PATH\"; fi; ",
         "tool_path=$(command -v \"$1\" 2>/dev/null || true); ",
         "case \"$tool_path\" in /*) [ -f \"$tool_path\" ] && [ -x \"$tool_path\" ] || tool_path= ;; *) tool_path= ;; esac; ",
@@ -55,8 +73,14 @@ pub(crate) fn probe_wsl_tool(
             .args(["sh", "-c", script, "xuva-provider-probe", tool])
             .arg(extra_path.unwrap_or_default())
             .arg(wsl_version.map_or_else(String::new, |version| version.to_string()))
-            .arg(WSL1_MARKER_VALIDATOR_SCRIPT);
-        let output = process::run_probe(&mut command);
+            .arg(WSL1_MARKER_VALIDATOR_SCRIPT)
+            .arg(test_wsl_provider_probe_delay_seconds().to_string());
+        let output = process::run_bounded(
+            &mut command,
+            None,
+            WSL_PROVIDER_PROBE_TIMEOUT,
+            process::PROBE_OUTPUT_LIMIT,
+        );
         let should_retry = wsl_version == Some(1)
             && output
                 .as_ref()
@@ -70,6 +94,16 @@ pub(crate) fn probe_wsl_tool(
         // discovery retry; no user command or adapter is ever replayed.
         thread::sleep(Duration::from_millis(100));
     };
+    match &output {
+        Err(error) => trace(format!(
+            "WSL provider probe for {tool} on {distro} did not complete: {error}"
+        )),
+        Ok(result) if !result.status.success() => trace(format!(
+            "WSL provider probe for {tool} on {distro} exited with {}",
+            result.status
+        )),
+        Ok(_) => {}
+    }
     let (executable, rtk, executable_identity, rtk_identity, installation_id) = output
         .ok()
         .filter(|result| result.status.success())
