@@ -12,6 +12,19 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $namespace = 'xuva-ci-scratch'
 
+function Export-GitHubEnvironment {
+    param([Parameter(Mandatory = $true)][string[]]$Values)
+
+    if ([string]::IsNullOrWhiteSpace($env:GITHUB_ENV)) {
+        throw 'GITHUB_ENV is required to export the CI scratch environment.'
+    }
+    [System.IO.File]::AppendAllText(
+        $env:GITHUB_ENV,
+        (($Values -join [System.Environment]::NewLine) + [System.Environment]::NewLine),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+}
+
 function Assert-ScratchPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -58,10 +71,6 @@ if ($Mode -eq 'prepare') {
         $env:GITHUB_JOB -notmatch '^[A-Za-z0-9_.-]+$') {
         throw 'GitHub run identity contains an unsafe scratch-path component.'
     }
-    if ([string]::IsNullOrWhiteSpace($env:GITHUB_ENV)) {
-        throw 'GITHUB_ENV is required to export the CI scratch environment.'
-    }
-
     $drive = Get-PSDrive -PSProvider FileSystem |
         Where-Object { $_.Root -and $_.Free -ge $MinimumFreeBytes } |
         Sort-Object Free -Descending |
@@ -83,11 +92,7 @@ if ($Mode -eq 'prepare') {
         "TEMP=$temporary"
         "TMP=$temporary"
     )
-    [System.IO.File]::AppendAllText(
-        $env:GITHUB_ENV,
-        (($environment -join [System.Environment]::NewLine) + [System.Environment]::NewLine),
-        [System.Text.UTF8Encoding]::new($false)
-    )
+    Export-GitHubEnvironment $environment
 
     Write-Host "Prepared isolated CI scratch on drive $($drive.Name) with $([math]::Round($drive.Free / 1MB)) MiB free."
     exit 0
@@ -99,6 +104,19 @@ if ([string]::IsNullOrWhiteSpace($env:XUVA_CI_SCRATCH)) {
 }
 
 $scratch = Assert-ScratchPath $env:XUVA_CI_SCRATCH
+if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+    $runnerTemp = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP)
+    if ($runnerTemp -eq $scratch -or
+        $runnerTemp.StartsWith(
+            $scratch + [System.IO.Path]::DirectorySeparatorChar,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "RUNNER_TEMP must remain outside verified CI scratch: $runnerTemp"
+    }
+    $env:TEMP = $runnerTemp
+    $env:TMP = $runnerTemp
+    Export-GitHubEnvironment @("TEMP=$runnerTemp", "TMP=$runnerTemp")
+}
 if (Test-Path -LiteralPath $scratch -PathType Container) {
     Remove-VerifiedScratchTree $scratch
 }
