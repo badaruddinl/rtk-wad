@@ -94,20 +94,39 @@ pub(crate) fn import(source: &Path, config: &Config) -> Result<(), String> {
         return Err("policy evidence was measured for a different local adapter context; run `xuva policy context` and re-benchmark".to_owned());
     }
     let destination = policy_path();
-    let existing = if destination.exists() {
-        let contents = fs::read_to_string(&destination)
-            .map_err(|error| format!("unable to read existing route policy: {error}"))?;
-        let policy = serde_json::from_str(&contents)
-            .map_err(|error| format!("existing route policy is invalid: {error}"))?;
-        validate(&policy).map_err(|error| format!("existing route policy is invalid: {error}"))?;
-        if policy.context_signature != incoming.context_signature {
-            return Err("existing policy belongs to a different local adapter context; remove or relocate it before importing new evidence".to_owned());
-        }
-        Some(policy)
-    } else {
-        None
-    };
-    state::write_json_atomic(&destination, &merge(existing, incoming), "route policy")
+    state::update_json_atomic(
+        &destination,
+        "route policy",
+        |path| {
+            if !path.exists() {
+                return Ok(None);
+            }
+            let contents = fs::read_to_string(path)
+                .map_err(|error| format!("unable to read existing route policy: {error}"))?;
+            let policy = serde_json::from_str(&contents)
+                .map_err(|error| format!("existing route policy is invalid: {error}"))?;
+            validate(&policy)
+                .map_err(|error| format!("existing route policy is invalid: {error}"))?;
+            Ok(Some(policy))
+        },
+        |existing| {
+            if existing
+                .as_ref()
+                .is_some_and(|policy| policy.context_signature != incoming.context_signature)
+            {
+                return Err("existing policy belongs to a different local adapter context; remove or relocate it before importing new evidence".to_owned());
+            }
+            *existing = Some(merge(existing.take(), incoming));
+            Ok(())
+        },
+        |policy| {
+            validate(
+                policy
+                    .as_ref()
+                    .ok_or_else(|| "route policy update produced no evidence".to_owned())?,
+            )
+        },
+    )
 }
 
 #[cfg(test)]

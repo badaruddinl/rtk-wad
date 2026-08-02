@@ -9,8 +9,8 @@ use crate::process;
 use crate::wsl::{exec_prefix as wsl_exec_prefix, valid_installation_id};
 
 use super::cache::{
-    cache_entry_is_fresh, discovery_context_signature, load_provider_cache, save_provider_cache,
-    unix_seconds,
+    cache_entry_is_fresh, discovery_context_signature, load_provider_cache, unix_seconds,
+    update_provider_cache,
 };
 use super::discovery::{
     VersionProbe, configured_windows_executable, decode_wsl_output, first_windows_executable,
@@ -222,7 +222,7 @@ pub(crate) fn cached_or_discovered_tool(
 ) -> (ProviderCacheEntry, &'static str) {
     let now = unix_seconds();
     let context_signature = discovery_context_signature(config, require_wsl);
-    let mut cache = load_provider_cache();
+    let cache = load_provider_cache();
     if !refresh
         && let Some(entry) = cache.entries.iter().find(|entry| {
             entry.tool == tool
@@ -235,9 +235,7 @@ pub(crate) fn cached_or_discovered_tool(
         return (entry.clone(), "hit");
     }
     let discovered = discover_tool(tool, config, require_wsl, validate_versions);
-    cache.entries.retain(|entry| entry.tool != tool);
-    cache.entries.push(discovered.clone());
-    if let Err(error) = save_provider_cache(&cache) {
+    if let Err(error) = update_provider_cache(&discovered) {
         trace(format!("provider cache was not saved: {error}"));
     }
     (discovered, "miss")

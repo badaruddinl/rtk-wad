@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::adapters::rtk::adapter_contract_id;
@@ -70,23 +70,21 @@ pub(crate) fn for_current_contract(mut file: CalibrationFile) -> Result<Calibrat
 }
 
 pub(crate) fn load() -> Result<CalibrationFile, String> {
-    let path = path();
+    load_from(&path())
+}
+
+fn load_from(path: &Path) -> Result<CalibrationFile, String> {
     if !path.exists() {
         return Ok(CalibrationFile {
             schema_version: CALIBRATION_SCHEMA_VERSION,
             entries: Vec::new(),
         });
     }
-    let contents = fs::read_to_string(&path)
+    let contents = fs::read_to_string(path)
         .map_err(|error| format!("unable to read local calibration state: {error}"))?;
     let file: CalibrationFile = serde_json::from_str(&contents)
         .map_err(|error| format!("local calibration state is invalid: {error}"))?;
     for_current_contract(file)
-}
-
-pub(crate) fn save(file: &CalibrationFile) -> Result<(), String> {
-    validate(file)?;
-    state::write_json_atomic(&path(), file, "local calibration state")
 }
 
 fn cap_samples<T>(samples: &mut Vec<T>) {
@@ -106,58 +104,68 @@ pub(crate) fn record(
     if exit_code != 0 || !matches!(executed_route, Route::Raw | Route::NativeRtk) {
         return Ok(());
     }
-    let mut state = load()?;
-    let entry = match state
-        .entries
-        .iter()
-        .position(|entry| entry.signature == plan.signature)
-    {
-        Some(index)
-            if state.entries[index].manifest_version == plan.manifest_version
-                && state.entries[index].context_signature == plan.context_signature =>
-        {
-            &mut state.entries[index]
-        }
-        Some(index) => {
-            state.entries[index] = CalibrationEntry {
-                signature: plan.signature.clone(),
-                key: plan.key.clone(),
-                manifest_version: plan.manifest_version.clone(),
-                context_signature: plan.context_signature.clone(),
-                raw_samples_ms: Vec::new(),
-                native_samples: Vec::new(),
-            };
-            &mut state.entries[index]
-        }
-        None => {
-            state.entries.push(CalibrationEntry {
-                signature: plan.signature.clone(),
-                key: plan.key.clone(),
-                manifest_version: plan.manifest_version.clone(),
-                context_signature: plan.context_signature.clone(),
-                raw_samples_ms: Vec::new(),
-                native_samples: Vec::new(),
-            });
-            state.entries.last_mut().expect("entry was just appended")
-        }
-    };
     let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
-    match executed_route {
-        Route::Raw => {
-            entry.raw_samples_ms.push(elapsed_ms);
-            cap_samples(&mut entry.raw_samples_ms);
-        }
-        Route::NativeRtk => {
-            entry.native_samples.push(NativeCalibrationSample {
-                elapsed_ms,
-                input_tokens: totals.input_tokens,
-                saved_tokens: totals.saved_tokens,
-            });
-            cap_samples(&mut entry.native_samples);
-        }
-        Route::Wsl1 | Route::Wsl2 | Route::Auto => unreachable!("route was filtered above"),
-    }
-    save(&state)
+    let destination = path();
+    state::update_json_atomic(
+        &destination,
+        "local calibration state",
+        load_from,
+        |state| {
+            let entry = match state
+                .entries
+                .iter()
+                .position(|entry| entry.signature == plan.signature)
+            {
+                Some(index)
+                    if state.entries[index].manifest_version == plan.manifest_version
+                        && state.entries[index].context_signature == plan.context_signature =>
+                {
+                    &mut state.entries[index]
+                }
+                Some(index) => {
+                    state.entries[index] = CalibrationEntry {
+                        signature: plan.signature.clone(),
+                        key: plan.key.clone(),
+                        manifest_version: plan.manifest_version.clone(),
+                        context_signature: plan.context_signature.clone(),
+                        raw_samples_ms: Vec::new(),
+                        native_samples: Vec::new(),
+                    };
+                    &mut state.entries[index]
+                }
+                None => {
+                    state.entries.push(CalibrationEntry {
+                        signature: plan.signature.clone(),
+                        key: plan.key.clone(),
+                        manifest_version: plan.manifest_version.clone(),
+                        context_signature: plan.context_signature.clone(),
+                        raw_samples_ms: Vec::new(),
+                        native_samples: Vec::new(),
+                    });
+                    state.entries.last_mut().expect("entry was just appended")
+                }
+            };
+            match executed_route {
+                Route::Raw => {
+                    entry.raw_samples_ms.push(elapsed_ms);
+                    cap_samples(&mut entry.raw_samples_ms);
+                }
+                Route::NativeRtk => {
+                    entry.native_samples.push(NativeCalibrationSample {
+                        elapsed_ms,
+                        input_tokens: totals.input_tokens,
+                        saved_tokens: totals.saved_tokens,
+                    });
+                    cap_samples(&mut entry.native_samples);
+                }
+                Route::Wsl1 | Route::Wsl2 | Route::Auto => {
+                    unreachable!("route was filtered above")
+                }
+            }
+            Ok(())
+        },
+        validate,
+    )
 }
 
 pub(crate) fn print(objective: PolicyObjective) -> Result<(), String> {
