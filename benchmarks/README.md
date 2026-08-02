@@ -88,7 +88,9 @@ Git status, Git log, a focused ripgrep query, and a broad ripgrep query. It
 records the first process observation separately, then performs ten rotating
 measured rounds per variant. The resulting JSON records each sample plus median
 and p95 latency, output-size class, exit codes, SHA-256 output hashes, and exact
-`o200k_base` counts. “First observation” means fresh isolated XUVA state only;
+`o200k_base` counts. It also binds the evidence to the OS, CPU model, Node
+runtime, and SHA-256 identities of both XUVA and native RTK. “First
+observation” means fresh isolated XUVA state only;
 the artifact explicitly states that operating-system and external-tool caches
 are uncontrolled, so it is not mislabeled as a universal cold-cache result.
 

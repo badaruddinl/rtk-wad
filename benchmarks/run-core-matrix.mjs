@@ -98,14 +98,20 @@ for (const corpus of manifest.corpora) {
 
 const outputClasses = [...new Set(artifacts.flatMap(({ result }) => result.summaries
   .map(({ variants }) => variants.raw.output_size_class)))].sort();
+const hostIdentities = [...new Set(artifacts.map(({ result }) => JSON.stringify(result.host)))];
+const binaryIdentities = [...new Set(artifacts.map(({ result }) => JSON.stringify(result.binary_identity)))];
 const coverageValid = artifacts.length === manifest.corpora.length
   && outputClasses.length >= 2
+  && hostIdentities.length === 1
+  && binaryIdentities.length === 1
   && artifacts.every(({ result }) => result.failure_contract.raw.exit_code !== 0);
 const aggregate = {
   schema_version: 1,
   protocol: "xuva-core-public-corpus-matrix-v1",
   rounds_per_variant: settings.rounds,
   corpus_manifest: manifestPath,
+  host: JSON.parse(hostIdentities[0]),
+  binary_identity: JSON.parse(binaryIdentities[0]),
   corpora: artifacts.map(({ id, commit, output, result }) => ({
     id,
     commit,

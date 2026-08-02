@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { arch, cpus, platform, release, version as osVersion } from "node:os";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
@@ -35,6 +36,10 @@ if (!Number.isInteger(settings.rounds) || settings.rounds < 5) {
   throw new Error("--rounds must be an integer of at least 5");
 }
 const expectedAdapterContract = adapterContractId();
+
+function fileHash(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
 
 const preflight = JSON.parse(readFileSync(settings.preflight, "utf8"));
 if (preflight?.BenchmarkPreflight?.WindowsNativeRtkReady !== true) {
@@ -327,6 +332,19 @@ writeFileSync(settings.output, JSON.stringify({
   protocol: "four-way-core-v3",
   tokenizer: "o200k_base",
   tokenizer_package: `tiktoken==${tokenizerVersion()}`,
+  host: {
+    platform: platform(),
+    release: release(),
+    version: osVersion(),
+    architecture: arch(),
+    cpu_model: cpus()[0]?.model || "unknown",
+    logical_cpu_count: cpus().length,
+    node: process.version,
+  },
+  binary_identity: {
+    native_rtk_sha256: fileHash(settings.nativeRtk),
+    xuva_sha256: fileHash(settings.wad),
+  },
   rounds: settings.rounds,
   workloads: selectedWorkloads.map((workload) => workload.id),
   corpus: settings.repo,
