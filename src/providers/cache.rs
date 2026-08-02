@@ -1,17 +1,18 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::Config;
 use crate::metrics::xuva_data_root;
 use crate::providers::model::{InspectionLevel, ProviderCacheEntry, ProviderCacheFile};
-use crate::state::write_json_atomic;
+use crate::state;
 
-pub(crate) const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 5;
+pub(crate) const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 6;
 pub(crate) const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
+const MAX_PROVIDER_CACHE_ENTRIES: usize = 128;
 
 pub(crate) fn provider_cache_path() -> PathBuf {
-    xuva_data_root().join("provider-cache-v5.json")
+    xuva_data_root().join("provider-cache-v6.json")
 }
 
 pub(crate) fn unix_seconds() -> u64 {
@@ -22,18 +23,59 @@ pub(crate) fn unix_seconds() -> u64 {
 }
 
 pub(crate) fn load_provider_cache() -> ProviderCacheFile {
-    fs::read_to_string(provider_cache_path())
+    load_provider_cache_from(&provider_cache_path())
+}
+
+fn load_provider_cache_from(path: &Path) -> ProviderCacheFile {
+    fs::read_to_string(path)
         .ok()
         .and_then(|contents| serde_json::from_str::<ProviderCacheFile>(&contents).ok())
         .filter(|cache| cache.schema_version == PROVIDER_CACHE_SCHEMA_VERSION)
-        .unwrap_or(ProviderCacheFile {
-            schema_version: PROVIDER_CACHE_SCHEMA_VERSION,
-            entries: Vec::new(),
-        })
+        .unwrap_or_else(empty_provider_cache)
 }
 
-pub(crate) fn save_provider_cache(cache: &ProviderCacheFile) -> Result<(), String> {
-    write_json_atomic(&provider_cache_path(), cache, "provider cache")
+fn empty_provider_cache() -> ProviderCacheFile {
+    ProviderCacheFile {
+        schema_version: PROVIDER_CACHE_SCHEMA_VERSION,
+        entries: Vec::new(),
+    }
+}
+
+pub(crate) fn update_provider_cache(discovered: &ProviderCacheEntry) -> Result<(), String> {
+    state::update_json_atomic(
+        &provider_cache_path(),
+        "provider cache",
+        |path| Ok(load_provider_cache_from(path)),
+        |cache| {
+            merge_provider_cache_entry(cache, discovered.clone());
+            Ok(())
+        },
+        |cache| {
+            if cache.schema_version == PROVIDER_CACHE_SCHEMA_VERSION {
+                Ok(())
+            } else {
+                Err("provider cache uses an unsupported schema version".to_owned())
+            }
+        },
+    )
+}
+
+pub(crate) fn merge_provider_cache_entry(
+    cache: &mut ProviderCacheFile,
+    discovered: ProviderCacheEntry,
+) {
+    cache.entries.retain(|entry| {
+        entry.tool != discovered.tool || entry.context_signature != discovered.context_signature
+    });
+    cache.entries.push(discovered);
+    cache
+        .entries
+        .sort_by_key(|entry| entry.observed_unix_seconds);
+    if cache.entries.len() > MAX_PROVIDER_CACHE_ENTRIES {
+        cache
+            .entries
+            .drain(..cache.entries.len() - MAX_PROVIDER_CACHE_ENTRIES);
+    }
 }
 
 pub(crate) fn cache_entry_is_fresh(

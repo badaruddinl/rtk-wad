@@ -1,8 +1,15 @@
+use crate::providers::model::BinaryIdentity;
 use crate::test_support::*;
 
 #[test]
 fn wsl_plan_launcher_forwards_environment_as_structured_assignments() {
     let config = default_config();
+    let identity = BinaryIdentity {
+        path: "/tmp/go".to_owned(),
+        file_key: "1:2".to_owned(),
+        size_bytes: 3,
+        modified_stamp: "fixture".to_owned(),
+    };
     let arguments = plan_wsl_arguments_with_metrics(
         &OsString::from("/tmp/go"),
         &[OsString::from("run"), OsString::from("$literal & text")],
@@ -18,13 +25,20 @@ fn wsl_plan_launcher_forwards_environment_as_structured_assignments() {
             attestation_path: Some("/tmp/xuva-test.attestation"),
             permit_path: Some("/tmp/xuva-test.permit"),
             completion_path: Some("/tmp/xuva-test.completion"),
+            expected_identity: Some(&identity),
         },
     )
     .expect("WSL plan arguments are valid");
-    let executable = arguments
+    let executable_positions = arguments
         .iter()
-        .position(|argument| argument == "/tmp/go")
-        .expect("plan includes executable");
+        .enumerate()
+        .filter_map(|(index, argument)| (argument == "/tmp/go").then_some(index))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        executable_positions.len(),
+        2,
+        "plan includes one identity path and one execution slot"
+    );
     let overlay = arguments
         .iter()
         .position(|argument| argument == "P7_OVERLAY=value with spaces")
@@ -34,7 +48,15 @@ fn wsl_plan_launcher_forwards_environment_as_structured_assignments() {
         .position(|argument| argument == "$literal & text")
         .expect("plan includes literal user argument");
     assert!(arguments.contains(&OsString::from(PLAN_LAUNCH_SCRIPT)));
-    assert!(overlay < executable && executable < user_argument);
+    assert!(arguments.contains(&OsString::from("1:2")));
+    assert!(arguments.contains(&OsString::from("fixture")));
+    assert!(PLAN_LAUNCH_SCRIPT.contains("stat -Lc '%d:%i|%s|%y'"));
+    assert!(PLAN_LAUNCH_SCRIPT.contains("identity changed before launch"));
+    assert!(executable_positions[0] < overlay);
+    assert!(
+        overlay < executable_positions[1] && executable_positions[1] < user_argument,
+        "env must receive overlays before the identity-verified execution slot"
+    );
     assert!(
         wsl_environment_assignments(&[(OsString::from("INVALID-NAME"), OsString::from("value"),)])
             .is_err()
@@ -117,6 +139,12 @@ fn every_wsl1_launch_surface_uses_the_same_strict_marker_validator() {
         "/tmp/xuva-test.permit",
         "/tmp/xuva-test.completion",
     );
+    let identity = BinaryIdentity {
+        path: "/usr/bin/printf".to_owned(),
+        file_key: "1:2".to_owned(),
+        size_bytes: 3,
+        modified_stamp: "fixture".to_owned(),
+    };
     let plan_arguments = plan_wsl_arguments_with_metrics(
         &OsString::from("/usr/bin/printf"),
         &[OsString::from("%s"), OsString::from("fixture")],
@@ -129,6 +157,7 @@ fn every_wsl1_launch_surface_uses_the_same_strict_marker_validator() {
             attestation_path: Some("/tmp/xuva-test.attestation"),
             permit_path: Some("/tmp/xuva-test.permit"),
             completion_path: Some("/tmp/xuva-test.completion"),
+            expected_identity: Some(&identity),
         },
     )
     .expect("WSL1 plan arguments are valid");

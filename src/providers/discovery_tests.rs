@@ -1,3 +1,5 @@
+use crate::providers::cache::merge_provider_cache_entry;
+use crate::providers::model::ProviderCacheFile;
 use crate::test_support::*;
 
 #[test]
@@ -115,6 +117,45 @@ fn provider_cache_uses_a_bounded_freshness_window() {
     assert!(
         !cache_entry_is_fresh(&identity_only, 100, "fixture", true),
         "doctor/version verification must upgrade an identity-only cache entry"
+    );
+}
+
+#[test]
+fn provider_cache_keeps_windows_and_wsl_inventory_variants() {
+    let entry = |signature: &str, observed_unix_seconds| ProviderCacheEntry {
+        tool: "go".to_owned(),
+        observed_unix_seconds,
+        inspection_level: InspectionLevel::Identity,
+        context_signature: signature.to_owned(),
+        windows: WindowsToolProbe {
+            executable: None,
+            native_rtk: None,
+            executable_version: None,
+            version_probe_status: ProbeStatus::NotRequested,
+            executable_capabilities: Vec::new(),
+            executable_identity: None,
+            native_rtk_identity: None,
+        },
+        wsl_probe_complete: signature == "wsl",
+        wsl: Vec::new(),
+    };
+    let mut cache = ProviderCacheFile {
+        schema_version: PROVIDER_CACHE_SCHEMA_VERSION,
+        entries: Vec::new(),
+    };
+
+    merge_provider_cache_entry(&mut cache, entry("windows", 1));
+    merge_provider_cache_entry(&mut cache, entry("wsl", 2));
+    assert_eq!(cache.entries.len(), 2);
+    merge_provider_cache_entry(&mut cache, entry("wsl", 3));
+    assert_eq!(cache.entries.len(), 2);
+    assert_eq!(
+        cache
+            .entries
+            .iter()
+            .find(|candidate| candidate.context_signature == "wsl")
+            .map(|candidate| candidate.observed_unix_seconds),
+        Some(3)
     );
 }
 

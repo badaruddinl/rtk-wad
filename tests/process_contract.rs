@@ -172,14 +172,13 @@ fn lifecycle_status_remains_available_with_invalid_routing_configuration() {
 }
 
 #[test]
-fn metrics_opt_out_keeps_explicit_raw_execution_ledger_free() {
+fn metrics_default_keeps_explicit_raw_execution_ledger_free() {
     let _guard = process_contract_guard();
     let state = unique_temp_directory("metrics-off-state");
     let system_root = std::env::var_os("SYSTEMROOT").expect("Windows has SYSTEMROOT");
     let cmd = PathBuf::from(system_root).join("System32").join("cmd.exe");
     let output = Command::new(launcher())
         .env("XUVA_STATE_DIR", &state)
-        .env("XUVA_METRICS", "off")
         .arg(&cmd)
         .args(["/d", "/c", "exit", "0"])
         .output()
@@ -192,7 +191,41 @@ fn metrics_opt_out_keeps_explicit_raw_execution_ledger_free() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(!state.join("metrics-v1.sqlite").exists());
+    assert!(!state.join("scratch").exists());
     let _ = std::fs::remove_dir_all(state);
+}
+
+#[test]
+fn metrics_purge_removes_only_local_metrics_files() {
+    let _guard = process_contract_guard();
+    let state = unique_temp_directory("metrics-purge-state");
+    std::fs::create_dir_all(state.join("scratch")).expect("scratch fixture");
+    std::fs::write(state.join("metrics-v1.sqlite"), b"ledger").expect("ledger fixture");
+    std::fs::write(state.join("tracker-template-v2.sqlite"), b"tracker").expect("tracker fixture");
+    std::fs::write(state.join("scratch").join("orphan.sqlite"), b"scratch")
+        .expect("scratch database fixture");
+    std::fs::write(state.join("route-policy-v2.json"), b"keep").expect("unrelated fixture");
+
+    let output = Command::new(launcher())
+        .env("XUVA_STATE_DIR", &state)
+        .env(
+            "XUVA_WSL_BACKEND",
+            "invalid-but-purge-must-remain-available",
+        )
+        .args(["metrics", "purge"])
+        .output()
+        .expect("metrics purge starts");
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Removed files: 3"));
+    assert!(state.join("route-policy-v2.json").exists());
+    assert!(!state.join("metrics-v1.sqlite").exists());
+    assert!(!state.join("scratch").exists());
+    std::fs::remove_dir_all(state).expect("metrics purge fixture cleanup");
 }
 
 #[test]
@@ -1610,6 +1643,7 @@ fn xuva_calibrates_safe_commands_across_natural_invocations() {
         Command::new(&launcher)
             .current_dir(&directory)
             .env("XUVA_STATE_DIR", &state)
+            .env("XUVA_METRICS", "on")
             .env("XUVA_NATIVE_RTK_PATH", &fake_rtk)
             .args(["git", "status", "--short"])
             .output()
@@ -1645,6 +1679,14 @@ fn xuva_calibrates_safe_commands_across_natural_invocations() {
     assert!(recorded.contains("\"raw_samples_ms\": ["));
     assert!(recorded.contains("\"native_samples\": ["));
     assert!(!recorded.contains("git status"));
+    assert!(state.join("metrics-v1.sqlite").exists());
+    assert!(
+        std::fs::read_dir(state.join("scratch"))
+            .expect("metrics scratch directory exists")
+            .next()
+            .is_none(),
+        "every completed invocation must remove its scratch database and sidecars"
+    );
 
     let inspection = Command::new(&launcher)
         .env("XUVA_STATE_DIR", &state)
@@ -3918,6 +3960,91 @@ fn wsl_provider_receives_only_safe_forwarded_environment() {
         .arg(&fixture)
         .status()
         .expect("WSL environment fixture cleanup starts");
+    assert!(cleanup.success());
+    let _ = std::fs::remove_dir_all(state);
+}
+
+#[test]
+fn wsl_provider_identity_change_is_rejected_before_target_launch() {
+    let _guard = process_contract_guard();
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let fixture = format!(
+        "/tmp/xuva-provider-identity-contract-{}-{nonce}",
+        std::process::id()
+    );
+    assert!(fixture.starts_with("/tmp/xuva-provider-identity-contract-"));
+    let setup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "sh", "-c"])
+        .arg(
+            r#"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'printf original-executed' > "$1/xuva-identity-contract"; chmod 755 "$1/xuva-identity-contract""#,
+        )
+        .arg("xuva-provider-identity-fixture")
+        .arg(&fixture)
+        .status()
+        .expect("WSL provider identity fixture setup starts");
+    assert!(setup.success());
+
+    let state = unique_temp_directory("provider-identity-state");
+    let child = Command::new(launcher())
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("XUVA_STATE_DIR", &state)
+        .env("XUVA_WSL_DISTRO", "Ubuntu")
+        .env("XUVA_WSL_EXTRA_PATH", &fixture)
+        .env("XUVA_OUTPUT_ADAPTER", "raw")
+        .env("XUVA_TEST_MODE", "1")
+        .env("XUVA_TEST_WSL2_LAUNCH_DELAY_SECONDS", "2")
+        .arg("xuva-identity-contract")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("identity-gated provider starts");
+
+    let cache = state.join("provider-cache-v6.json");
+    let cache_deadline = Instant::now() + Duration::from_secs(15);
+    while !std::fs::read_to_string(&cache)
+        .is_ok_and(|contents| contents.contains(&fixture) && contents.contains("\"file_key\""))
+    {
+        assert!(
+            Instant::now() < cache_deadline,
+            "provider discovery did not publish its identity cache"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    let replacement = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "sh", "-c"])
+        .arg(
+            r#"printf '%s\n' '#!/bin/sh' 'printf replacement-executed' > "$1/xuva-identity-contract.new"; chmod 755 "$1/xuva-identity-contract.new"; mv -f -- "$1/xuva-identity-contract.new" "$1/xuva-identity-contract""#,
+        )
+        .arg("xuva-provider-identity-replacement")
+        .arg(&fixture)
+        .status()
+        .expect("WSL provider identity fixture replacement starts");
+    assert!(replacement.success());
+
+    let output = child
+        .wait_with_output()
+        .expect("identity-gated provider completes");
+    assert_eq!(
+        output.status.code(),
+        Some(126),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "changed target must never execute"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("identity changed before launch"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let cleanup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "rm", "-rf", "--", &fixture])
+        .status()
+        .expect("WSL provider identity fixture cleanup starts");
     assert!(cleanup.success());
     let _ = std::fs::remove_dir_all(state);
 }

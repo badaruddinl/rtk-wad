@@ -1,6 +1,23 @@
 use crate::test_support::*;
 
 #[test]
+fn windows_provider_identity_change_is_rejected_before_launch() {
+    let path = env::temp_dir().join(format!("xuva-provider-identity-{}.bin", std::process::id()));
+    fs::write(&path, b"first").expect("identity fixture is written");
+    let path_text = path.to_string_lossy().into_owned();
+    let expected = windows_binary_identity(&path_text).expect("fixture identity is captured");
+
+    validate_windows_binary_identity(&OsString::from(&path_text), &expected)
+        .expect("unchanged identity is accepted");
+    fs::write(&path, b"replacement-content").expect("identity fixture is replaced");
+    let error = validate_windows_binary_identity(&OsString::from(&path_text), &expected)
+        .expect_err("changed identity must be rejected before launch");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn cross_host_isolation_uses_origin_identity_and_preserves_unc_cwd() {
     let mut config = default_config();
     config.invocation_origin = InvocationOrigin::Wsl {
@@ -14,7 +31,9 @@ fn cross_host_isolation_uses_origin_identity_and_preserves_unc_cwd() {
         distro: None,
         wsl_version: None,
         executable: r"C:\Tools\tool.exe".to_owned(),
+        executable_identity: Some(fixture_binary_identity(r"C:\Tools\tool.exe")),
         rtk: None,
+        rtk_identity: None,
         project_path: config.bridge_windows_cwd.clone(),
         usable: true,
         reason: "fixture".to_owned(),
@@ -47,7 +66,9 @@ fn explicit_provider_selection_skips_adapter_incompatible_candidates() {
             distro: None,
             wsl_version: None,
             executable: r"C:\Tools\tool.exe".to_owned(),
+            executable_identity: Some(fixture_binary_identity(r"C:\Tools\tool.exe")),
             rtk: None,
+            rtk_identity: None,
             project_path: Some(r"E:\work".to_owned()),
             usable: true,
             reason: "raw-only Windows fixture".to_owned(),
@@ -58,7 +79,9 @@ fn explicit_provider_selection_skips_adapter_incompatible_candidates() {
             distro: Some("Ubuntu".to_owned()),
             wsl_version: Some(2),
             executable: "/usr/bin/tool".to_owned(),
+            executable_identity: Some(fixture_binary_identity("/usr/bin/tool")),
             rtk: Some("/usr/local/bin/rtk".to_owned()),
+            rtk_identity: Some(fixture_binary_identity("/usr/local/bin/rtk")),
             project_path: Some("/mnt/e/work".to_owned()),
             usable: true,
             reason: "RTK-capable WSL fixture".to_owned(),
@@ -122,12 +145,16 @@ fn provider_registry_accepts_safe_generic_tool_names_only() {
 fn provider_registry_parses_wsl_binary_identity_without_retaining_command_output() {
     let identity = parse_wsl_binary_identity(
         Some("/usr/local/bin/rtk".to_owned()),
-        Some("2291200:1721880000".to_owned()),
+        Some("8|42|2291200|2024-07-25 00:00:00.000000000 +0000".to_owned()),
     )
     .expect("valid stat identity is parsed");
     assert_eq!(identity.path, "/usr/local/bin/rtk");
+    assert_eq!(identity.file_key, "8:42");
     assert_eq!(identity.size_bytes, 2_291_200);
-    assert_eq!(identity.modified_unix_seconds, 1_721_880_000);
+    assert_eq!(
+        identity.modified_stamp,
+        "2024-07-25 00:00:00.000000000 +0000"
+    );
     assert!(
         parse_wsl_binary_identity(Some("/bin/tool".to_owned()), Some("bad".to_owned())).is_none()
     );
@@ -184,7 +211,9 @@ fn execution_plans_translate_only_cross_host_absolute_path_arguments() {
         distro: None,
         wsl_version: None,
         executable: r"C:\Program Files\Git\cmd\git.exe".to_owned(),
+        executable_identity: Some(fixture_binary_identity(r"C:\Program Files\Git\cmd\git.exe")),
         rtk: None,
+        rtk_identity: None,
         project_path: Some(r"E:\work".to_owned()),
         usable: true,
         reason: "fixture".to_owned(),
@@ -214,7 +243,9 @@ fn execution_plans_translate_only_cross_host_absolute_path_arguments() {
         distro: Some("Ubuntu".to_owned()),
         wsl_version: Some(2),
         executable: "/usr/local/bin/rtk".to_owned(),
+        executable_identity: Some(fixture_binary_identity("/usr/local/bin/rtk")),
         rtk: Some("/usr/local/bin/rtk".to_owned()),
+        rtk_identity: Some(fixture_binary_identity("/usr/local/bin/rtk")),
         project_path: Some("/mnt/e/work".to_owned()),
         usable: true,
         reason: "fixture".to_owned(),
@@ -268,7 +299,11 @@ fn windows_git_mutations_have_no_wsl_execution_fallback() {
                 distro: None,
                 wsl_version: None,
                 executable: r"C:\Program Files\Git\cmd\git.exe".to_owned(),
+                executable_identity: Some(fixture_binary_identity(
+                    r"C:\Program Files\Git\cmd\git.exe",
+                )),
                 rtk: None,
+                rtk_identity: None,
                 project_path: Some(r"E:\work".to_owned()),
                 usable: true,
                 reason: "fixture".to_owned(),
@@ -279,7 +314,9 @@ fn windows_git_mutations_have_no_wsl_execution_fallback() {
                 distro: Some("Ubuntu".to_owned()),
                 wsl_version: Some(2),
                 executable: "/usr/bin/git".to_owned(),
+                executable_identity: Some(fixture_binary_identity("/usr/bin/git")),
                 rtk: Some("/usr/local/bin/rtk".to_owned()),
+                rtk_identity: Some(fixture_binary_identity("/usr/local/bin/rtk")),
                 project_path: Some("/mnt/e/work".to_owned()),
                 usable: true,
                 reason: "fixture".to_owned(),

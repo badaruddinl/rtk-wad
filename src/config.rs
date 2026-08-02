@@ -246,8 +246,8 @@ impl Config {
         let environment_allowlist =
             parse_environment_allowlist(lookup("XUVA_ENV_ALLOWLIST").as_deref())?;
         let metrics_enabled = match lookup("XUVA_METRICS").as_deref() {
-            None | Some("local") | Some("on") => true,
-            Some("off") => false,
+            Some("local") | Some("on") => true,
+            None | Some("off") => false,
             Some(_) => return Err("XUVA_METRICS must be local, on, or off".to_owned()),
         };
         let policy_objective = PolicyObjective::parse(

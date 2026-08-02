@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { isolatedBenchmarkState } from "./isolated-state.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const option = (name) => {
@@ -36,8 +37,8 @@ function tokenizerPackage() {
 
 const rawNpm = process.env.RTK_WAD_BENCH_NPM || 'npm.cmd';
 const npmPath = isAbsolute(rawNpm) ? `${dirname(rawNpm)};${process.env.Path || ''}` : (process.env.Path || '');
-const state = resolve(dirname(settings.output), `${basename(settings.output, '.json')}.wad-state`);
-const wadEnvironment = { RTK_WAD_NATIVE_RTK_PATH: settings.nativeRtk, RTK_WAD_STATE_DIR: state, Path: npmPath };
+const state = isolatedBenchmarkState(settings.output);
+const wadEnvironment = { XUVA_NATIVE_RTK_PATH: settings.nativeRtk, XUVA_STATE_DIR: state, Path: npmPath };
 function execute(variant) {
   return new Promise((done, fail) => {
     const started = performance.now();

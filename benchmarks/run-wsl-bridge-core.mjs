@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { isolatedBenchmarkState } from "./isolated-state.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -56,7 +57,7 @@ requirePreflightProvider(settings.wsl2Distro, 2, settings.wsl2Rtk);
 
 const rawGit = process.env.RTK_WAD_BENCH_GIT || "git.exe";
 const rawRg = process.env.RTK_WAD_BENCH_RG || "rg.exe";
-const isolatedWadState = resolve(dirname(settings.output), `${basename(settings.output, ".json")}.wad-state`);
+const isolatedWadState = isolatedBenchmarkState(settings.output);
 const searchRoots = ["src", "tests", "test", "docs"]
   .filter((candidate) => existsSync(resolve(settings.repo, candidate)));
 if (searchRoots.length === 0) {
@@ -146,10 +147,10 @@ function wslVariant(route, distro, rtkPath, args) {
     file: settings.wad,
     args: ["--route", route, ...args],
     environment: {
-      RTK_WSL_BACKEND: route,
-      RTK_WSL_DISTRO: distro,
-      RTK_WSL_RTK_PATH: rtkPath,
-      RTK_WAD_STATE_DIR: isolatedWadState,
+      XUVA_WSL_BACKEND: route,
+      XUVA_WSL_DISTRO: distro,
+      XUVA_WSL_RTK_PATH: rtkPath,
+      XUVA_STATE_DIR: isolatedWadState,
     },
   };
 }

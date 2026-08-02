@@ -127,8 +127,11 @@ Windows executable is not discoverable on `PATH`. Benchmark output is an
 English, machine-readable artifact; the release report must include both wins
 and losses.
 
-The runner always imports the generated policy into an isolated benchmark state
-to measure the final auto decision. `--install-policy` separately imports the
+The runner always imports the generated policy into an isolated, ACL-protected
+benchmark state under `%LOCALAPPDATA%\xuva\benchmark-state` to measure the final
+auto decision. The state path is deterministically bound to the output artifact;
+placing output on a volume without persistent Windows ACLs does not weaken state
+protection. `--install-policy` separately imports the
 same validated policy into the caller's normal WAD state. It never uses fixture
 output as performance evidence.
 
@@ -232,7 +235,7 @@ A timeout is a failed measurement and never becomes release evidence.
 WAD warm-up have been run separately and recorded in the release note. It
 exists for slow workloads whose complete three-way execution would exceed the
 host command deadline; it never lowers the five measured-round requirement.
-The runner isolates only WAD's ledger via `RTK_WAD_STATE_DIR`; it intentionally
+The runner isolates only XUVA's local state via `XUVA_STATE_DIR`; it intentionally
 does not replace `LOCALAPPDATA`, so raw Windows toolchains retain their normal
 per-user caches.
 
@@ -250,7 +253,7 @@ GitHub CLI, GitLab CLI, Kubernetes, OpenShift, PostgreSQL, and wget. Install the
 Windows and WSL1 fixture directories, then run `run-fixture-three-way.mjs` with
 both paths, the selected WSL1 distro/RTK path, and the P18 preflight. WAD is
 forced to WSL1 and receives the Linux fixture directory through
-`RTK_WSL_EXTRA_PATH`; stock RTK receives the Windows fixture directory through
+`XUVA_WSL_EXTRA_PATH`; stock RTK receives the Windows fixture directory through
 its child PATH. The runner rejects coverage when a variant exits unsuccessfully,
 raw execution does not receive exact argv, or stock RTK and WSL1 WAD differ in
 normalized adapter output. It never emits a route policy: fixture results prove

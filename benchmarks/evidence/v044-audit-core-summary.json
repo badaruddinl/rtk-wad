@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "title": "XUVA v0.4.4 audit core benchmark summary",
+  "measured_at_utc": "2026-08-02T03:46:02Z",
+  "protocol": "four-way-core-v2",
+  "rounds_per_variant": 10,
+  "measured_executions": 160,
+  "all_exit_codes_zero": true,
+  "corpus": {
+    "origin": "https://github.com/BurntSushi/ripgrep.git",
+    "version": "14.1.1",
+    "commit": "4649aa9700619f94cf9c66876e9549d83420e16c"
+  },
+  "providers": {
+    "stock_windows_rtk": {
+      "version": "rtk 0.43.0",
+      "sha256": "a715e989bcebfc208f388cf5adaaa9953cbf1127b081bc09c4ef02e7d7fea39f",
+      "manifest_commands": 69,
+      "exact_manifest_match": true
+    },
+    "xuva_release": {
+      "version": "xuva 0.4.4",
+      "source_commit": "f82888582dda3892d18d5deab1d214ff37814727",
+      "sha256": "b176254637275340dd7fc847e0f97a58002ea1eb233d8623c4333a066031149b"
+    }
+  },
+  "tokenizer": "tiktoken==0.12.0/o200k_base",
+  "workloads": [
+    {
+      "id": "git-status",
+      "tokens": 6,
+      "median_ms": { "raw": 138.593, "stock_rtk": 368.281, "xuva_forced_rtk": 417.196, "xuva_auto": 179.158 },
+      "p95_ms": { "raw": 233.587, "stock_rtk": 522.293, "xuva_forced_rtk": 570.248, "xuva_auto": 255.711 }
+    },
+    {
+      "id": "git-log-100",
+      "tokens": 11,
+      "median_ms": { "raw": 119.241, "stock_rtk": 194.921, "xuva_forced_rtk": 265.618, "xuva_auto": 182.409 },
+      "p95_ms": { "raw": 211.384, "stock_rtk": 409.04, "xuva_forced_rtk": 388.115, "xuva_auto": 269.456 }
+    },
+    {
+      "id": "rg-focused",
+      "tokens": 119,
+      "median_ms": { "raw": 151.243, "stock_rtk": 217.231, "xuva_forced_rtk": 264.131, "xuva_auto": 126.976 },
+      "p95_ms": { "raw": 222.258, "stock_rtk": 485.537, "xuva_forced_rtk": 380.011, "xuva_auto": 174.63 }
+    },
+    {
+      "id": "rg-broad",
+      "tokens": 137700,
+      "median_ms": { "raw": 94.853, "stock_rtk": 240.064, "xuva_forced_rtk": 278.693, "xuva_auto": 119.974 },
+      "p95_ms": { "raw": 252.08, "stock_rtk": 520.006, "xuva_forced_rtk": 478.24, "xuva_auto": 309.063 }
+    }
+  ],
+  "claim_boundary": "Host-specific samples only. Cross-run deltas do not prove a causal optimization, and no universal speed claim is made."
+}

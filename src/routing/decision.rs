@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 
 use crate::adapters::rtk::{CommandSurface, command_surface};
+use crate::command::{CommandAccess, classify};
 use crate::config::{Config, ExecutionEnvironment, GitMode, PolicyObjective, Route};
 use crate::paths::windows_path_to_wsl_path;
 use crate::providers::resolution::requires_raw_posix_provider;
@@ -21,39 +22,10 @@ pub(crate) fn has_wsl_path(arguments: &[OsString]) -> bool {
     arguments.iter().any(is_wsl_path)
 }
 
-pub(crate) fn git_subcommand(arguments: &[OsString]) -> Option<&str> {
-    let mut skip_value = false;
-    for argument in arguments.iter().skip(1) {
-        let value = argument.to_str()?;
-        if skip_value {
-            skip_value = false;
-            continue;
-        }
-        if matches!(value, "-C" | "--git-dir" | "--work-tree" | "-c") {
-            skip_value = true;
-            continue;
-        }
-        if value.starts_with('-') {
-            continue;
-        }
-        return Some(value);
-    }
-    None
-}
-
 pub(crate) fn is_verified_read_only_git(arguments: &[OsString]) -> bool {
-    if matches!(
-        arguments,
-        [program, option]
-            if program == "git"
-                && matches!(option.to_str(), Some("--version" | "-v" | "--help" | "-h"))
-    ) {
-        return true;
-    }
-    matches!(
-        git_subcommand(arguments),
-        Some("status" | "log" | "show" | "diff" | "rev-parse" | "ls-files" | "grep")
-    )
+    classify(arguments)
+        .git
+        .is_some_and(|git| git.access == CommandAccess::ReadOnly)
 }
 
 pub(crate) fn is_verified_cargo_operation(arguments: &[OsString]) -> bool {
@@ -80,7 +52,10 @@ pub(crate) fn is_verified_go_test_all_operation(arguments: &[OsString]) -> bool 
 
 pub(crate) fn route_policy_key(arguments: &[OsString]) -> Option<String> {
     match command_family(arguments) {
-        "git" => git_subcommand(arguments).map(|subcommand| format!("git:{subcommand}")),
+        "git" => classify(arguments)
+            .git
+            .and_then(|git| git.subcommand(arguments).map(str::to_owned))
+            .map(|subcommand| format!("git:{subcommand}")),
         "rg" => Some("rg".to_owned()),
         "cargo" => arguments
             .get(1)
@@ -274,10 +249,9 @@ pub(crate) fn auto_route_for_environment(
 }
 
 pub(crate) fn git_uses_wsl_directory(arguments: &[OsString]) -> bool {
-    arguments.windows(2).any(|pair| {
-        (pair[0] == "-C" || pair[0] == "--git-dir" || pair[0] == "--work-tree")
-            && is_wsl_path(&pair[1])
-    })
+    classify(arguments)
+        .git
+        .is_some_and(|git| git.uses_wsl_directory)
 }
 
 pub(crate) fn should_use_native_git(

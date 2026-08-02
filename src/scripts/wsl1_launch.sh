@@ -9,7 +9,10 @@ marker_validator=$8
 completion_override=$9
 marker_path=${10}
 fixed_executable=${11}
-shift 11
+expected_file_key=${12}
+expected_size=${13}
+expected_modified_stamp=${14}
+shift 14
 
 case "$attestation_delay" in
     0|1|2|3|4|5) ;;
@@ -131,13 +134,36 @@ if [ -n "$extra_path" ]; then
 else
     path_prefix=""
 fi
-if [ -n "$ready_file" ]; then
-    printf 'ready' > "$ready_file"
-fi
 if [ "$fixed_executable" = "@default-rtk@" ]; then
     fixed_executable="$HOME/.local/bin/rtk"
 fi
-if [ -n "$fixed_executable" ]; then
+if [ -n "$expected_file_key" ] || [ -n "$expected_size" ] || [ -n "$expected_modified_stamp" ]; then
+    if [ -z "$fixed_executable" ] || [ -z "$expected_file_key" ] ||
+       [ -z "$expected_size" ] || [ -z "$expected_modified_stamp" ]; then
+        printf 'xuva: incomplete provider executable identity\n' >&2
+        exit 126
+    fi
+    actual_identity=$(/usr/bin/stat -Lc '%d:%i|%s|%y' -- "$fixed_executable" 2>/dev/null) || {
+        printf 'xuva: provider executable disappeared before launch: %s\n' "$fixed_executable" >&2
+        exit 126
+    }
+    expected_identity="$expected_file_key|$expected_size|$expected_modified_stamp"
+    if [ "$actual_identity" != "$expected_identity" ]; then
+        printf 'xuva: provider executable identity changed before launch: %s\n' "$fixed_executable" >&2
+        exit 126
+    fi
+fi
+if [ -n "$ready_file" ]; then
+    printf 'ready' > "$ready_file"
+fi
+if [ -n "$expected_file_key" ]; then
+    /usr/bin/env -i \
+        HOME="$HOME" \
+        USER="$user" \
+        PATH="${path_prefix}$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+        RTK_DB_PATH="$metrics_db_path" \
+        "$@"
+elif [ -n "$fixed_executable" ]; then
     /usr/bin/env -i \
         HOME="$HOME" \
         USER="$user" \

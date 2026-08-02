@@ -2,7 +2,9 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::time::UNIX_EPOCH;
+
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 
 use crate::process;
 use crate::providers::model::*;
@@ -53,16 +55,24 @@ pub(crate) fn select_windows_executable(candidates: Vec<String>) -> Option<Strin
 
 pub(crate) fn windows_binary_identity(path: &str) -> Option<BinaryIdentity> {
     let metadata = fs::metadata(path).ok()?;
-    let modified_unix_seconds = metadata
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_secs();
+    #[cfg(windows)]
+    let (file_key, modified_stamp) = (
+        format!("creation:{}", metadata.creation_time()),
+        metadata.last_write_time().to_string(),
+    );
+    #[cfg(not(windows))]
+    let (file_key, modified_stamp) = {
+        use std::os::unix::fs::MetadataExt;
+        (
+            format!("{}:{}", metadata.dev(), metadata.ino()),
+            format!("{}:{}", metadata.mtime(), metadata.mtime_nsec()),
+        )
+    };
     Some(BinaryIdentity {
         path: path.to_owned(),
+        file_key,
         size_bytes: metadata.len(),
-        modified_unix_seconds,
+        modified_stamp,
     })
 }
 
@@ -166,13 +176,20 @@ pub(crate) fn parse_wsl_binary_identity(
     identity: Option<String>,
 ) -> Option<BinaryIdentity> {
     let path = path?;
-    let (size_bytes, modified_unix_seconds) = identity?
-        .split_once(':')
-        .and_then(|(size, modified)| Some((size.parse().ok()?, modified.parse().ok()?)))?;
+    let identity = identity?;
+    let mut fields = identity.splitn(4, '|');
+    let device = fields.next()?;
+    let inode = fields.next()?;
+    let size_bytes = fields.next()?.parse().ok()?;
+    let modified_stamp = fields.next()?.to_owned();
+    if device.is_empty() || inode.is_empty() || modified_stamp.is_empty() {
+        return None;
+    }
     Some(BinaryIdentity {
         path,
+        file_key: format!("{device}:{inode}"),
         size_bytes,
-        modified_unix_seconds,
+        modified_stamp,
     })
 }
 

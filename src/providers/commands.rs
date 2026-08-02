@@ -175,8 +175,8 @@ pub(crate) fn binary_identity_display(identity: Option<&BinaryIdentity>) -> Stri
         || "missing".to_owned(),
         |identity| {
             format!(
-                "{}:{}:{}",
-                identity.path, identity.size_bytes, identity.modified_unix_seconds
+                "{}:{}:{}:{}",
+                identity.path, identity.file_key, identity.size_bytes, identity.modified_stamp
             )
         },
     )

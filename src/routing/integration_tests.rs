@@ -81,12 +81,14 @@ fn canonical_xuva_configuration_is_adaptive_by_default() {
     assert_eq!(xuva.profile, ExecutableProfile::Xuva);
     assert_eq!(xuva.backend, WslBackend::Auto);
     assert_eq!(xuva.route_preference, Route::Auto);
-    assert!(xuva.metrics_enabled);
+    assert!(!xuva.metrics_enabled);
 
-    let metrics_off =
-        Config::from_lookup(|name| (name == "XUVA_METRICS").then(|| "off".to_owned()))
-            .expect("metrics can be disabled explicitly");
-    assert!(!metrics_off.metrics_enabled);
+    for enabled in ["local", "on"] {
+        let metrics =
+            Config::from_lookup(|name| (name == "XUVA_METRICS").then(|| enabled.to_owned()))
+                .expect("metrics can be enabled explicitly");
+        assert!(metrics.metrics_enabled);
+    }
     assert!(
         Config::from_lookup(|name| { (name == "XUVA_METRICS").then(|| "remote".to_owned()) })
             .is_err()

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::adapters::rtk::adapter_contract_id;
@@ -10,7 +10,8 @@ use crate::state;
 
 use super::{
     CALIBRATION_MAX_SAMPLES, CALIBRATION_SCHEMA_VERSION, CalibrationEntry, CalibrationFile,
-    CalibrationPlan, NativeCalibrationSample,
+    CalibrationPlan, MAX_CALIBRATION_ENTRIES, NativeCalibrationSample, valid_context_signature,
+    valid_evidence_key,
 };
 
 fn path() -> PathBuf {
@@ -18,15 +19,20 @@ fn path() -> PathBuf {
 }
 
 pub(crate) fn validate(file: &CalibrationFile) -> Result<(), String> {
-    if file.schema_version != CALIBRATION_SCHEMA_VERSION {
+    if file.schema_version != CALIBRATION_SCHEMA_VERSION
+        || file.entries.len() > MAX_CALIBRATION_ENTRIES
+    {
         return Err("calibration state uses an unsupported schema version".to_owned());
     }
     let mut signatures = HashSet::new();
     for entry in &file.entries {
-        if entry.signature.len() != 16
-            || entry.key.trim().is_empty()
+        if !valid_context_signature(&entry.signature)
+            || !valid_evidence_key(&entry.key)
             || entry.manifest_version != adapter_contract_id()
-            || entry.context_signature.len() != 16
+            || !valid_context_signature(&entry.context_signature)
+            || entry.raw_samples_ms.len() > CALIBRATION_MAX_SAMPLES
+            || entry.native_samples.len() > CALIBRATION_MAX_SAMPLES
+            || (entry.raw_samples_ms.is_empty() && entry.native_samples.is_empty())
             || !entry
                 .raw_samples_ms
                 .iter()
@@ -64,23 +70,21 @@ pub(crate) fn for_current_contract(mut file: CalibrationFile) -> Result<Calibrat
 }
 
 pub(crate) fn load() -> Result<CalibrationFile, String> {
-    let path = path();
+    load_from(&path())
+}
+
+fn load_from(path: &Path) -> Result<CalibrationFile, String> {
     if !path.exists() {
         return Ok(CalibrationFile {
             schema_version: CALIBRATION_SCHEMA_VERSION,
             entries: Vec::new(),
         });
     }
-    let contents = fs::read_to_string(&path)
+    let contents = fs::read_to_string(path)
         .map_err(|error| format!("unable to read local calibration state: {error}"))?;
     let file: CalibrationFile = serde_json::from_str(&contents)
         .map_err(|error| format!("local calibration state is invalid: {error}"))?;
     for_current_contract(file)
-}
-
-pub(crate) fn save(file: &CalibrationFile) -> Result<(), String> {
-    validate(file)?;
-    state::write_json_atomic(&path(), file, "local calibration state")
 }
 
 fn cap_samples<T>(samples: &mut Vec<T>) {
@@ -100,58 +104,68 @@ pub(crate) fn record(
     if exit_code != 0 || !matches!(executed_route, Route::Raw | Route::NativeRtk) {
         return Ok(());
     }
-    let mut state = load()?;
-    let entry = match state
-        .entries
-        .iter()
-        .position(|entry| entry.signature == plan.signature)
-    {
-        Some(index)
-            if state.entries[index].manifest_version == plan.manifest_version
-                && state.entries[index].context_signature == plan.context_signature =>
-        {
-            &mut state.entries[index]
-        }
-        Some(index) => {
-            state.entries[index] = CalibrationEntry {
-                signature: plan.signature.clone(),
-                key: plan.key.clone(),
-                manifest_version: plan.manifest_version.clone(),
-                context_signature: plan.context_signature.clone(),
-                raw_samples_ms: Vec::new(),
-                native_samples: Vec::new(),
-            };
-            &mut state.entries[index]
-        }
-        None => {
-            state.entries.push(CalibrationEntry {
-                signature: plan.signature.clone(),
-                key: plan.key.clone(),
-                manifest_version: plan.manifest_version.clone(),
-                context_signature: plan.context_signature.clone(),
-                raw_samples_ms: Vec::new(),
-                native_samples: Vec::new(),
-            });
-            state.entries.last_mut().expect("entry was just appended")
-        }
-    };
     let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
-    match executed_route {
-        Route::Raw => {
-            entry.raw_samples_ms.push(elapsed_ms);
-            cap_samples(&mut entry.raw_samples_ms);
-        }
-        Route::NativeRtk => {
-            entry.native_samples.push(NativeCalibrationSample {
-                elapsed_ms,
-                input_tokens: totals.input_tokens,
-                saved_tokens: totals.saved_tokens,
-            });
-            cap_samples(&mut entry.native_samples);
-        }
-        Route::Wsl1 | Route::Wsl2 | Route::Auto => unreachable!("route was filtered above"),
-    }
-    save(&state)
+    let destination = path();
+    state::update_json_atomic(
+        &destination,
+        "local calibration state",
+        load_from,
+        |state| {
+            let entry = match state
+                .entries
+                .iter()
+                .position(|entry| entry.signature == plan.signature)
+            {
+                Some(index)
+                    if state.entries[index].manifest_version == plan.manifest_version
+                        && state.entries[index].context_signature == plan.context_signature =>
+                {
+                    &mut state.entries[index]
+                }
+                Some(index) => {
+                    state.entries[index] = CalibrationEntry {
+                        signature: plan.signature.clone(),
+                        key: plan.key.clone(),
+                        manifest_version: plan.manifest_version.clone(),
+                        context_signature: plan.context_signature.clone(),
+                        raw_samples_ms: Vec::new(),
+                        native_samples: Vec::new(),
+                    };
+                    &mut state.entries[index]
+                }
+                None => {
+                    state.entries.push(CalibrationEntry {
+                        signature: plan.signature.clone(),
+                        key: plan.key.clone(),
+                        manifest_version: plan.manifest_version.clone(),
+                        context_signature: plan.context_signature.clone(),
+                        raw_samples_ms: Vec::new(),
+                        native_samples: Vec::new(),
+                    });
+                    state.entries.last_mut().expect("entry was just appended")
+                }
+            };
+            match executed_route {
+                Route::Raw => {
+                    entry.raw_samples_ms.push(elapsed_ms);
+                    cap_samples(&mut entry.raw_samples_ms);
+                }
+                Route::NativeRtk => {
+                    entry.native_samples.push(NativeCalibrationSample {
+                        elapsed_ms,
+                        input_tokens: totals.input_tokens,
+                        saved_tokens: totals.saved_tokens,
+                    });
+                    cap_samples(&mut entry.native_samples);
+                }
+                Route::Wsl1 | Route::Wsl2 | Route::Auto => {
+                    unreachable!("route was filtered above")
+                }
+            }
+            Ok(())
+        },
+        validate,
+    )
 }
 
 pub(crate) fn print(objective: PolicyObjective) -> Result<(), String> {
@@ -184,6 +198,50 @@ mod tests {
     use crate::routing::{median, select_adaptive_route};
 
     use super::*;
+
+    fn valid_entry() -> CalibrationEntry {
+        CalibrationEntry {
+            signature: "0123456789abcdef".to_owned(),
+            key: "rg".to_owned(),
+            manifest_version: adapter_contract_id(),
+            context_signature: "fedcba9876543210".to_owned(),
+            raw_samples_ms: vec![1.0],
+            native_samples: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn validation_rejects_empty_or_oversized_calibration_evidence() {
+        let mut empty = valid_entry();
+        empty.raw_samples_ms.clear();
+        assert!(
+            validate(&CalibrationFile {
+                schema_version: CALIBRATION_SCHEMA_VERSION,
+                entries: vec![empty],
+            })
+            .is_err()
+        );
+
+        let mut oversized = valid_entry();
+        oversized.raw_samples_ms = vec![1.0; CALIBRATION_MAX_SAMPLES + 1];
+        assert!(
+            validate(&CalibrationFile {
+                schema_version: CALIBRATION_SCHEMA_VERSION,
+                entries: vec![oversized],
+            })
+            .is_err()
+        );
+
+        let mut invalid_signature = valid_entry();
+        invalid_signature.signature = "zzzzzzzzzzzzzzzz".to_owned();
+        assert!(
+            validate(&CalibrationFile {
+                schema_version: CALIBRATION_SCHEMA_VERSION,
+                entries: vec![invalid_signature],
+            })
+            .is_err()
+        );
+    }
 
     #[test]
     fn stale_adapter_contract_is_discarded_without_failing() {

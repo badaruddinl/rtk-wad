@@ -10,16 +10,19 @@ use crate::execution::environment::forwarded_environment;
 use crate::execution::planner::execution_plan_for_provider_candidate;
 use crate::planning::{current_project_location, windows_cwd_for_invocation};
 use crate::providers::commands::is_safe_provider_tool_name;
-use crate::providers::discovery::{installed_wsl_distributions, is_windows_launchable_path};
+use crate::providers::discovery::{
+    decode_wsl_output, installed_wsl_distributions, is_windows_launchable_path,
+    parse_wsl_binary_identity, windows_binary_identity,
+};
 use crate::providers::mapping::{
     mapped_windows_project_path, mapped_wsl_project_path, translate_arguments_to_windows,
     translate_arguments_to_wsl,
 };
 use crate::providers::model::{
-    AdapterKind, ProjectLocation, ProjectLocationKind, ProviderCandidate, ProviderResolution,
-    WindowsToolProbe,
+    AdapterKind, BinaryIdentity, ProjectLocation, ProjectLocationKind, ProviderCandidate,
+    ProviderResolution, WindowsToolProbe,
 };
-use crate::providers::probe::cached_or_discovered_tool;
+use crate::providers::probe::{cached_or_discovered_tool, complete_cached_wsl_discovery};
 use crate::providers::resolution::{
     requires_raw_posix_provider, resolve_tool_provider_from_discovery_with_user,
     windows_probe_has_compatible_provider, windows_provider_has_compatible_semantics,
@@ -58,19 +61,32 @@ pub(crate) fn looks_like_explicit_executable(value: &str) -> bool {
             && matches!(value.as_bytes()[2], b'\\' | b'/'))
 }
 
-pub(crate) fn wsl_executable_exists(distro: &str, user: Option<&str>, path: &str) -> bool {
+pub(crate) fn wsl_executable_identity(
+    distro: &str,
+    user: Option<&str>,
+    path: &str,
+) -> Option<BinaryIdentity> {
     let mut command = Command::new("wsl.exe");
     let mut arguments = wsl_exec_prefix(distro, user);
     arguments.extend([
-        OsString::from("test"),
-        OsString::from("-f"),
-        OsString::from(path),
-        OsString::from("-a"),
-        OsString::from("-x"),
+        OsString::from("sh"),
+        OsString::from("-c"),
+        OsString::from("test -f \"$1\" -a -x \"$1\" && stat -Lc '%d|%i|%s|%y' -- \"$1\""),
+        OsString::from("xuva-explicit-provider"),
         OsString::from(path),
     ]);
     command.args(arguments);
-    process::run_probe(&mut command).is_ok_and(|output| output.status.success())
+    let output = process::run_probe(&mut command)
+        .ok()
+        .filter(|output| output.status.success() && !output.stdout_truncated)?;
+    parse_wsl_binary_identity(
+        Some(path.to_owned()),
+        decode_wsl_output(&output.stdout)
+            .lines()
+            .next()
+            .map(str::trim)
+            .map(str::to_owned),
+    )
 }
 
 pub(crate) fn explicit_executable_plan(
@@ -126,11 +142,16 @@ pub(crate) fn explicit_executable_plan(
             },
             interactive: false,
         };
+        let expected_identity =
+            windows_binary_identity(&executable.to_string_lossy()).ok_or_else(|| {
+                format!("explicit Windows executable `{value}` has no stable identity")
+            })?;
         return Ok(Some((
             dispatcher::ExecutionPlan {
                 request,
                 candidate: dispatcher::RouteCandidate::Windows { executable, cwd },
                 adapter: dispatcher::OutputAdapter::Raw,
+                expected_identity: Some(expected_identity),
                 explanation: vec![dispatcher::DecisionReason(
                     "explicit Windows executable path pins the Windows host".to_owned(),
                 )],
@@ -147,12 +168,15 @@ pub(crate) fn explicit_executable_plan(
         })?;
         format!("{}/{}", cwd.trim_end_matches('/'), value)
     };
-    if !wsl_executable_exists(&config.distro, config.user.as_deref(), &executable) {
-        return Err(format!(
-            "explicit WSL executable `{executable}` is missing or not executable in {}",
-            config.distro
-        ));
-    }
+    let expected_identity =
+        wsl_executable_identity(&config.distro, config.user.as_deref(), &executable).ok_or_else(
+            || {
+                format!(
+                    "explicit WSL executable `{executable}` is missing, not executable, or has no stable identity in {}",
+                    config.distro
+                )
+            },
+        )?;
     let cwd = config
         .cwd
         .clone()
@@ -175,33 +199,69 @@ pub(crate) fn explicit_executable_plan(
         environment_policy: dispatcher::EnvironmentPolicy::Isolated,
         interactive: false,
     };
-    let candidate = match installed_wsl_distributions()
-        .into_iter()
-        .find(|(distro, _)| distro == &config.distro)
-        .and_then(|(_, version)| version)
-    {
-        Some(1) => dispatcher::RouteCandidate::Wsl1 {
-            distro: config.distro.clone(),
-            executable: OsString::from(&executable),
-            cwd: PathBuf::from(&cwd),
-        },
-        _ => dispatcher::RouteCandidate::Wsl2 {
-            distro: config.distro.clone(),
-            executable: OsString::from(&executable),
-            cwd: PathBuf::from(&cwd),
-        },
-    };
+    let distributions = installed_wsl_distributions();
+    let version = verified_explicit_wsl_version(&distributions, &config.distro, value)?;
+    let candidate = explicit_wsl_route_candidate(
+        &config.distro,
+        OsString::from(&executable),
+        PathBuf::from(&cwd),
+        version,
+    )?;
     Ok(Some((
         dispatcher::ExecutionPlan {
             request,
             candidate,
             adapter: dispatcher::OutputAdapter::Raw,
+            expected_identity: Some(expected_identity),
             explanation: vec![dispatcher::DecisionReason(
                 "explicit Linux executable path pins the configured WSL host".to_owned(),
             )],
         },
         "explicit WSL executable path".to_owned(),
     )))
+}
+
+pub(crate) fn verified_explicit_wsl_version(
+    distributions: &[(String, Option<u8>)],
+    distro: &str,
+    executable: &str,
+) -> Result<u8, String> {
+    let (_, version) = distributions
+        .iter()
+        .find(|(candidate, _)| candidate == distro)
+        .ok_or_else(|| {
+            format!(
+                "explicit Linux executable `{executable}` cannot run because configured distro `{distro}` is not installed"
+            )
+        })?;
+    version.ok_or_else(|| {
+        format!(
+            "explicit Linux executable `{executable}` cannot run because the WSL version of distro `{distro}` could not be verified"
+        )
+    })
+}
+
+pub(crate) fn explicit_wsl_route_candidate(
+    distro: &str,
+    executable: OsString,
+    cwd: PathBuf,
+    version: u8,
+) -> Result<dispatcher::RouteCandidate, String> {
+    match version {
+        1 => Ok(dispatcher::RouteCandidate::Wsl1 {
+            distro: distro.to_owned(),
+            executable,
+            cwd,
+        }),
+        2 => Ok(dispatcher::RouteCandidate::Wsl2 {
+            distro: distro.to_owned(),
+            executable,
+            cwd,
+        }),
+        unsupported => Err(format!(
+            "configured distro `{distro}` reports unsupported WSL version `{unsupported}`"
+        )),
+    }
 }
 
 pub(crate) fn windows_tool_is_usable(
@@ -275,14 +335,52 @@ pub(crate) fn provider_dispatch_decision(
         );
     }
     let (discovery, cache) = cached_or_discovered_tool(tool, config, false, true, false);
-    let resolution = resolve_tool_provider_from_discovery_with_user(
+    let mut resolution = resolve_tool_provider_from_discovery_with_user(
         tool,
-        project,
+        project.clone(),
         discovery,
         cache,
         config.user.as_deref(),
     );
+    if !resolution.availability.wsl_probe_complete
+        && !partial_inventory_has_usable_candidate(arguments, config, &resolution)
+    {
+        trace(format!(
+            "provider discovery continuing beyond an unusable partial {tool} inventory"
+        ));
+        let (discovery, cache) =
+            complete_cached_wsl_discovery(tool, config, resolution.availability, false);
+        resolution = resolve_tool_provider_from_discovery_with_user(
+            tool,
+            project,
+            discovery,
+            cache,
+            config.user.as_deref(),
+        );
+    }
     provider_dispatch_decision_from_resolution(arguments, config, static_route, resolution)
+}
+
+pub(crate) fn partial_inventory_has_usable_candidate(
+    arguments: &[OsString],
+    config: &Config,
+    resolution: &ProviderResolution,
+) -> bool {
+    let tool = arguments
+        .first()
+        .and_then(|argument| argument.to_str())
+        .unwrap_or_default();
+    let pin_windows_git = resolution.project.kind == ProjectLocationKind::Windows
+        && tool == "git"
+        && !is_verified_read_only_git(arguments);
+    resolution.candidates.iter().any(|candidate| {
+        candidate.usable
+            && candidate.has_consistent_location()
+            && (!pin_windows_git || candidate.is_windows())
+            && (config.output_adapter != OutputAdapterPreference::Rtk
+                || candidate.supports_adapter(AdapterKind::Rtk))
+            && (resolution.project.kind != ProjectLocationKind::Wsl || candidate.is_wsl())
+    })
 }
 
 pub(crate) fn provider_dispatch_decision_from_resolution(

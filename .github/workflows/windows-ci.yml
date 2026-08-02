@@ -51,7 +51,7 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --locked --bins -- --test-threads=1
+        run: cargo test --locked --lib --bins -- --test-threads=1
 
       - name: Audit locked dependencies
         shell: pwsh
@@ -118,6 +118,10 @@ jobs:
       - name: Run public corpus provision contract
         shell: pwsh
         run: .\tests\public-corpus-provision-contract.ps1
+
+      - name: Run benchmark runner state contract
+        shell: pwsh
+        run: .\tests\benchmark-runner-contract.ps1
 
       - name: Run isolated install and recovery contract
         shell: pwsh

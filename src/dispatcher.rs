@@ -7,6 +7,8 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use crate::providers::model::BinaryIdentity;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CommandSpec {
     pub(crate) executable: OsString,
@@ -64,6 +66,7 @@ pub(crate) struct ExecutionPlan {
     pub(crate) request: CommandSpec,
     pub(crate) candidate: RouteCandidate,
     pub(crate) adapter: OutputAdapter,
+    pub(crate) expected_identity: Option<BinaryIdentity>,
     pub(crate) explanation: Vec<DecisionReason>,
 }
 
@@ -104,6 +107,7 @@ mod tests {
                 cwd: PathBuf::from("/mnt/c/work"),
             },
             adapter: OutputAdapter::Raw,
+            expected_identity: None,
             explanation: vec![DecisionReason(
                 "RTK output adaptation is disabled".to_owned(),
             )],

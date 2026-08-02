@@ -89,7 +89,7 @@ for (const [command, args] of selectedCases) {
   const variants = {
     raw: { file: resolve(settings.windowsBin, `${command}.exe`), args, environment: { Path: windowsPath } },
     native_rtk: { file: settings.nativeRtk, args: [command, ...args], environment: { Path: windowsPath } },
-    rtk_wad_wsl1: { file: settings.wad, args: ['--route', 'wsl1', command, ...args], environment: { RTK_WSL_BACKEND: 'wsl1', RTK_WSL_DISTRO: settings.wsl1Distro, RTK_WSL_RTK_PATH: settings.wsl1Rtk, RTK_WSL_EXTRA_PATH: settings.linuxBin, RTK_WAD_NATIVE_RTK_PATH: settings.nativeRtk, Path: windowsPath } },
+    rtk_wad_wsl1: { file: settings.wad, args: ['--route', 'wsl1', command, ...args], environment: { XUVA_WSL_BACKEND: 'wsl1', XUVA_WSL_DISTRO: settings.wsl1Distro, XUVA_WSL_RTK_PATH: settings.wsl1Rtk, XUVA_WSL_EXTRA_PATH: settings.linuxBin, XUVA_NATIVE_RTK_PATH: settings.nativeRtk, Path: windowsPath } },
   };
   for (const [name, variant] of Object.entries(variants)) requireSuccess(await execute(variant), `${command} ${name} warm-up`);
   const entries = Object.entries(variants);

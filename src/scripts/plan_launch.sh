@@ -9,7 +9,11 @@ permit_file=$8
 completion_file=$9
 launch_delay=${10}
 completion_override=${11}
-shift 11
+expected_executable=${12}
+expected_file_key=${13}
+expected_size=${14}
+expected_modified_stamp=${15}
+shift 15
 
 user=${USER:-}
 if [ -n "$extra_path" ]; then
@@ -191,6 +195,20 @@ while ! /usr/bin/flock -n 9; do
     remaining=$((remaining - 1))
     /bin/sleep 0.1
 done
+if [ -z "$expected_executable" ] || [ -z "$expected_file_key" ] ||
+   [ -z "$expected_size" ] || [ -z "$expected_modified_stamp" ]; then
+    printf 'xuva-plan: incomplete provider executable identity\n' >&2
+    exit 126
+fi
+actual_identity=$(/usr/bin/stat -Lc '%d:%i|%s|%y' -- "$expected_executable" 2>/dev/null) || {
+    printf 'xuva-plan: provider executable disappeared before launch: %s\n' "$expected_executable" >&2
+    exit 126
+}
+expected_identity="$expected_file_key|$expected_size|$expected_modified_stamp"
+if [ "$actual_identity" != "$expected_identity" ]; then
+    printf 'xuva-plan: provider executable identity changed before launch: %s\n' "$expected_executable" >&2
+    exit 126
+fi
 if [ -n "$ready_file" ]; then
     printf 'ready' > "$ready_file"
 fi

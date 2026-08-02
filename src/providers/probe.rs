@@ -9,8 +9,8 @@ use crate::process;
 use crate::wsl::{exec_prefix as wsl_exec_prefix, valid_installation_id};
 
 use super::cache::{
-    cache_entry_is_fresh, discovery_context_signature, load_provider_cache, save_provider_cache,
-    unix_seconds,
+    cache_entry_is_fresh, discovery_context_signature, load_provider_cache, unix_seconds,
+    update_provider_cache,
 };
 use super::discovery::{
     VersionProbe, configured_windows_executable, decode_wsl_output, first_windows_executable,
@@ -41,8 +41,8 @@ pub(crate) fn probe_wsl_tool(
         "case \"$tool_path\" in /*) [ -f \"$tool_path\" ] && [ -x \"$tool_path\" ] || tool_path= ;; *) tool_path= ;; esac; ",
         "rtk_path=$(command -v rtk 2>/dev/null || true); ",
         "case \"$rtk_path\" in /*) [ -f \"$rtk_path\" ] && [ -x \"$rtk_path\" ] || rtk_path= ;; *) rtk_path= ;; esac; ",
-        "tool_identity=$(stat -Lc '%s:%Y' -- \"$tool_path\" 2>/dev/null || true); ",
-        "rtk_identity=$(stat -Lc '%s:%Y' -- \"$rtk_path\" 2>/dev/null || true); ",
+        "tool_identity=$(stat -Lc '%d|%i|%s|%y' -- \"$tool_path\" 2>/dev/null || true); ",
+        "rtk_identity=$(stat -Lc '%d|%i|%s|%y' -- \"$rtk_path\" 2>/dev/null || true); ",
         "installation_id=; ",
         "if [ \"$3\" = 1 ]; then installation_id=$(/bin/sh -c \"$4\") || installation_id=; fi; ",
         "printf '%s\\n%s\\n%s\\n%s\\n%s\\n' \"$tool_path\" \"$rtk_path\" \"$tool_identity\" \"$rtk_identity\" \"$installation_id\"",
@@ -213,6 +213,64 @@ pub(crate) fn discover_tool(
     }
 }
 
+pub(crate) fn complete_wsl_discovery(
+    tool: &str,
+    config: &Config,
+    mut discovered: ProviderCacheEntry,
+    inspect_versions: bool,
+) -> ProviderCacheEntry {
+    let mut distros = installed_wsl_distributions();
+    distros.sort_by_key(|(distro, version)| {
+        if distro == &config.distro {
+            0
+        } else if *version == Some(2) {
+            1
+        } else {
+            2
+        }
+    });
+    for (distro, version) in &distros {
+        if discovered.wsl.iter().any(|probe| probe.distro == *distro) {
+            continue;
+        }
+        discovered.wsl.push(probe_wsl_tool(
+            distro,
+            *version,
+            config.user.as_deref(),
+            tool,
+            config.extra_path.as_deref(),
+            inspect_versions,
+        ));
+    }
+    discovered.observed_unix_seconds = unix_seconds();
+    discovered.inspection_level = if inspect_versions {
+        InspectionLevel::Version
+    } else {
+        discovered.inspection_level
+    };
+    discovered.context_signature = discovery_context_signature(config, true);
+    discovered.wsl_probe_complete = distros
+        .iter()
+        .all(|(distro, _)| discovered.wsl.iter().any(|probe| probe.distro == *distro));
+    discovered
+}
+
+pub(crate) fn complete_cached_wsl_discovery(
+    tool: &str,
+    config: &Config,
+    discovered: ProviderCacheEntry,
+    inspect_versions: bool,
+) -> (ProviderCacheEntry, &'static str) {
+    if discovered.wsl_probe_complete {
+        return (discovered, "hit");
+    }
+    let completed = complete_wsl_discovery(tool, config, discovered, inspect_versions);
+    if let Err(error) = update_provider_cache(&completed) {
+        trace(format!("completed provider cache was not saved: {error}"));
+    }
+    (completed, "miss")
+}
+
 pub(crate) fn cached_or_discovered_tool(
     tool: &str,
     config: &Config,
@@ -222,7 +280,7 @@ pub(crate) fn cached_or_discovered_tool(
 ) -> (ProviderCacheEntry, &'static str) {
     let now = unix_seconds();
     let context_signature = discovery_context_signature(config, require_wsl);
-    let mut cache = load_provider_cache();
+    let cache = load_provider_cache();
     if !refresh
         && let Some(entry) = cache.entries.iter().find(|entry| {
             entry.tool == tool
@@ -235,9 +293,7 @@ pub(crate) fn cached_or_discovered_tool(
         return (entry.clone(), "hit");
     }
     let discovered = discover_tool(tool, config, require_wsl, validate_versions);
-    cache.entries.retain(|entry| entry.tool != tool);
-    cache.entries.push(discovered.clone());
-    if let Err(error) = save_provider_cache(&cache) {
+    if let Err(error) = update_provider_cache(&discovered) {
         trace(format!("provider cache was not saved: {error}"));
     }
     (discovered, "miss")

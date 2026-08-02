@@ -4,6 +4,28 @@ All notable changes to XUVA are documented here. The project follows semantic
 versioning, and release artifacts are built from immutable version tags by the
 GitHub release-provenance workflow.
 
+## [Unreleased]
+
+### Changed
+
+- Split CLI parsing, policy resolution, execution planning, and process running
+  into typed, independently testable stages while keeping the raw front door
+  allocation-free.
+- Made local metrics explicitly opt-in, bounded, purgeable, ACL-protected, and
+  free of raw command and error text.
+- Moved isolated benchmark state to an ACL-protected LocalAppData location and
+  added a CI contract for current XUVA environment names.
+- Replaced the README's cross-run optimization comparison with a fresh 160-run
+  public-corpus sample and explicit claim boundaries.
+
+### Security and reliability
+
+- Enforced library tests in CI and release gates; made unknown WSL versions
+  fail closed and revalidated provider identity immediately before launch.
+- Added bounded policy validation, transactional cross-process state updates,
+  complete fallback discovery after unusable partial WSL inventory, and
+  regression coverage for each boundary.
+
 ## [0.4.4] - 2026-08-01
 
 ### Added
@@ -30,10 +52,9 @@ GitHub release-provenance workflow.
 
 - Removed stable raw-route policy and calibration reads from eligible command
   fast paths.
-- Reduced adaptive routing overhead for representative `git` and `rg`
-  workloads. The repository benchmark records improvements of 22.5% to 46.3%
-  against the previous auto-routing implementation on the measured host; these
-  are workload-specific observations, not universal speed guarantees.
+- A historical host run reported lower auto-routing medians for representative
+  `git` and `rg` workloads than an earlier run. That cross-run comparison is
+  retained as historical evidence, not causal proof or a universal guarantee.
 
 ### Security and reliability
 
