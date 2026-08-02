@@ -29,10 +29,16 @@ fn wsl_plan_launcher_forwards_environment_as_structured_assignments() {
         },
     )
     .expect("WSL plan arguments are valid");
-    let executable = arguments
+    let executable_positions = arguments
         .iter()
-        .position(|argument| argument == "/tmp/go")
-        .expect("plan includes executable");
+        .enumerate()
+        .filter_map(|(index, argument)| (argument == "/tmp/go").then_some(index))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        executable_positions.len(),
+        2,
+        "plan includes one identity path and one execution slot"
+    );
     let overlay = arguments
         .iter()
         .position(|argument| argument == "P7_OVERLAY=value with spaces")
@@ -46,9 +52,10 @@ fn wsl_plan_launcher_forwards_environment_as_structured_assignments() {
     assert!(arguments.contains(&OsString::from("fixture")));
     assert!(PLAN_LAUNCH_SCRIPT.contains("stat -Lc '%d:%i|%s|%y'"));
     assert!(PLAN_LAUNCH_SCRIPT.contains("identity changed before launch"));
+    assert!(executable_positions[0] < overlay);
     assert!(
-        overlay < executable && executable < user_argument,
-        "env must receive overlays before the identity-verified executable"
+        overlay < executable_positions[1] && executable_positions[1] < user_argument,
+        "env must receive overlays before the identity-verified execution slot"
     );
     assert!(
         wsl_environment_assignments(&[(OsString::from("INVALID-NAME"), OsString::from("value"),)])
