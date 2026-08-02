@@ -26,6 +26,32 @@ function Assert-ScratchPath {
     return $resolved
 }
 
+function Remove-VerifiedScratchTree {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $root = Get-Item -LiteralPath $Path -Force
+    $entries = @($root) + @(Get-ChildItem -LiteralPath $Path -Recurse -Force)
+    $reparsePoint = $entries | Where-Object {
+        ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+    } | Select-Object -First 1
+    if ($null -ne $reparsePoint) {
+        throw "Refusing to follow a reparse point in verified CI scratch: $($reparsePoint.FullName)"
+    }
+
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            [System.IO.Directory]::Delete($Path, $true)
+            return
+        } catch [System.IO.IOException] {
+            if ($attempt -eq 3) { throw }
+            Start-Sleep -Milliseconds 250
+        } catch [System.UnauthorizedAccessException] {
+            if ($attempt -eq 3) { throw }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+}
+
 if ($Mode -eq 'prepare') {
     if ($env:GITHUB_RUN_ID -notmatch '^[0-9]+$' -or
         $env:GITHUB_RUN_ATTEMPT -notmatch '^[0-9]+$' -or
@@ -73,25 +99,7 @@ if ([string]::IsNullOrWhiteSpace($env:XUVA_CI_SCRATCH)) {
 }
 
 $scratch = Assert-ScratchPath $env:XUVA_CI_SCRATCH
-$target = Join-Path $scratch 'target'
-if (Test-Path -LiteralPath $target -PathType Container) {
-    $targetEntry = Get-ChildItem -LiteralPath $target -Force | Select-Object -First 1
-    if ($null -eq $targetEntry) {
-        [System.IO.Directory]::Delete($target, $false)
-    } else {
-        & rustup.exe run 1.97.1 cargo clean --target-dir $target
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Cargo rejected the verified target directory, so it was retained for diagnosis: $target"
-        }
-    }
+if (Test-Path -LiteralPath $scratch -PathType Container) {
+    Remove-VerifiedScratchTree $scratch
 }
-
-foreach ($path in @((Join-Path $scratch 'target'), (Join-Path $scratch 'temp'), $scratch)) {
-    if (Test-Path -LiteralPath $path -PathType Container) {
-        try {
-            [System.IO.Directory]::Delete($path, $false)
-        } catch [System.IO.IOException] {
-            Write-Warning "Verified CI scratch directory is not empty and was retained for diagnosis: $path"
-        }
-    }
-}
+exit 0
