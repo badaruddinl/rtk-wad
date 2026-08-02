@@ -50,7 +50,7 @@ try {
         'CARGO_PROFILE_TEST_BUILD_OVERRIDE_DEBUG',
         'CARGO_PROFILE_TEST_DEBUG'
     )) {
-        if ([regex]::Matches($wslContractWorkflow, "(?m)^  ${profileVariable}: '0'$").Count -ne 1) {
+        if ([regex]::Matches($wslContractWorkflow, "(?m)^  ${profileVariable}: '0'\r?$").Count -ne 1) {
             throw "The WSL process contract must bound build artifacts with $profileVariable=0."
         }
     }
