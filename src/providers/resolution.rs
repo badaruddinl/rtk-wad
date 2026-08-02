@@ -51,7 +51,11 @@ pub(crate) fn resolve_tool_provider_from_discovery_with_user(
         .then(|| discovery.windows.native_rtk.clone())
         .flatten();
     let windows_raw_available = discovery.windows.executable.is_some()
+        && discovery.windows.executable_identity.is_some()
         && windows_provider_has_compatible_semantics(tool, AdapterKind::Raw);
+    let windows_rtk_available = discovery.windows.native_rtk.is_some()
+        && discovery.windows.native_rtk_identity.is_some()
+        && windows_provider_has_compatible_semantics(tool, AdapterKind::Rtk);
     if let Some(executable) = discovery
         .windows
         .executable
@@ -60,14 +64,13 @@ pub(crate) fn resolve_tool_provider_from_discovery_with_user(
     {
         let project_path = windows_project_path(&project, user);
         let compatible = windows_probe_has_compatible_provider(tool, &discovery.windows);
-        let usable = project_path.is_some() && compatible;
+        let identity_verified = windows_raw_available || windows_rtk_available;
+        let usable = project_path.is_some() && compatible && identity_verified;
         candidates.push(ProviderCandidate {
             host: ProviderHost::Windows,
             adapters: [
                 windows_raw_available.then_some(AdapterKind::Raw),
-                (discovery.windows.native_rtk.is_some()
-                    && windows_provider_has_compatible_semantics(tool, AdapterKind::Rtk))
-                .then_some(AdapterKind::Rtk),
+                windows_rtk_available.then_some(AdapterKind::Rtk),
             ]
             .into_iter()
             .flatten()
@@ -75,13 +78,22 @@ pub(crate) fn resolve_tool_provider_from_discovery_with_user(
             distro: None,
             wsl_version: None,
             executable,
+            executable_identity: if windows_raw_available {
+                discovery.windows.executable_identity.clone()
+            } else {
+                discovery.windows.native_rtk_identity.clone()
+            },
             rtk: discovery.windows.native_rtk.clone(),
+            rtk_identity: discovery.windows.native_rtk_identity.clone(),
             project_path,
             usable,
             reason: if !compatible {
                 format!(
                     "Windows `{tool}` has incompatible command semantics; XUVA requires the POSIX provider for this command family"
                 )
+            } else if !identity_verified {
+                "Windows provider is present but its executable identity could not be verified"
+                    .to_owned()
             } else if usable {
                 if project.kind == ProjectLocationKind::Wsl {
                     "Windows toolchain and WSL-to-Windows project mapping are verified; generic execution remains diagnostic until P14".to_owned()
@@ -100,19 +112,21 @@ pub(crate) fn resolve_tool_provider_from_discovery_with_user(
             Some(2) => ProviderHost::Wsl2,
             _ => continue,
         };
-        let raw_available = probe.executable.is_some();
+        let raw_available = probe.executable.is_some() && probe.executable_identity.is_some();
+        let rtk_available = probe.rtk.is_some() && probe.rtk_identity.is_some();
         let rtk_fallback = (command_surface(tool) == CommandSurface::NativeStructured)
             .then(|| probe.rtk.clone())
             .flatten();
         if let Some(executable) = probe.executable.clone().or(rtk_fallback) {
             let project_path = wsl_project_path(&project, &probe, user);
             let dedicated_runtime = host != ProviderHost::Wsl1 || probe.dedicated;
-            let usable = project_path.is_some() && dedicated_runtime;
+            let identity_verified = raw_available || rtk_available;
+            let usable = project_path.is_some() && dedicated_runtime && identity_verified;
             candidates.push(ProviderCandidate {
                 host,
                 adapters: [
                     raw_available.then_some(AdapterKind::Raw),
-                    probe.rtk.is_some().then_some(AdapterKind::Rtk),
+                    rtk_available.then_some(AdapterKind::Rtk),
                 ]
                 .into_iter()
                 .flatten()
@@ -120,11 +134,20 @@ pub(crate) fn resolve_tool_provider_from_discovery_with_user(
                 distro: Some(probe.distro),
                 wsl_version: probe.wsl_version,
                 executable,
+                executable_identity: if raw_available {
+                    probe.executable_identity
+                } else {
+                    probe.rtk_identity.clone()
+                },
                 rtk: probe.rtk,
+                rtk_identity: probe.rtk_identity,
                 project_path,
                 usable,
                 reason: if host == ProviderHost::Wsl1 && !probe.dedicated {
                     "WSL1 provider is not a verified XUVA-dedicated runtime".to_owned()
+                } else if !identity_verified {
+                    "WSL provider is present but its executable identity could not be verified"
+                        .to_owned()
                 } else if usable {
                     "WSL toolchain and project path mapping are available".to_owned()
                 } else if project.kind == ProjectLocationKind::Windows {
@@ -174,8 +197,10 @@ pub(crate) fn windows_probe_has_compatible_provider(
     windows: &WindowsToolProbe,
 ) -> bool {
     (windows.executable.is_some()
+        && windows.executable_identity.is_some()
         && windows_provider_has_compatible_semantics(tool, AdapterKind::Raw))
         || (windows.native_rtk.is_some()
+            && windows.native_rtk_identity.is_some()
             && windows_provider_has_compatible_semantics(tool, AdapterKind::Rtk))
 }
 

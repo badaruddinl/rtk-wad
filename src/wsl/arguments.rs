@@ -3,6 +3,7 @@ use std::ffi::OsString;
 
 use crate::config::{Config, Route};
 use crate::paths::windows_path_to_wsl_path;
+use crate::providers::model::BinaryIdentity;
 use crate::wsl::test_hooks::{
     test_completion_status_override, test_ready_wsl_path, test_wsl1_attestation_delay_seconds,
     test_wsl1_marker_path, test_wsl2_launch_delay_seconds,
@@ -139,6 +140,9 @@ pub(crate) fn wsl1_rtk_arguments_with_metrics(
         ),
         OsString::from(test_wsl1_marker_path()),
         OsString::from(config.rtk_path.as_deref().unwrap_or("@default-rtk@")),
+        OsString::new(),
+        OsString::new(),
+        OsString::new(),
     ]);
     command.extend(forwarded);
     command
@@ -185,6 +189,7 @@ pub(crate) struct WslLaunchMetadata<'a> {
     pub(crate) attestation_path: Option<&'a str>,
     pub(crate) permit_path: Option<&'a str>,
     pub(crate) completion_path: Option<&'a str>,
+    pub(crate) expected_identity: Option<&'a BinaryIdentity>,
 }
 
 pub(crate) fn plan_wsl_arguments_with_metrics(
@@ -196,6 +201,18 @@ pub(crate) fn plan_wsl_arguments_with_metrics(
     metadata: WslLaunchMetadata<'_>,
 ) -> Result<Vec<OsString>, std::io::Error> {
     let environment = wsl_environment_assignments(environment)?;
+    let expected_identity = metadata.expected_identity.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "WSL execution plans require a captured executable identity",
+        )
+    })?;
+    if executable != &OsString::from(&expected_identity.path) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "WSL plan executable does not match its captured identity path",
+        ));
+    }
     let mut command = wsl_launch_prefix(config);
     match route {
         Route::Wsl1 => {
@@ -238,7 +255,10 @@ pub(crate) fn plan_wsl_arguments_with_metrics(
                         .map_or_else(String::new, |value| value.to_string()),
                 ),
                 OsString::from(test_wsl1_marker_path()),
-                OsString::new(),
+                executable.clone(),
+                OsString::from(&expected_identity.file_key),
+                OsString::from(expected_identity.size_bytes.to_string()),
+                OsString::from(&expected_identity.modified_stamp),
             ]);
         }
         Route::Wsl2 => {
@@ -288,6 +308,10 @@ pub(crate) fn plan_wsl_arguments_with_metrics(
                     test_completion_status_override()
                         .map_or_else(String::new, |value| value.to_string()),
                 ),
+                executable.clone(),
+                OsString::from(&expected_identity.file_key),
+                OsString::from(expected_identity.size_bytes.to_string()),
+                OsString::from(&expected_identity.modified_stamp),
             ]);
         }
         Route::Auto | Route::Raw | Route::NativeRtk => {

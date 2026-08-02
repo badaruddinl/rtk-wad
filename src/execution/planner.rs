@@ -7,6 +7,7 @@ use crate::config::{
 };
 use crate::execution::environment::forwarded_environment;
 use crate::planning::{provider_environment_policy, windows_cwd_for_invocation};
+use crate::providers::discovery::windows_binary_identity;
 use crate::providers::mapping::{translate_arguments_to_windows, translate_arguments_to_wsl};
 use crate::providers::model::{AdapterKind, ProviderCandidate, ProviderHost};
 use crate::providers::resolution::requires_raw_posix_provider;
@@ -58,6 +59,7 @@ pub(crate) fn static_windows_execution_plan(
             return Err("only Windows raw/native routes can use a static Windows plan".to_owned());
         }
     };
+    let expected_identity = windows_binary_identity(&candidate_executable.to_string_lossy());
     Ok(dispatcher::ExecutionPlan {
         request: dispatcher::CommandSpec {
             executable: tool.clone(),
@@ -72,6 +74,7 @@ pub(crate) fn static_windows_execution_plan(
             cwd: Some(cwd),
         },
         adapter,
+        expected_identity,
         explanation: vec![dispatcher::DecisionReason(
             "WSL-origin Windows execution uses an isolated structured plan".to_owned(),
         )],
@@ -234,10 +237,33 @@ pub(crate) fn execution_plan_for_provider_candidate(
             cwd: PathBuf::from(cwd),
         },
     };
+    let expected_identity = match &adapter {
+        dispatcher::OutputAdapter::Raw => candidate.executable_identity.clone(),
+        dispatcher::OutputAdapter::Rtk { .. } => candidate.rtk_identity.clone(),
+    }
+    .ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "provider executable has no captured binary identity",
+        )
+    })?;
+    let identity_matches_plan = match &adapter {
+        dispatcher::OutputAdapter::Raw => expected_identity.path == candidate.executable,
+        dispatcher::OutputAdapter::Rtk { executable } => {
+            executable == &OsString::from(&expected_identity.path)
+        }
+    };
+    if !identity_matches_plan {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "provider executable path does not match its captured binary identity",
+        ));
+    }
     Ok(dispatcher::ExecutionPlan {
         request,
         candidate: route,
         adapter,
+        expected_identity: Some(expected_identity),
         explanation: vec![dispatcher::DecisionReason(candidate.reason.clone())],
     })
 }

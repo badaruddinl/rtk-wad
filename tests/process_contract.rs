@@ -3921,3 +3921,88 @@ fn wsl_provider_receives_only_safe_forwarded_environment() {
     assert!(cleanup.success());
     let _ = std::fs::remove_dir_all(state);
 }
+
+#[test]
+fn wsl_provider_identity_change_is_rejected_before_target_launch() {
+    let _guard = process_contract_guard();
+    let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let fixture = format!(
+        "/tmp/xuva-provider-identity-contract-{}-{nonce}",
+        std::process::id()
+    );
+    assert!(fixture.starts_with("/tmp/xuva-provider-identity-contract-"));
+    let setup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "sh", "-c"])
+        .arg(
+            r#"mkdir -p "$1"; printf '%s\n' '#!/bin/sh' 'printf original-executed' > "$1/xuva-identity-contract"; chmod 755 "$1/xuva-identity-contract""#,
+        )
+        .arg("xuva-provider-identity-fixture")
+        .arg(&fixture)
+        .status()
+        .expect("WSL provider identity fixture setup starts");
+    assert!(setup.success());
+
+    let state = unique_temp_directory("provider-identity-state");
+    let child = Command::new(launcher())
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("XUVA_STATE_DIR", &state)
+        .env("XUVA_WSL_DISTRO", "Ubuntu")
+        .env("XUVA_WSL_EXTRA_PATH", &fixture)
+        .env("XUVA_OUTPUT_ADAPTER", "raw")
+        .env("XUVA_TEST_MODE", "1")
+        .env("XUVA_TEST_WSL2_LAUNCH_DELAY_SECONDS", "2")
+        .arg("xuva-identity-contract")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("identity-gated provider starts");
+
+    let cache = state.join("provider-cache-v6.json");
+    let cache_deadline = Instant::now() + Duration::from_secs(15);
+    while !std::fs::read_to_string(&cache)
+        .is_ok_and(|contents| contents.contains(&fixture) && contents.contains("\"file_key\""))
+    {
+        assert!(
+            Instant::now() < cache_deadline,
+            "provider discovery did not publish its identity cache"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    let replacement = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "sh", "-c"])
+        .arg(
+            r#"printf '%s\n' '#!/bin/sh' 'printf replacement-executed' > "$1/xuva-identity-contract.new"; chmod 755 "$1/xuva-identity-contract.new"; mv -f -- "$1/xuva-identity-contract.new" "$1/xuva-identity-contract""#,
+        )
+        .arg("xuva-provider-identity-replacement")
+        .arg(&fixture)
+        .status()
+        .expect("WSL provider identity fixture replacement starts");
+    assert!(replacement.success());
+
+    let output = child
+        .wait_with_output()
+        .expect("identity-gated provider completes");
+    assert_eq!(
+        output.status.code(),
+        Some(126),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "changed target must never execute"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("identity changed before launch"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let cleanup = Command::new("wsl.exe")
+        .args(["-d", "Ubuntu", "--exec", "rm", "-rf", "--", &fixture])
+        .status()
+        .expect("WSL provider identity fixture cleanup starts");
+    assert!(cleanup.success());
+    let _ = std::fs::remove_dir_all(state);
+}

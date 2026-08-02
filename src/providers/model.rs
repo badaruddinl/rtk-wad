@@ -71,8 +71,9 @@ pub(crate) enum ProbeStatus {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct BinaryIdentity {
     pub(crate) path: String,
+    pub(crate) file_key: String,
     pub(crate) size_bytes: u64,
-    pub(crate) modified_unix_seconds: u64,
+    pub(crate) modified_stamp: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -136,7 +137,9 @@ pub(crate) struct ProviderCandidate {
     pub(crate) distro: Option<String>,
     pub(crate) wsl_version: Option<u8>,
     pub(crate) executable: String,
+    pub(crate) executable_identity: Option<BinaryIdentity>,
     pub(crate) rtk: Option<String>,
+    pub(crate) rtk_identity: Option<BinaryIdentity>,
     pub(crate) project_path: Option<String>,
     pub(crate) usable: bool,
     pub(crate) reason: String,

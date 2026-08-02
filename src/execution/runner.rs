@@ -6,7 +6,9 @@ use crate::diagnostics::trace;
 use crate::execution::planner::provider_execution_config;
 use crate::metrics::XuvaMetrics;
 use crate::paths::windows_path_to_wsl_path;
+use crate::providers::discovery::windows_binary_identity;
 use crate::providers::mapping::mapped_windows_project_path;
+use crate::providers::model::BinaryIdentity;
 use crate::wsl::arguments::{
     WslLaunchMetadata, plan_wsl_arguments_with_metrics, rtk_arguments_with_metrics,
     wsl1_rtk_arguments_with_metrics,
@@ -58,6 +60,15 @@ pub(crate) fn run_execution_plan(
     config: &Config,
     metrics: Option<&XuvaMetrics>,
 ) -> std::io::Result<ExitStatus> {
+    if let dispatcher::RouteCandidate::Windows { executable, .. } = &plan.candidate
+        && let Some(expected) = plan.expected_identity.as_ref()
+    {
+        let selected = match &plan.adapter {
+            dispatcher::OutputAdapter::Raw => executable,
+            dispatcher::OutputAdapter::Rtk { executable } => executable,
+        };
+        validate_windows_binary_identity(selected, expected)?;
+    }
     let rtk_arguments = || {
         let mut forwarded = Vec::with_capacity(plan.request.arguments.len() + 1);
         forwarded.push(plan.request.executable.clone());
@@ -98,6 +109,12 @@ pub(crate) fn run_execution_plan(
                 .flatten();
             run_wsl_execution_plan(
                 executable,
+                plan.expected_identity.as_ref().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "WSL execution plan has no captured provider identity",
+                    )
+                })?,
                 &forwarded,
                 &plan.request.environment,
                 &selected,
@@ -106,6 +123,37 @@ pub(crate) fn run_execution_plan(
             )
         }
     }
+}
+
+pub(crate) fn validate_windows_binary_identity(
+    executable: &OsString,
+    expected: &BinaryIdentity,
+) -> std::io::Result<()> {
+    if executable != &OsString::from(&expected.path) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "planned Windows executable does not match its captured identity path",
+        ));
+    }
+    let actual = windows_binary_identity(&expected.path).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "provider executable disappeared before launch: {}",
+                expected.path
+            ),
+        )
+    })?;
+    if &actual != expected {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "provider executable identity changed before launch: {}",
+                expected.path
+            ),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn run_wsl_route(
@@ -169,6 +217,7 @@ pub(crate) fn run_wsl_route(
 
 pub(crate) fn run_wsl_execution_plan(
     executable: &OsString,
+    expected_identity: &BinaryIdentity,
     arguments: &[OsString],
     environment: &[(OsString, OsString)],
     config: &Config,
@@ -202,6 +251,7 @@ pub(crate) fn run_wsl_execution_plan(
                 attestation_path: Some(&launch_guard.attestation_wsl_path),
                 permit_path: Some(&launch_guard.permit_wsl_path),
                 completion_path: Some(&launch_guard.completion_wsl_path),
+                expected_identity: Some(expected_identity),
             },
         )?;
         trace("starting identity-gated WSL1 plan while holding the global mutex");
@@ -229,6 +279,7 @@ pub(crate) fn run_wsl_execution_plan(
                 attestation_path: Some(&launch_guard.attestation_wsl_path),
                 permit_path: Some(&launch_guard.permit_wsl_path),
                 completion_path: Some(&launch_guard.completion_wsl_path),
+                expected_identity: Some(expected_identity),
             },
         )?;
         adapters::wsl2::process(command).spawn().and_then(|child| {

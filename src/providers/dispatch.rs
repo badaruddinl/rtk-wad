@@ -10,14 +10,17 @@ use crate::execution::environment::forwarded_environment;
 use crate::execution::planner::execution_plan_for_provider_candidate;
 use crate::planning::{current_project_location, windows_cwd_for_invocation};
 use crate::providers::commands::is_safe_provider_tool_name;
-use crate::providers::discovery::{installed_wsl_distributions, is_windows_launchable_path};
+use crate::providers::discovery::{
+    decode_wsl_output, installed_wsl_distributions, is_windows_launchable_path,
+    parse_wsl_binary_identity, windows_binary_identity,
+};
 use crate::providers::mapping::{
     mapped_windows_project_path, mapped_wsl_project_path, translate_arguments_to_windows,
     translate_arguments_to_wsl,
 };
 use crate::providers::model::{
-    AdapterKind, ProjectLocation, ProjectLocationKind, ProviderCandidate, ProviderResolution,
-    WindowsToolProbe,
+    AdapterKind, BinaryIdentity, ProjectLocation, ProjectLocationKind, ProviderCandidate,
+    ProviderResolution, WindowsToolProbe,
 };
 use crate::providers::probe::cached_or_discovered_tool;
 use crate::providers::resolution::{
@@ -58,19 +61,32 @@ pub(crate) fn looks_like_explicit_executable(value: &str) -> bool {
             && matches!(value.as_bytes()[2], b'\\' | b'/'))
 }
 
-pub(crate) fn wsl_executable_exists(distro: &str, user: Option<&str>, path: &str) -> bool {
+pub(crate) fn wsl_executable_identity(
+    distro: &str,
+    user: Option<&str>,
+    path: &str,
+) -> Option<BinaryIdentity> {
     let mut command = Command::new("wsl.exe");
     let mut arguments = wsl_exec_prefix(distro, user);
     arguments.extend([
-        OsString::from("test"),
-        OsString::from("-f"),
-        OsString::from(path),
-        OsString::from("-a"),
-        OsString::from("-x"),
+        OsString::from("sh"),
+        OsString::from("-c"),
+        OsString::from("test -f \"$1\" -a -x \"$1\" && stat -Lc '%d|%i|%s|%y' -- \"$1\""),
+        OsString::from("xuva-explicit-provider"),
         OsString::from(path),
     ]);
     command.args(arguments);
-    process::run_probe(&mut command).is_ok_and(|output| output.status.success())
+    let output = process::run_probe(&mut command)
+        .ok()
+        .filter(|output| output.status.success() && !output.stdout_truncated)?;
+    parse_wsl_binary_identity(
+        Some(path.to_owned()),
+        decode_wsl_output(&output.stdout)
+            .lines()
+            .next()
+            .map(str::trim)
+            .map(str::to_owned),
+    )
 }
 
 pub(crate) fn explicit_executable_plan(
@@ -126,11 +142,16 @@ pub(crate) fn explicit_executable_plan(
             },
             interactive: false,
         };
+        let expected_identity =
+            windows_binary_identity(&executable.to_string_lossy()).ok_or_else(|| {
+                format!("explicit Windows executable `{value}` has no stable identity")
+            })?;
         return Ok(Some((
             dispatcher::ExecutionPlan {
                 request,
                 candidate: dispatcher::RouteCandidate::Windows { executable, cwd },
                 adapter: dispatcher::OutputAdapter::Raw,
+                expected_identity: Some(expected_identity),
                 explanation: vec![dispatcher::DecisionReason(
                     "explicit Windows executable path pins the Windows host".to_owned(),
                 )],
@@ -147,12 +168,15 @@ pub(crate) fn explicit_executable_plan(
         })?;
         format!("{}/{}", cwd.trim_end_matches('/'), value)
     };
-    if !wsl_executable_exists(&config.distro, config.user.as_deref(), &executable) {
-        return Err(format!(
-            "explicit WSL executable `{executable}` is missing or not executable in {}",
-            config.distro
-        ));
-    }
+    let expected_identity =
+        wsl_executable_identity(&config.distro, config.user.as_deref(), &executable).ok_or_else(
+            || {
+                format!(
+                    "explicit WSL executable `{executable}` is missing, not executable, or has no stable identity in {}",
+                    config.distro
+                )
+            },
+        )?;
     let cwd = config
         .cwd
         .clone()
@@ -188,6 +212,7 @@ pub(crate) fn explicit_executable_plan(
             request,
             candidate,
             adapter: dispatcher::OutputAdapter::Raw,
+            expected_identity: Some(expected_identity),
             explanation: vec![dispatcher::DecisionReason(
                 "explicit Linux executable path pins the configured WSL host".to_owned(),
             )],

@@ -7,11 +7,11 @@ use crate::metrics::xuva_data_root;
 use crate::providers::model::{InspectionLevel, ProviderCacheEntry, ProviderCacheFile};
 use crate::state::write_json_atomic;
 
-pub(crate) const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 5;
+pub(crate) const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 6;
 pub(crate) const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
 
 pub(crate) fn provider_cache_path() -> PathBuf {
-    xuva_data_root().join("provider-cache-v5.json")
+    xuva_data_root().join("provider-cache-v6.json")
 }
 
 pub(crate) fn unix_seconds() -> u64 {

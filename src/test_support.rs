@@ -20,7 +20,7 @@ pub(crate) use crate::execution::planner::{
     execution_plan_for_provider_candidate, first_compatible_provider_plan,
     is_shell_operator_command, provider_adapter,
 };
-pub(crate) use crate::execution::runner::execution_route;
+pub(crate) use crate::execution::runner::{execution_route, validate_windows_binary_identity};
 pub(crate) use crate::paths::windows_path_to_wsl_path;
 pub(crate) use crate::planning::{
     classify_project_path, provider_environment_policy, windows_cwd_for_invocation,
@@ -33,7 +33,7 @@ pub(crate) use crate::providers::commands::is_safe_provider_tool_name;
 pub(crate) use crate::providers::discovery::{
     decode_wsl_output, is_eligible_wsl_distro, is_windows_launchable_path,
     parse_wsl_binary_identity, parse_wsl_distributions, select_windows_executable,
-    version_probe_arguments,
+    version_probe_arguments, windows_binary_identity,
 };
 pub(crate) use crate::providers::dispatch::{
     ProviderDispatchDecision, explicit_executable_plan, is_dispatchable_provider_tool,
@@ -44,9 +44,9 @@ pub(crate) use crate::providers::mapping::{
     wsl_mapping_arguments_with_user, wsl_project_path_with,
 };
 pub(crate) use crate::providers::model::{
-    AdapterKind, InspectionLevel, ProbeStatus, ProjectLocation, ProjectLocationKind,
-    ProviderCacheEntry, ProviderCandidate, ProviderHost, ProviderResolution, WindowsToolProbe,
-    WslToolProbe,
+    AdapterKind, BinaryIdentity, InspectionLevel, ProbeStatus, ProjectLocation,
+    ProjectLocationKind, ProviderCacheEntry, ProviderCandidate, ProviderHost, ProviderResolution,
+    WindowsToolProbe, WslToolProbe,
 };
 pub(crate) use crate::providers::probe::verified_wsl_executable_path;
 pub(crate) use crate::providers::resolution::{
@@ -79,6 +79,15 @@ pub(crate) const VERSION_ARGUMENT: &str = "--version";
 
 pub(crate) fn default_config() -> Config {
     Config::from_lookup(|_| None).expect("default config is valid")
+}
+
+pub(crate) fn fixture_binary_identity(path: &str) -> BinaryIdentity {
+    BinaryIdentity {
+        path: path.to_owned(),
+        file_key: "fixture:1".to_owned(),
+        size_bytes: 1,
+        modified_stamp: "fixture".to_owned(),
+    }
 }
 
 pub(crate) fn distro_version_from_list(output: &str, distro: &str) -> Option<u8> {

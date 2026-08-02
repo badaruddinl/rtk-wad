@@ -53,7 +53,9 @@ fn provider_planning_retains_the_next_eligible_route_for_pre_start_fallback() {
         distro: Some(distro.to_owned()),
         wsl_version: Some(version),
         executable: executable.to_owned(),
+        executable_identity: Some(fixture_binary_identity(executable)),
         rtk: None,
+        rtk_identity: None,
         project_path: Some("/mnt/e/work".to_owned()),
         usable: true,
         reason: "fixture".to_owned(),
@@ -151,7 +153,9 @@ fn generic_dispatcher_routes_a_wsl_only_cargo_binary_without_rtk() {
             distro: Some("Ubuntu".to_owned()),
             wsl_version: Some(2),
             executable: "/home/test/.cargo/bin/cargo".to_owned(),
+            executable_identity: Some(fixture_binary_identity("/home/test/.cargo/bin/cargo")),
             rtk: None,
+            rtk_identity: None,
             project_path: Some("/mnt/e/work".to_owned()),
             usable: true,
             reason: "fixture: Cargo exists only in WSL".to_owned(),
@@ -216,7 +220,11 @@ fn generic_dispatcher_falls_back_to_verified_windows_raw_when_rtk_is_absent() {
             distro: None,
             wsl_version: None,
             executable: r"C:\Users\test\.cargo\bin\cargo.exe".to_owned(),
+            executable_identity: Some(fixture_binary_identity(
+                r"C:\Users\test\.cargo\bin\cargo.exe",
+            )),
             rtk: None,
+            rtk_identity: None,
             project_path: Some(r"E:\work".to_owned()),
             usable: true,
             reason: "fixture: Cargo exists on Windows without RTK".to_owned(),
@@ -283,7 +291,9 @@ fn execution_plan_rejects_inconsistent_provider_host_metadata() {
         distro: Some("Ubuntu".to_owned()),
         wsl_version: Some(2),
         executable: "/usr/local/go/bin/go".to_owned(),
+        executable_identity: Some(fixture_binary_identity("/usr/local/go/bin/go")),
         rtk: None,
+        rtk_identity: None,
         project_path: Some("/mnt/e/work".to_owned()),
         usable: true,
         reason: "fixture".to_owned(),
@@ -306,7 +316,9 @@ fn requested_rtk_adapter_does_not_silently_downgrade_to_raw() {
         distro: Some("Ubuntu".to_owned()),
         wsl_version: Some(2),
         executable: "/usr/local/go/bin/go".to_owned(),
+        executable_identity: Some(fixture_binary_identity("/usr/local/go/bin/go")),
         rtk: None,
+        rtk_identity: None,
         project_path: Some("/mnt/e/work".to_owned()),
         usable: true,
         reason: "fixture".to_owned(),
@@ -319,7 +331,9 @@ fn requested_rtk_adapter_does_not_silently_downgrade_to_raw() {
         distro: None,
         wsl_version: None,
         executable: r"C:\tools\rtk.exe".to_owned(),
+        executable_identity: Some(fixture_binary_identity(r"C:\tools\rtk.exe")),
         rtk: Some(r"C:\tools\rtk.exe".to_owned()),
+        rtk_identity: Some(fixture_binary_identity(r"C:\tools\rtk.exe")),
         project_path: Some(r"E:\work".to_owned()),
         usable: true,
         reason: "fixture".to_owned(),
@@ -329,6 +343,32 @@ fn requested_rtk_adapter_does_not_silently_downgrade_to_raw() {
         provider_adapter(&adapter_only, OutputAdapterPreference::Auto),
         Ok(dispatcher::OutputAdapter::Rtk { .. })
     ));
+}
+
+#[test]
+fn provider_plan_rejects_a_candidate_without_captured_identity() {
+    let candidate = ProviderCandidate {
+        host: ProviderHost::Wsl2,
+        adapters: vec![AdapterKind::Raw],
+        distro: Some("Ubuntu".to_owned()),
+        wsl_version: Some(2),
+        executable: "/usr/bin/rg".to_owned(),
+        executable_identity: None,
+        rtk: None,
+        rtk_identity: None,
+        project_path: Some("/mnt/e/work".to_owned()),
+        usable: true,
+        reason: "fixture".to_owned(),
+    };
+
+    let error = execution_plan_for_provider_candidate(
+        "rg",
+        &[OsString::from("pattern")],
+        &default_config(),
+        &candidate,
+    )
+    .expect_err("provider planning must fail closed without an executable identity");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
 }
 
 #[test]
