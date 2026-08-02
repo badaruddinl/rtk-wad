@@ -39,6 +39,30 @@ try {
             throw "$relativePath must execute both library and binary unit tests."
         }
     }
+
+    $wslContractWorkflow = Get-Content -LiteralPath (
+        Join-Path $RepositoryRoot ".github\workflows\windows-wsl-self-hosted.yml"
+    ) -Raw
+    foreach ($profileVariable in @(
+        'CARGO_INCREMENTAL',
+        'CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG',
+        'CARGO_PROFILE_DEV_DEBUG',
+        'CARGO_PROFILE_TEST_BUILD_OVERRIDE_DEBUG',
+        'CARGO_PROFILE_TEST_DEBUG'
+    )) {
+        if ([regex]::Matches($wslContractWorkflow, "(?m)^  ${profileVariable}: '0'$").Count -ne 1) {
+            throw "The WSL process contract must bound build artifacts with $profileVariable=0."
+        }
+    }
+    if (
+        [regex]::Matches($wslContractWorkflow, 'scripts\\ci-scratch\.ps1 -Mode prepare').Count -ne 2 -or
+        [regex]::Matches($wslContractWorkflow, 'scripts\\ci-scratch\.ps1 -Mode cleanup').Count -ne 2
+    ) {
+        throw 'Both WSL process-contract jobs must prepare and reclaim isolated build scratch.'
+    }
+    if ($wslContractWorkflow -match '\.\\target\\debug\\xuva\.exe') {
+        throw 'The WSL1 doctor gate must execute the launcher from CARGO_TARGET_DIR.'
+    }
     if (
         $releaseWorkflow -match '(?m)^\s*path:\s*gated-dist\s*$' -or
         $releaseWorkflow -match 'DistributionDirectory\s+gated-dist' -or
