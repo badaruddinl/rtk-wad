@@ -1,5 +1,7 @@
 use std::ffi::OsString;
 
+use crate::adapters::rtk::{is_mutation_subcommand, is_read_only_subcommand};
+
 mod arguments;
 mod workload;
 
@@ -11,7 +13,8 @@ pub(crate) use workload::rg_workload_key;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CommandAccess {
     ReadOnly,
-    MutatingOrUnknown,
+    Mutating,
+    Unknown,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,10 +81,12 @@ fn classify_git(arguments: &[OsString]) -> GitCommand {
         if value.starts_with('-') {
             return unknown_git(uses_wsl_directory);
         }
-        let access = if is_read_only_git_subcommand(value) {
+        let access = if is_read_only_subcommand("git", value) {
             CommandAccess::ReadOnly
+        } else if is_mutation_subcommand("git", value) {
+            CommandAccess::Mutating
         } else {
-            CommandAccess::MutatingOrUnknown
+            CommandAccess::Unknown
         };
         return GitCommand {
             subcommand_index: Some(index),
@@ -95,7 +100,7 @@ fn classify_git(arguments: &[OsString]) -> GitCommand {
 fn unknown_git(uses_wsl_directory: bool) -> GitCommand {
     GitCommand {
         subcommand_index: None,
-        access: CommandAccess::MutatingOrUnknown,
+        access: CommandAccess::Unknown,
         uses_wsl_directory,
     }
 }
@@ -145,13 +150,6 @@ fn is_attached_global_value(value: &str) -> bool {
             .is_some_and(|setting| !setting.is_empty())
 }
 
-fn is_read_only_git_subcommand(value: &str) -> bool {
-    matches!(
-        value,
-        "status" | "log" | "show" | "diff" | "rev-parse" | "ls-files" | "grep"
-    )
-}
-
 fn is_wsl_path(value: &OsString) -> bool {
     value.to_string_lossy().starts_with('/')
 }
@@ -194,7 +192,7 @@ impl ClassifiedCommand {
                 .git
                 .as_ref()
                 .and_then(|git| git.subcommand(arguments))
-                .filter(|subcommand| is_read_only_git_subcommand(subcommand))
+                .filter(|subcommand| is_read_only_subcommand("git", subcommand))
         {
             family.push(':');
             family.push_str(subcommand);
@@ -253,7 +251,7 @@ mod tests {
         let arguments = args(&["git", "--future-option", "status"]);
         let git = classify(&arguments).git.expect("Git is classified");
         assert_eq!(git.subcommand(&arguments), None);
-        assert_eq!(git.access, CommandAccess::MutatingOrUnknown);
+        assert_eq!(git.access, CommandAccess::Unknown);
     }
 
     #[test]
@@ -261,7 +259,7 @@ mod tests {
         let mutation = classify(&args(&["git", "commit", "status"]))
             .git
             .expect("Git is classified");
-        assert_eq!(mutation.access, CommandAccess::MutatingOrUnknown);
+        assert_eq!(mutation.access, CommandAccess::Mutating);
 
         let read_only = classify(&args(&["git", "status", "commit"]))
             .git

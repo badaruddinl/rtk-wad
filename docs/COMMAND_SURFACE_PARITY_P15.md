@@ -2,7 +2,8 @@
 
 P15 makes the complete upstream RTK command inventory a runtime contract for
 XUVA. The embedded source of truth is
-`benchmarks/command-manifest.json`, currently pinned to RTK `0.43.0`.
+`benchmarks/command-manifest.json`, whose reviewed compatibility allowlist
+currently contains only RTK `0.43.0`.
 
 ```powershell
 xuva surface
@@ -21,6 +22,16 @@ a provider, or modify local state.
 | `raw_native` | Existing Windows toolchain directly, once. |
 | `wsl1_conservative` | Isolated WSL1 RTK until a command-specific Windows contract exists. |
 | `core_internal` | Handled by XUVA's own diagnostic and ledger interface. |
+
+The same manifest owns the disjoint Git read-only and mutation subcommand sets;
+runtime classification consumes those sets directly. Unknown subcommands fail
+closed as unknown and use the mutation-safe raw boundary. The manifest parser
+rejects unknown fields, duplicates, overlap, malformed names, or a compatibility
+set that omits the primary adapter version.
+
+Compatibility is an explicit reviewed allowlist bound to the embedded protocol
+and capability contract. XUVA does not assume that an arbitrary newer patch or
+minor version is compatible merely because its semver is numerically close.
 
 XUVA-owned `dart` and `flutter` shims remain explicit Windows raw extensions;
 they are not represented as upstream RTK commands. Unknown commands retain the

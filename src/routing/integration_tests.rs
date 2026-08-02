@@ -108,7 +108,7 @@ fn canonical_xuva_configuration_is_adaptive_by_default() {
 #[test]
 fn embedded_command_surface_is_complete_and_non_overlapping() {
     let report = command_surface_report();
-    assert_eq!(report.schema_version, 2);
+    assert_eq!(report.schema_version, 3);
     assert_eq!(report.adapter.name, "rtk");
     assert_eq!(report.adapter.version, "0.43.0");
     assert_eq!(report.adapter.protocol_version, 1);
