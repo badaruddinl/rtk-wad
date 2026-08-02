@@ -2602,6 +2602,7 @@ fn adaptive_rtk_meta_commands_bypass_external_provider_resolution_and_execute_on
 #[test]
 fn adaptive_wc_uses_the_verified_raw_posix_provider() {
     let _guard = process_contract_guard();
+    let state = unique_temp_directory("delayed-wsl-provider-state");
     let (backend, distro) = if let Ok(distro) = std::env::var("XUVA_WSL1_TEST_DISTRO") {
         ("wsl1", distro)
     } else {
@@ -2610,12 +2611,16 @@ fn adaptive_wc_uses_the_verified_raw_posix_provider() {
             std::env::var("XUVA_WSL2_TEST_DISTRO").unwrap_or_else(|_| "Ubuntu".to_owned()),
         )
     };
+    let started = Instant::now();
     let output = Command::new(launcher())
+        .env("XUVA_STATE_DIR", &state)
         .env("XUVA_ROUTE", "auto")
         .env("XUVA_ENVIRONMENT", "adaptive")
         .env("XUVA_WSL_BACKEND", backend)
         .env("XUVA_WSL_DISTRO", &distro)
         .env("XUVA_METRICS", "off")
+        .env("XUVA_TEST_MODE", "1")
+        .env("XUVA_TEST_WSL_PROVIDER_PROBE_DELAY_SECONDS", "6")
         .args(["--explain-route", "wc", "-l"])
         .output()
         .expect("adaptive wc route explanation starts");
@@ -2638,6 +2643,11 @@ fn adaptive_wc_uses_the_verified_raw_posix_provider() {
         !stdout.contains("output_adapter=rtk"),
         "wc was routed through the narrower RTK adapter: {stdout}"
     );
+    assert!(
+        started.elapsed() >= Duration::from_secs(6),
+        "the test-only WSL provider delay was not exercised"
+    );
+    remove_temp_directory(&state, "delayed WSL provider state");
 }
 
 #[test]
