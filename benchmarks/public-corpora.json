@@ -8,7 +8,12 @@
       "tag": "8.4.0",
       "commit": "315b3ae798fe38264b3ab2312dced212c46f1e21",
       "language": "Python",
-      "use": "pytest and ruff-style Python output workloads"
+      "use": "pytest and ruff-style Python output workloads",
+      "core_benchmark": {
+        "search_roots": ["src", "testing", "doc"],
+        "focused_pattern": "FixtureRequest",
+        "broad_pattern": "def|class|import|from|assert|fixture"
+      }
     },
     {
       "id": "typescript-5.9.3",
@@ -16,7 +21,12 @@
       "tag": "v5.9.3",
       "commit": "c63de15a992d37f0d6cec03ac7631872838602cb",
       "language": "TypeScript",
-      "use": "npm, npx, TypeScript, ripgrep, and Git workloads"
+      "use": "npm, npx, TypeScript, ripgrep, and Git workloads",
+      "core_benchmark": {
+        "search_roots": ["src", "tests"],
+        "focused_pattern": "createProgram",
+        "broad_pattern": "function|class|interface|type|const|import|export"
+      }
     },
     {
       "id": "ripgrep-14.1.1",
@@ -24,7 +34,12 @@
       "tag": "14.1.1",
       "commit": "4649aa9700619f94cf9c66876e9549d83420e16c",
       "language": "Rust",
-      "use": "cargo, ripgrep, and Git workloads"
+      "use": "cargo, ripgrep, and Git workloads",
+      "core_benchmark": {
+        "search_roots": ["crates", "tests"],
+        "focused_pattern": "RegexBuilder",
+        "broad_pattern": "fn|struct|impl|use|pub"
+      }
     }
   ]
 }
