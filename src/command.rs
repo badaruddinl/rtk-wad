@@ -161,6 +161,44 @@ impl ClassifiedCommand {
             .and_then(|argument| argument.to_str())
             .unwrap_or("unknown")
     }
+
+    pub(crate) fn metric_family(&self, arguments: &[OsString]) -> String {
+        let executable = arguments
+            .first()
+            .map(|argument| argument.to_string_lossy())
+            .unwrap_or_default();
+        let basename = executable.rsplit(['/', '\\']).next().unwrap_or_default();
+        let basename = [".exe", ".cmd", ".bat", ".com"]
+            .iter()
+            .find_map(|suffix| {
+                basename
+                    .get(basename.len().saturating_sub(suffix.len())..)
+                    .is_some_and(|ending| ending.eq_ignore_ascii_case(suffix))
+                    .then(|| &basename[..basename.len() - suffix.len()])
+            })
+            .unwrap_or(basename);
+        let mut family = if !basename.is_empty()
+            && basename.len() <= 48
+            && basename
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            basename.to_ascii_lowercase()
+        } else {
+            "unknown".to_owned()
+        };
+        if family == "git"
+            && let Some(subcommand) = self
+                .git
+                .as_ref()
+                .and_then(|git| git.subcommand(arguments))
+                .filter(|subcommand| is_read_only_git_subcommand(subcommand))
+        {
+            family.push(':');
+            family.push_str(subcommand);
+        }
+        family
+    }
 }
 
 impl GitCommand {
@@ -266,5 +304,26 @@ mod tests {
             "status"
         ])));
         assert!(has_typed_wsl_path(&args(&["/bin/sh", "-c", "true"])));
+    }
+
+    #[test]
+    fn metric_family_is_bounded_to_basename_and_allowlisted_subcommands() {
+        let explicit = args(&[r"C:\\Users\\alice\\Tools\\RG.EXE", "secret-pattern"]);
+        assert_eq!(classify(&explicit).metric_family(&explicit), "rg");
+
+        let git_status = args(&["git", "status", "--short"]);
+        assert_eq!(
+            classify(&git_status).metric_family(&git_status),
+            "git:status"
+        );
+
+        let git_unknown = args(&["git", "credential-secret"]);
+        assert_eq!(classify(&git_unknown).metric_family(&git_unknown), "git");
+
+        let unsafe_name = args(&[r"C:\\Users\\alice\\tool secret.exe"]);
+        assert_eq!(
+            classify(&unsafe_name).metric_family(&unsafe_name),
+            "unknown"
+        );
     }
 }

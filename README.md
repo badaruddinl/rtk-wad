@@ -323,6 +323,10 @@ error text are never persisted. Scratch databases are private and removed by
 an RAII guard, including their WAL/SHM sidecars. The aggregate ledger retains
 at most the newest 10,000 invocations.
 
+Command family is a bounded lowercase executable basename; only allowlisted Git
+subcommands may be appended. Metrics-enabled raw fast paths are included in the
+ledger, while metrics-off fast paths remain ledger- and scratch-free.
+
 This ledger is separate from adaptive calibration. A native calibration sample
 may use a private temporary RTK counter database, but it persists only bounded
 opaque evidence in `calibration-v3.json` and removes the temporary database at

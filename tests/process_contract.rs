@@ -11,6 +11,8 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
+use rusqlite::Connection;
+
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 const CTRL_BREAK_EVENT: u32 = 1;
 static XUVA_LAUNCHER_NONCE: AtomicU64 = AtomicU64::new(0);
@@ -193,6 +195,50 @@ fn metrics_default_keeps_explicit_raw_execution_ledger_free() {
     assert!(!state.join("metrics-v1.sqlite").exists());
     assert!(!state.join("scratch").exists());
     let _ = std::fs::remove_dir_all(state);
+}
+
+#[test]
+fn metrics_opt_in_records_direct_and_optimistic_raw_fast_paths_safely() {
+    let _guard = process_contract_guard();
+    let state = unique_temp_directory("metrics-fast-path-state");
+    let system_root = std::env::var_os("SYSTEMROOT").expect("Windows has SYSTEMROOT");
+    let cmd = PathBuf::from(system_root).join("System32").join("cmd.exe");
+
+    for explicit_raw in [true, false] {
+        let mut invocation = Command::new(launcher());
+        invocation
+            .env("XUVA_STATE_DIR", &state)
+            .env("XUVA_METRICS", "on")
+            .env("XUVA_CALIBRATION", "off");
+        if explicit_raw {
+            invocation.args(["--route", "raw"]);
+        }
+        let output = invocation
+            .arg(&cmd)
+            .args(["/d", "/c", "exit", "0"])
+            .output()
+            .expect("raw fast-path command starts");
+        assert!(
+            output.status.success(),
+            "stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let connection =
+        Connection::open(state.join("metrics-v1.sqlite")).expect("opt-in metrics ledger opens");
+    let rows: Vec<(String, String)> = connection
+        .prepare("SELECT route, command_family FROM invocations ORDER BY id")
+        .expect("metrics query prepares")
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect("metrics query starts")
+        .collect::<Result<_, _>>()
+        .expect("metrics rows decode");
+    assert_eq!(rows, vec![("raw".to_owned(), "cmd".to_owned()); 2]);
+
+    drop(connection);
+    std::fs::remove_dir_all(state).expect("metrics fast-path state cleanup");
 }
 
 #[test]

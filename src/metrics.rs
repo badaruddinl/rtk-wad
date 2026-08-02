@@ -145,6 +145,17 @@ impl XuvaMetrics {
         elapsed: Duration,
         exit_code: i32,
     ) -> Result<TokenTotals, String> {
+        if !matches!(route, "raw" | "native-rtk" | "wsl1" | "wsl2")
+            || command_family.is_empty()
+            || command_family.len() > 64
+            || !command_family.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'-' | b'_' | b'.' | b':')
+            })
+        {
+            return Err("refusing to persist an unsafe metrics dimension".to_owned());
+        }
         let totals = read_upstream_totals(&self.scratch_path)?;
         if !self.persist_ledger {
             return Ok(totals);
