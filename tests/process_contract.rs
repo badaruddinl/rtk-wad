@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
     Mutex, MutexGuard, OnceLock,
@@ -10,6 +10,8 @@ use std::sync::{
 };
 use std::thread;
 use std::time::{Duration, Instant};
+
+use rusqlite::Connection;
 
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 const CTRL_BREAK_EVENT: u32 = 1;
@@ -118,6 +120,20 @@ fn unique_temp_directory(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("xuva-{label}-{}-{nonce}", std::process::id()))
 }
 
+fn remove_temp_directory(directory: &Path, context: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match std::fs::remove_dir_all(directory) {
+            Ok(()) => return,
+            Err(error) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(100));
+                let _ = error;
+            }
+            Err(error) => panic!("{context} remains locked: {error}"),
+        }
+    }
+}
+
 #[test]
 fn dispatcher_owned_version_never_enters_environment_resolution() {
     let _guard = process_contract_guard();
@@ -193,6 +209,50 @@ fn metrics_default_keeps_explicit_raw_execution_ledger_free() {
     assert!(!state.join("metrics-v1.sqlite").exists());
     assert!(!state.join("scratch").exists());
     let _ = std::fs::remove_dir_all(state);
+}
+
+#[test]
+fn metrics_opt_in_records_direct_and_optimistic_raw_fast_paths_safely() {
+    let _guard = process_contract_guard();
+    let state = unique_temp_directory("metrics-fast-path-state");
+    let system_root = std::env::var_os("SYSTEMROOT").expect("Windows has SYSTEMROOT");
+    let cmd = PathBuf::from(system_root).join("System32").join("cmd.exe");
+
+    for explicit_raw in [true, false] {
+        let mut invocation = Command::new(launcher());
+        invocation
+            .env("XUVA_STATE_DIR", &state)
+            .env("XUVA_METRICS", "on")
+            .env("XUVA_CALIBRATION", "off");
+        if explicit_raw {
+            invocation.args(["--route", "raw"]);
+        }
+        let output = invocation
+            .arg(&cmd)
+            .args(["/d", "/c", "exit", "0"])
+            .output()
+            .expect("raw fast-path command starts");
+        assert!(
+            output.status.success(),
+            "stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let connection =
+        Connection::open(state.join("metrics-v1.sqlite")).expect("opt-in metrics ledger opens");
+    let rows: Vec<(String, String)> = connection
+        .prepare("SELECT route, command_family FROM invocations ORDER BY id")
+        .expect("metrics query prepares")
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect("metrics query starts")
+        .collect::<Result<_, _>>()
+        .expect("metrics rows decode");
+    assert_eq!(rows, vec![("raw".to_owned(), "cmd".to_owned()); 2]);
+
+    drop(connection);
+    std::fs::remove_dir_all(state).expect("metrics fast-path state cleanup");
 }
 
 #[test]
@@ -405,17 +465,7 @@ fn maps_a_temp_windows_worktree_to_the_wsl_current_directory() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected);
-    let cleanup_deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match std::fs::remove_dir_all(&directory) {
-            Ok(()) => break,
-            Err(error) if Instant::now() < cleanup_deadline => {
-                thread::sleep(Duration::from_millis(100));
-                let _ = error;
-            }
-            Err(error) => panic!("temporary Windows worktree remains locked: {error}"),
-        }
-    }
+    remove_temp_directory(&directory, "temporary Windows worktree");
 }
 
 #[test]
@@ -1180,7 +1230,7 @@ fn provider_cache_ignores_project_revision_until_explicit_refresh() {
         .args(["which", "go", "--refresh"])
         .output()
         .expect("refreshed provider lookup starts");
-    std::fs::remove_dir_all(&directory).expect("temporary Git project is removed");
+    remove_temp_directory(&directory, "temporary Git project");
 
     assert!(first.status.success());
     assert!(
@@ -1643,7 +1693,7 @@ fn xuva_calibrates_safe_commands_across_natural_invocations() {
         Command::new(&launcher)
             .current_dir(&directory)
             .env("XUVA_STATE_DIR", &state)
-            .env("XUVA_METRICS", "on")
+            .env("XUVA_METRICS", "off")
             .env("XUVA_NATIVE_RTK_PATH", &fake_rtk)
             .args(["git", "status", "--short"])
             .output()
@@ -1679,7 +1729,10 @@ fn xuva_calibrates_safe_commands_across_natural_invocations() {
     assert!(recorded.contains("\"raw_samples_ms\": ["));
     assert!(recorded.contains("\"native_samples\": ["));
     assert!(!recorded.contains("git status"));
-    assert!(state.join("metrics-v1.sqlite").exists());
+    assert!(
+        !state.join("metrics-v1.sqlite").exists(),
+        "default-private calibration must not create the opt-in metrics ledger"
+    );
     assert!(
         std::fs::read_dir(state.join("scratch"))
             .expect("metrics scratch directory exists")
@@ -2205,21 +2258,49 @@ fn xuva_policy_requires_a_matching_local_adapter_context() {
         .as_str()
         .expect("opaque context signature")
         .to_owned();
+    let manifest_version = context["manifest_version"]
+        .as_str()
+        .expect("runtime adapter contract identity")
+        .to_owned();
     assert_eq!(signature.len(), 16);
-    assert_eq!(context["manifest_version"], "rtk:0.43.0:protocol-1");
+    assert!(manifest_version.starts_with("rtk:"));
+    assert!(manifest_version.contains(":protocol-"));
+
+    let policy_key = |arguments: &[&str]| {
+        let output = Command::new(&launcher)
+            .env("XUVA_STATE_DIR", &state)
+            .args(["policy", "key"])
+            .args(arguments)
+            .output()
+            .expect("policy key inspection starts");
+        assert!(
+            output.status.success(),
+            "stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("policy key is UTF-8")
+            .trim()
+            .strip_prefix("key=")
+            .expect("policy key uses the stable CLI envelope")
+            .to_owned()
+    };
+    let rg_key = policy_key(&["rg", "needle"]);
+    let git_status_key = policy_key(&["git", "status", "--short"]);
 
     let policy = serde_json::json!({
         "schema_version": 2,
-        "manifest_version": "rtk:0.43.0:protocol-1",
+        "manifest_version": manifest_version,
         "context_signature": signature,
         "evidence": [{
-            "key": "rg",
+            "key": rg_key,
             "raw_median_ms": 1.0,
             "candidate_median_ms": 100.0,
             "token_savings_percent": 0.0,
             "sample_count": 5
         }, {
-            "key": "git:status",
+            "key": git_status_key,
             "raw_median_ms": 1.0,
             "candidate_median_ms": 100.0,
             "token_savings_percent": 0.0,
@@ -2278,6 +2359,33 @@ fn xuva_policy_requires_a_matching_local_adapter_context() {
     assert!(String::from_utf8_lossy(&invalidated.stdout).contains("route=native-rtk"));
 
     std::fs::remove_dir_all(directory).expect("temporary XUVA directory is removed");
+}
+
+#[test]
+fn policy_key_reports_only_the_opaque_exact_workload_shape() {
+    let _guard = process_contract_guard();
+    let output = Command::new(launcher())
+        .args([
+            "policy",
+            "key",
+            "rg",
+            "fn|struct|impl|use|pub",
+            r"C:\\private\\project",
+        ])
+        .output()
+        .expect("policy key inspection starts");
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let key = String::from_utf8_lossy(&output.stdout);
+    assert!(key.starts_with("key=rg:v1:"));
+    assert!(key.contains(":p-alt-"));
+    assert!(!key.contains("struct"));
+    assert!(!key.contains("private"));
+    assert!(!key.contains("project"));
 }
 
 #[test]
@@ -2926,11 +3034,18 @@ fn ctrl_break_releases_the_global_lock_for_waiting_children() {
         .stderr(Stdio::from(first_stderr_file))
         .spawn()
         .expect("first launcher starts");
-    let ready_deadline = Instant::now() + Duration::from_secs(45);
+    let ready_deadline = Instant::now() + Duration::from_secs(75);
     while !ready_file.exists() {
+        if let Some(status) = first.try_wait().expect("first status is available") {
+            let stderr = std::fs::read_to_string(&first_stderr_path)
+                .expect("first stderr is readable after early exit");
+            panic!(
+                "launcher exited before becoming cancellation-ready: status={status}; stderr={stderr}"
+            );
+        }
         assert!(
             Instant::now() < ready_deadline,
-            "launcher did not register its Ctrl+Break handler"
+            "launcher did not become cancellation-ready"
         );
         thread::sleep(Duration::from_millis(25));
     }
@@ -3123,6 +3238,37 @@ fn immediate_ctrl_break_cannot_authorize_a_wsl2_target_before_token_creation() {
         "after-wsl2-immediate-cancel"
     );
     std::fs::remove_dir_all(directory).expect("WSL2 immediate-cancel fixture is removed");
+}
+
+#[test]
+fn wsl2_bounded_attestation_delay_survives_slow_host_startup() {
+    if std::env::var_os("XUVA_WSL1_TEST_DISTRO").is_some() {
+        return;
+    }
+    let _guard = process_contract_guard();
+    let started = Instant::now();
+    let output = command("/usr/bin/printf")
+        .args(["%s", "authorized-after-attestation"])
+        .env("XUVA_TEST_MODE", "1")
+        .env("XUVA_TEST_WSL2_LAUNCH_DELAY_SECONDS", "12")
+        .env("XUVA_METRICS", "off")
+        .output()
+        .expect("delayed-attestation WSL2 launcher starts");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "authorized-after-attestation"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_secs(10),
+        "the test-only pre-attestation delay was not exercised"
+    );
 }
 
 #[test]
@@ -3646,11 +3792,23 @@ fn ctrl_break_cancels_from_a_temp_windows_worktree() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("launcher starts from the temporary Windows worktree");
-    let ready_deadline = Instant::now() + Duration::from_secs(45);
+    let ready_deadline = Instant::now() + Duration::from_secs(75);
     while !ready_file.exists() {
+        if let Some(status) = child.try_wait().expect("launcher status is available") {
+            let mut stderr = String::new();
+            child
+                .stderr
+                .take()
+                .expect("stderr is piped")
+                .read_to_string(&mut stderr)
+                .expect("stderr reads after early exit");
+            panic!(
+                "launcher exited before becoming cancellation-ready: status={status}; stderr={stderr}"
+            );
+        }
         assert!(
             Instant::now() < ready_deadline,
-            "launcher did not register its Ctrl+Break handler"
+            "launcher did not become cancellation-ready"
         );
         thread::sleep(Duration::from_millis(25));
     }
@@ -3673,17 +3831,7 @@ fn ctrl_break_cancels_from_a_temp_windows_worktree() {
         !status.success(),
         "interrupted launcher unexpectedly succeeded"
     );
-    let cleanup_deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match std::fs::remove_dir_all(&directory) {
-            Ok(()) => break,
-            Err(error) if Instant::now() < cleanup_deadline => {
-                thread::sleep(Duration::from_millis(100));
-                let _ = error;
-            }
-            Err(error) => panic!("temporary Windows worktree remains locked: {error}"),
-        }
-    }
+    remove_temp_directory(&directory, "temporary Windows worktree");
 }
 
 #[test]

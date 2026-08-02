@@ -85,9 +85,19 @@ CI; live services can be recorded as supplementary evidence only.
 
 `run-core-three-way.mjs` executes the four high-signal real-corpus workloads:
 Git status, Git log, a focused ripgrep query, and a broad ripgrep query. It
-performs one warm-up and ten rotating measured rounds per variant. The resulting
-JSON records each sample plus median and p95 latency, output bytes, exit codes,
-SHA-256 output hashes, and exact `o200k_base` counts.
+records the first process observation separately, then performs ten rotating
+measured rounds per variant. The resulting JSON records each sample plus median
+and p95 latency, output-size class, exit codes, SHA-256 output hashes, and exact
+`o200k_base` counts. It also binds the evidence to the OS, CPU model, Node
+runtime, and SHA-256 identities of both XUVA and native RTK. “First
+observation” means fresh isolated XUVA state only;
+the artifact explicitly states that operating-system and external-tool caches
+are uncontrolled, so it is not mislabeled as a universal cold-cache result.
+
+Every core artifact also executes a deliberately missing Git revision through
+direct Windows Git and XUVA's explicit raw route. The run is rejected unless
+both preserve the same non-zero exit and byte-identical output. Failure samples
+are correctness evidence only and never enter adaptive policy measurements.
 
 The runner requires the explicitly installed WAD benchmark Python environment
 with `tiktoken` and does not silently substitute a different tokenizer. It
@@ -139,6 +149,26 @@ The core runner rejects every non-zero or signalled warm-up/sample and requires
 a P18 preflight that contains the exact native RTK path. It emits a P16 policy
 schema with the current manifest version and opaque local context signature;
 an outdated or mismatched policy is not written as importable evidence.
+
+For release evidence, `run-core-matrix.mjs` is the required aggregate runner.
+It verifies the origin, exact pinned commit, and clean worktree of every entry
+in `public-corpora.json`, runs the core protocol for all three repositories, and
+rejects the matrix unless it contains at least two observed raw-output size
+classes plus the failure-path contract for every corpus:
+
+```powershell
+node .\benchmarks\run-core-matrix.mjs `
+  --corpus-root $env:LOCALAPPDATA\xuva\benchmark-corpora `
+  --native-rtk C:\tools\rtk.exe `
+  --xuva C:\tools\xuva.exe `
+  --python C:\tools\xuva\tokenizer\Scripts\python.exe `
+  --preflight .\.flowpeek\cache\p18-benchmark-preflight.json `
+  --output .\benchmarks\results\core-public-matrix.json
+```
+
+The aggregate artifact keeps each repository result separate. It does not pool
+latencies across repository sizes, command shapes, or output classes, and its
+claim boundary is embedded in JSON.
 
 ## WSL bridge runner
 
@@ -230,6 +260,11 @@ remain compatibility defaults until repeated real-project evidence justifies
 such a narrow policy rule. Each command has a 60-second default process-tree
 deadline; pass `--timeout-ms` to record a stricter or looser operational limit.
 A timeout is a failed measurement and never becomes release evidence.
+
+The toolchain runner verifies `--policy-key` against `xuva policy key` before it
+writes or imports evidence. The core runner obtains every key directly from the
+same binary, so focused and broad `rg` results cannot be merged unless their
+opaque structural shapes are actually identical.
 
 `--skip-warmup` is permitted only after one successful raw and one successful
 WAD warm-up have been run separately and recorded in the release note. It

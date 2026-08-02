@@ -197,6 +197,12 @@ command_family=rg
 Use `xuva policy show` and `xuva calibration show` to inspect the local
 evidence behind later decisions.
 
+Adaptive calibration is local, opaque, bounded, and **on by default**. It is
+independent from the opt-in aggregate metrics ledger: `XUVA_METRICS=off` does
+not prevent safe eligible commands from learning, and calibration never creates
+`metrics-v1.sqlite`. Set `XUVA_CALIBRATION=off` to disable both calibration
+reads and writes.
+
 Set `XUVA_POLICY_OBJECTIVE=latency`, `balanced`, or `tokens` to choose the
 evidence objective. `balanced` is the default and retains the documented 25%
 token-saving threshold; `latency` chooses the lower measured median, while
@@ -204,32 +210,39 @@ token-saving threshold; `latency` chooses the lower measured median, while
 of the local evidence context, so changing it cannot reuse an incompatible
 calibration decision.
 
-## Benchmark result: latest public-corpus audit sample
+## Benchmark result: latest public-corpus audit matrix
 
-The current public-corpus result uses ripgrep `14.1.1` at commit
-`4649aa9700619f94cf9c66876e9549d83420e16c`, one warm-up, and ten rotating
-measurements for each of four variants. All 160 measured executions completed
-successfully with exit code zero. Token counts use `tiktoken==0.12.0` over
-combined stdout and stderr. These host-specific measurements are evidence, not
-a universal speed claim or a causal before/after optimization claim.
+The current matrix covers three pinned public corpora, small/medium/large raw
+outputs, four variants, and ten rotating measured rounds. All 480 performance
+samples completed with exit code zero. Each corpus also passed a separate
+failure contract: direct Git and XUVA explicit-raw both returned exit `128` with
+byte-identical stdout/stderr. Token counts use `tiktoken==0.12.0`. The artifact
+binds the results to Windows, CPU, Node, corpus commits, and binary SHA-256.
 
-| Workload | Raw Windows | Stock native RTK | XUVA forced native RTK | XUVA auto | Auto vs raw |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `git status --short --branch` | 138.593 ms | 368.281 ms | 417.196 ms | 179.158 ms | 29.3% slower |
-| `git log --oneline -100` | 119.241 ms | 194.921 ms | 265.618 ms | 182.409 ms | 53.0% slower |
-| Focused `rg` (`RegexBuilder`) | 151.243 ms | 217.231 ms | 264.131 ms | 126.976 ms | 16.0% faster |
-| Broad `rg` (<code>fn&#124;struct&#124;impl&#124;use&#124;pub</code>) | 94.853 ms | 240.064 ms | 278.693 ms | 119.974 ms | 26.5% slower |
+| Corpus | Workload | Output | Raw Windows | Stock RTK | XUVA forced | XUVA auto | Raw → auto tokens |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| pytest 8.4.0 | Git status | small | 100.605 ms | 216.360 ms | 222.709 ms | 156.661 ms | 6 → 6 |
+| pytest 8.4.0 | Git log | small | 97.964 ms | 152.996 ms | 181.956 ms | 139.392 ms | 14 → 14 |
+| pytest 8.4.0 | focused `rg` | medium | 106.070 ms | 155.264 ms | 173.942 ms | 142.647 ms | 1,990 → 1,990 |
+| pytest 8.4.0 | broad `rg` | large | 90.762 ms | 267.460 ms | 272.463 ms | 452.577 ms | 687,067 → 6,213 |
+| TypeScript 5.9.3 (`src` sparse) | Git status | small | 168.893 ms | 367.009 ms | 464.592 ms | 144.526 ms | 6 → 6 |
+| TypeScript 5.9.3 (`src` sparse) | Git log | small | 81.736 ms | 149.837 ms | 176.307 ms | 118.086 ms | 18 → 18 |
+| TypeScript 5.9.3 (`src` sparse) | focused `rg` | medium | 102.098 ms | 180.521 ms | 186.345 ms | 160.543 ms | 3,864 → 3,864 |
+| TypeScript 5.9.3 (`src` sparse) | broad `rg` | large | 158.202 ms | 1,097.599 ms | 1,185.928 ms | 1,156.948 ms | 4,225,359 → 4,683 |
+| ripgrep 14.1.1 | Git status | small | 97.296 ms | 224.006 ms | 233.135 ms | 122.995 ms | 6 → 6 |
+| ripgrep 14.1.1 | Git log | small | 67.354 ms | 116.654 ms | 128.940 ms | 114.529 ms | 11 → 11 |
+| ripgrep 14.1.1 | focused `rg` | small | 60.626 ms | 119.743 ms | 143.737 ms | 86.864 ms | 119 → 119 |
+| ripgrep 14.1.1 | broad `rg` | large | 51.792 ms | 165.708 ms | 166.046 ms | 68.864 ms | 137,700 → 137,700 |
 
-This corpus produced identical raw and automatic token counts: 6 tokens for
-Git status, 11 for Git log, 119 for focused `rg`, and 137,700 for broad `rg`.
-The validated policy therefore selected raw execution for all four workloads.
-The spread between median and p95, plus the focused `rg` inversion, shows why a
-single host run must not be presented as deterministic proof of an optimization.
-The previous cross-run “improvement” column was removed because it compared
-different host runs and overstated what that evidence could establish.
+The matrix shows both costs and benefits. Most raw-equivalent automatic rows
+were slower on this host; TypeScript Git status was the sole latency win. The
+two broad searches that selected RTK reduced output drastically but traded
+latency for tokens. “First observation” means fresh isolated XUVA state only;
+OS and external-tool caches were uncontrolled. These are evidence-bound samples,
+not a universal speed claim or a causal before/after claim.
 
 See the reproducible [benchmark protocol](benchmarks/README.md), the
-[versioned v0.4.4 audit summary](benchmarks/evidence/v044-audit-core-summary.json), the historical
+[versioned v0.4.4 matrix summary](benchmarks/evidence/v044-audit-core-matrix-summary.json), the historical
 [comparison and methodology](docs/BENCHMARK_COMPARISON_P20.md), the
 [full Windows/WSL matrix](docs/BENCHMARK_CORE_MATRIX_P18_2026-07-25.md), and
 [machine-readable historical evidence](benchmarks/evidence/p18-comparison-summary.json).
@@ -316,6 +329,15 @@ duration, and exit code; command arguments, project paths, parse input, and
 error text are never persisted. Scratch databases are private and removed by
 an RAII guard, including their WAL/SHM sidecars. The aggregate ledger retains
 at most the newest 10,000 invocations.
+
+Command family is a bounded lowercase executable basename; only allowlisted Git
+subcommands may be appended. Metrics-enabled raw fast paths are included in the
+ledger, while metrics-off fast paths remain ledger- and scratch-free.
+
+This ledger is separate from adaptive calibration. A native calibration sample
+may use a private temporary RTK counter database, but it persists only bounded
+opaque evidence in `calibration-v3.json` and removes the temporary database at
+the end of the invocation.
 
 Use `xuva metrics status` to inspect the privacy contract and totals, or
 `xuva metrics purge` to delete all local metrics artifacts. See the full

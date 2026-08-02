@@ -1,4 +1,5 @@
 use std::io;
+use std::time::Instant;
 
 use crate::adapters;
 use crate::cli::invocation::{InvocationError, InvocationRequest};
@@ -32,11 +33,23 @@ pub(crate) fn direct_windows_fast_path(request: &InvocationRequest) -> Option<Ex
                     &request.config,
                     request.current_directory_str(),
                 )));
-    eligible.then(|| match adapters::windows::run(&request.arguments) {
-        Ok(status) => ExitCode::from_status(status),
-        Err(error) => {
-            eprintln!("xuva: unable to start Windows raw command: {error}");
-            ExitCode::FAILURE
+    eligible.then(|| {
+        let started = Instant::now();
+        let metrics = begin_invocation_metrics(
+            &request.config,
+            &crate::dispatcher::OutputAdapter::Raw,
+            false,
+        );
+        match adapters::windows::run(&request.arguments) {
+            Ok(status) => {
+                finish_raw_fast_path_metrics(request, metrics, started, status.code().unwrap_or(1));
+                ExitCode::from_status(status)
+            }
+            Err(error) => {
+                finish_raw_fast_path_metrics(request, metrics, started, 1);
+                eprintln!("xuva: unable to start Windows raw command: {error}");
+                ExitCode::FAILURE
+            }
         }
     })
 }
@@ -44,16 +57,48 @@ pub(crate) fn direct_windows_fast_path(request: &InvocationRequest) -> Option<Ex
 pub(crate) fn optimistic_windows_raw(
     resolved: &PolicyResolvedInvocation,
 ) -> Result<Option<ExitCode>, InvocationError> {
+    let started = Instant::now();
+    let metrics = begin_invocation_metrics(
+        &resolved.request.config,
+        &crate::dispatcher::OutputAdapter::Raw,
+        false,
+    );
     match adapters::windows::run(&resolved.request.arguments) {
-        Ok(status) => Ok(Some(ExitCode::from_status(status))),
+        Ok(status) => {
+            finish_raw_fast_path_metrics(
+                &resolved.request,
+                metrics,
+                started,
+                status.code().unwrap_or(1),
+            );
+            Ok(Some(ExitCode::from_status(status)))
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             trace("native command was not found; continuing with provider resolution");
             Ok(None)
         }
-        Err(error) => Err(InvocationError {
-            message: format!("xuva: unable to start Windows raw command: {error}"),
-            exit: ExitCode::FAILURE,
-        }),
+        Err(error) => {
+            finish_raw_fast_path_metrics(&resolved.request, metrics, started, 1);
+            Err(InvocationError {
+                message: format!("xuva: unable to start Windows raw command: {error}"),
+                exit: ExitCode::FAILURE,
+            })
+        }
+    }
+}
+
+fn finish_raw_fast_path_metrics(
+    request: &InvocationRequest,
+    metrics: Option<crate::metrics::XuvaMetrics>,
+    started: Instant,
+    exit_code: i32,
+) {
+    let Some(metrics) = metrics else {
+        return;
+    };
+    let family = request.command.metric_family(&request.arguments);
+    if let Err(error) = metrics.finish("raw", &family, started.elapsed(), exit_code) {
+        eprintln!("xuva: metrics were not recorded: {error}");
     }
 }
 
@@ -69,7 +114,11 @@ pub(crate) fn execute(planned: PlannedInvocation) -> ExitCode {
     {
         return exit;
     }
-    let metrics = begin_invocation_metrics(&planned.request.config, &planned.selected_adapter);
+    let metrics = begin_invocation_metrics(
+        &planned.request.config,
+        &planned.selected_adapter,
+        planned.calibration.is_some(),
+    );
     let mut executed_route = planned.route;
     let result = if let Some(plan) = planned.execution_plan.as_ref() {
         let mut result = run_execution_plan(plan, &planned.request.config, metrics.as_ref());
@@ -146,23 +195,26 @@ pub(crate) fn execute(planned: PlannedInvocation) -> ExitCode {
         .unwrap_or(1);
     let elapsed = planned.started.elapsed();
     let totals = if let Some(metrics) = metrics {
-        match metrics.finish(
-            executed_route.as_str(),
-            planned.request.command.family(&planned.request.arguments),
-            elapsed,
-            exit_code,
-        ) {
+        let family = planned
+            .request
+            .command
+            .metric_family(&planned.request.arguments);
+        match metrics.finish(executed_route.as_str(), &family, elapsed, exit_code) {
             Ok(totals) => totals,
             Err(error) => {
-                eprintln!("xuva: metrics were not recorded: {error}");
+                let surface = if planned.request.config.metrics_enabled {
+                    "metrics"
+                } else {
+                    "calibration token counters"
+                };
+                eprintln!("xuva: {surface} were not recorded: {error}");
                 TokenTotals::default()
             }
         }
     } else {
         TokenTotals::default()
     };
-    if planned.request.config.metrics_enabled
-        && let Some(plan) = &planned.calibration
+    if let Some(plan) = &planned.calibration
         && let Err(error) = record_calibration(plan, executed_route, elapsed, exit_code, totals)
     {
         eprintln!("xuva: local calibration was not recorded: {error}");

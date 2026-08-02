@@ -452,15 +452,15 @@ fn wsl2_launchers_only_remove_proven_dead_cancellation_tokens() {
         let failed_quiescence_exit = finish
             .find("exit 125")
             .expect("failed quiescence exits without attestation");
-        let cleanup = finish
-            .find("\n    cleanup\n")
-            .expect("successful quiescence removes its token");
         let completion = finish
-            .find("\n    publish_completion ")
+            .find("\n    if publish_completion ")
             .expect("successful quiescence publishes completion");
+        let cleanup = finish
+            .find("\n        cleanup\n")
+            .expect("successful completion removes its token");
         assert!(
-            failed_quiescence_exit < cleanup && cleanup < completion,
-            "cleanup and completion must remain unreachable after quiescence failure"
+            failed_quiescence_exit < completion && completion < cleanup,
+            "completion must remain unreachable after quiescence failure and become durable before token removal"
         );
         assert!(
             !finish[..failed_quiescence_exit].contains("publish_completion"),

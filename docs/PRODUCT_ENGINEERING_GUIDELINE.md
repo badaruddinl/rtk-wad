@@ -280,11 +280,12 @@ The versioned manifest is the single source of truth for:
 - raw native commands;
 - conservative cross-host commands;
 - internal commands;
-- mutation subcommands.
+- read-only and mutation subcommands.
 
 Unknown manifest fields are rejected. Categories cannot overlap. Adapter
-availability requires a compatible version, protocol, and capability set, not
-merely an executable with the expected name.
+availability requires a name and version from the manifest's reviewed
+compatibility allowlist; that allowlist is explicitly bound to the embedded
+protocol and capability contract rather than inferred from a semver range.
 
 Git mutations in a Windows worktree remain pinned to native Windows Git unless
 a future contract explicitly proves an equally safe alternative. Adaptive

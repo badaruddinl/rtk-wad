@@ -53,11 +53,19 @@ function Resolve-CommandPath {
 }
 
 $rtkManifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
-if ($rtkManifest.schema_version -lt 2 -or
+if ($rtkManifest.schema_version -ne 3 -or
     $rtkManifest.adapter.name -ne "rtk" -or
     $rtkManifest.adapter.protocol_version -ne 1 -or
-    -not $rtkManifest.adapter.version) {
+    -not $rtkManifest.adapter.version -or
+    @($rtkManifest.adapter.compatible_versions).Count -eq 0 -or
+    @($rtkManifest.adapter.compatible_versions) -notcontains $rtkManifest.adapter.version) {
     throw "Command manifest does not declare a supported RTK adapter protocol."
+}
+$readOnlyGit = @($rtkManifest.raw_read_only_subcommands.git)
+$mutationGit = @($rtkManifest.raw_mutation_subcommands.git)
+if ($readOnlyGit.Count -eq 0 -or $mutationGit.Count -eq 0 -or
+    @($readOnlyGit | Where-Object { $mutationGit -contains $_ }).Count -ne 0) {
+    throw "Command manifest Git subcommand contracts are empty or overlapping."
 }
 $providerKind = $null
 $providerDescription = $null
@@ -143,9 +151,10 @@ if ($versionResult.ExitCode -ne 0 -or -not @($versionResult.Lines | Where-Object
     throw "Unable to read RTK version from $providerDescription."
 }
 $observedAdapterVersion = @($versionResult.Lines | Where-Object { $_.Trim() } | Select-Object -First 1)[0]
-$expectedAdapterVersion = "rtk $($rtkManifest.adapter.version)"
-if ($observedAdapterVersion -ne $expectedAdapterVersion) {
-    throw "RTK adapter version mismatch: expected '$expectedAdapterVersion', observed '$observedAdapterVersion'."
+$observedAdapterMatch = [regex]::Match($observedAdapterVersion, '^rtk v?([0-9]+(?:\.[0-9]+)+)$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+$compatibleVersions = @($rtkManifest.adapter.compatible_versions | ForEach-Object { [string]$_ })
+if (-not $observedAdapterMatch.Success -or $compatibleVersions -notcontains $observedAdapterMatch.Groups[1].Value) {
+    throw "RTK adapter version mismatch: expected one of '$($compatibleVersions -join ', ')', observed '$observedAdapterVersion'."
 }
 if ($helpResult.ExitCode -ne 0) {
     throw "Unable to read RTK help from $providerDescription."

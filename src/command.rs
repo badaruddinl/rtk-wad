@@ -1,9 +1,20 @@
 use std::ffi::OsString;
 
+use crate::adapters::rtk::{is_mutation_subcommand, is_read_only_subcommand};
+
+mod arguments;
+mod workload;
+
+#[cfg(test)]
+pub(crate) use arguments::ArgumentSemantic;
+pub(crate) use arguments::{PathArgument, argument_contract, has_typed_wsl_path};
+pub(crate) use workload::rg_workload_key;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CommandAccess {
     ReadOnly,
-    MutatingOrUnknown,
+    Mutating,
+    Unknown,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,10 +81,12 @@ fn classify_git(arguments: &[OsString]) -> GitCommand {
         if value.starts_with('-') {
             return unknown_git(uses_wsl_directory);
         }
-        let access = if is_read_only_git_subcommand(value) {
+        let access = if is_read_only_subcommand("git", value) {
             CommandAccess::ReadOnly
+        } else if is_mutation_subcommand("git", value) {
+            CommandAccess::Mutating
         } else {
-            CommandAccess::MutatingOrUnknown
+            CommandAccess::Unknown
         };
         return GitCommand {
             subcommand_index: Some(index),
@@ -87,7 +100,7 @@ fn classify_git(arguments: &[OsString]) -> GitCommand {
 fn unknown_git(uses_wsl_directory: bool) -> GitCommand {
     GitCommand {
         subcommand_index: None,
-        access: CommandAccess::MutatingOrUnknown,
+        access: CommandAccess::Unknown,
         uses_wsl_directory,
     }
 }
@@ -137,13 +150,6 @@ fn is_attached_global_value(value: &str) -> bool {
             .is_some_and(|setting| !setting.is_empty())
 }
 
-fn is_read_only_git_subcommand(value: &str) -> bool {
-    matches!(
-        value,
-        "status" | "log" | "show" | "diff" | "rev-parse" | "ls-files" | "grep"
-    )
-}
-
 fn is_wsl_path(value: &OsString) -> bool {
     value.to_string_lossy().starts_with('/')
 }
@@ -154,6 +160,44 @@ impl ClassifiedCommand {
             .first()
             .and_then(|argument| argument.to_str())
             .unwrap_or("unknown")
+    }
+
+    pub(crate) fn metric_family(&self, arguments: &[OsString]) -> String {
+        let executable = arguments
+            .first()
+            .map(|argument| argument.to_string_lossy())
+            .unwrap_or_default();
+        let basename = executable.rsplit(['/', '\\']).next().unwrap_or_default();
+        let basename = [".exe", ".cmd", ".bat", ".com"]
+            .iter()
+            .find_map(|suffix| {
+                basename
+                    .get(basename.len().saturating_sub(suffix.len())..)
+                    .is_some_and(|ending| ending.eq_ignore_ascii_case(suffix))
+                    .then(|| &basename[..basename.len() - suffix.len()])
+            })
+            .unwrap_or(basename);
+        let mut family = if !basename.is_empty()
+            && basename.len() <= 48
+            && basename
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            basename.to_ascii_lowercase()
+        } else {
+            "unknown".to_owned()
+        };
+        if family == "git"
+            && let Some(subcommand) = self
+                .git
+                .as_ref()
+                .and_then(|git| git.subcommand(arguments))
+                .filter(|subcommand| is_read_only_subcommand("git", subcommand))
+        {
+            family.push(':');
+            family.push_str(subcommand);
+        }
+        family
     }
 }
 
@@ -207,7 +251,7 @@ mod tests {
         let arguments = args(&["git", "--future-option", "status"]);
         let git = classify(&arguments).git.expect("Git is classified");
         assert_eq!(git.subcommand(&arguments), None);
-        assert_eq!(git.access, CommandAccess::MutatingOrUnknown);
+        assert_eq!(git.access, CommandAccess::Unknown);
     }
 
     #[test]
@@ -215,11 +259,119 @@ mod tests {
         let mutation = classify(&args(&["git", "commit", "status"]))
             .git
             .expect("Git is classified");
-        assert_eq!(mutation.access, CommandAccess::MutatingOrUnknown);
+        assert_eq!(mutation.access, CommandAccess::Mutating);
 
         let read_only = classify(&args(&["git", "status", "commit"]))
             .git
             .expect("Git is classified");
         assert_eq!(read_only.access, CommandAccess::ReadOnly);
+    }
+
+    #[test]
+    fn data_that_looks_like_a_linux_path_is_not_a_typed_path() {
+        let rg = args(&["rg", "/api/", "src"]);
+        assert_eq!(
+            argument_contract("rg", &rg[1..], 0).semantic,
+            ArgumentSemantic::Pattern
+        );
+        assert_eq!(
+            argument_contract("rg", &rg[1..], 1).semantic,
+            ArgumentSemantic::PathList
+        );
+        assert!(!has_typed_wsl_path(&rg));
+
+        let git = args(&["git", "show", "/release/"]);
+        assert_eq!(
+            argument_contract("git", &git[1..], 1).semantic,
+            ArgumentSemantic::Revision
+        );
+        assert!(!has_typed_wsl_path(&git));
+    }
+
+    #[test]
+    fn only_explicit_path_positions_affect_wsl_routing() {
+        assert!(has_typed_wsl_path(&args(&["rg", "pattern", "/mnt/c/src"])));
+        assert!(has_typed_wsl_path(&args(&[
+            "git",
+            "status",
+            "--",
+            "/mnt/c/src/file.rs"
+        ])));
+        assert!(has_typed_wsl_path(&args(&[
+            "git",
+            "-C",
+            "/tmp/repo",
+            "status"
+        ])));
+        assert!(has_typed_wsl_path(&args(&["/bin/sh", "-c", "true"])));
+    }
+
+    #[test]
+    fn generated_path_shaped_data_never_changes_argument_semantics() {
+        let patterns = [
+            "/api/",
+            "/release/",
+            r"C:\existing",
+            r"\\server\share",
+            "fn|struct",
+        ];
+        let roots = ["src", r"C:\src", "/mnt/c/src"];
+        for pattern in patterns {
+            for root in roots {
+                let arguments = args(&["rg", pattern, root]);
+                assert_eq!(
+                    argument_contract("rg", &arguments[1..], 0).semantic,
+                    ArgumentSemantic::Pattern,
+                    "pattern={pattern}; root={root}"
+                );
+                assert_eq!(
+                    argument_contract("rg", &arguments[1..], 1).semantic,
+                    ArgumentSemantic::PathList,
+                    "pattern={pattern}; root={root}"
+                );
+                assert_eq!(has_typed_wsl_path(&arguments), root.starts_with('/'));
+            }
+        }
+
+        let ambiguous = args(&["rg", "--literal-looking-data", "src"]);
+        assert_eq!(
+            argument_contract("rg", &ambiguous[1..], 0).semantic,
+            ArgumentSemantic::Opaque,
+            "an unknown option must fail closed instead of being reclassified as data"
+        );
+
+        for revision in patterns {
+            let revision_arguments = args(&["git", "show", revision]);
+            assert_eq!(
+                argument_contract("git", &revision_arguments[1..], 1).semantic,
+                ArgumentSemantic::Revision
+            );
+            let pathspec_arguments = args(&["git", "status", "--", revision]);
+            assert_eq!(
+                argument_contract("git", &pathspec_arguments[1..], 2).semantic,
+                ArgumentSemantic::PathList
+            );
+        }
+    }
+
+    #[test]
+    fn metric_family_is_bounded_to_basename_and_allowlisted_subcommands() {
+        let explicit = args(&[r"C:\\Users\\alice\\Tools\\RG.EXE", "secret-pattern"]);
+        assert_eq!(classify(&explicit).metric_family(&explicit), "rg");
+
+        let git_status = args(&["git", "status", "--short"]);
+        assert_eq!(
+            classify(&git_status).metric_family(&git_status),
+            "git:status"
+        );
+
+        let git_unknown = args(&["git", "credential-secret"]);
+        assert_eq!(classify(&git_unknown).metric_family(&git_unknown), "git");
+
+        let unsafe_name = args(&[r"C:\\Users\\alice\\tool secret.exe"]);
+        assert_eq!(
+            classify(&unsafe_name).metric_family(&unsafe_name),
+            "unknown"
+        );
     }
 }

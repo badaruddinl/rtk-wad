@@ -1,8 +1,9 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "adapter": {
     "name": "rtk",
     "version": "0.43.0",
+    "compatible_versions": ["0.43.0"],
     "protocol_version": 1,
     "capabilities": ["command_surface", "structured_output", "agent_hooks"]
   },
@@ -11,6 +12,9 @@
   "raw_native": ["npm", "npx", "pnpm", "go", "dotnet"],
   "raw_mutation_subcommands": {
     "git": ["add", "am", "apply", "bisect", "branch", "checkout", "cherry-pick", "clean", "commit", "fetch", "merge", "mv", "pull", "push", "rebase", "reset", "restore", "revert", "rm", "stash", "switch", "tag", "worktree"]
+  },
+  "raw_read_only_subcommands": {
+    "git": ["status", "log", "show", "diff", "rev-parse", "ls-files", "grep"]
   },
   "wsl1_conservative": [
     "smart", "gh", "glab", "aws", "psql", "err", "test", "json", "deps", "env", "log", "docker", "kubectl", "oc", "summary", "init", "wget", "wc", "cc-economics", "config", "jest", "vitest", "prisma", "tsc", "next", "lint", "prettier", "format", "playwright", "curl", "discover", "session", "telemetry", "learn", "run", "proxy", "pipe", "trust", "untrust", "verify", "ruff", "pytest", "mypy", "rake", "rubocop", "rspec", "pip", "gt", "golangci-lint", "gradlew", "mvn", "hook-audit", "rewrite", "hook"

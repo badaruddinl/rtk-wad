@@ -40,6 +40,30 @@ fn provider_discovery_parses_wsl_distro_names_and_versions() {
 }
 
 #[test]
+fn generated_wsl_inventory_layouts_preserve_names_states_and_versions() {
+    for indentation in ["", " ", "  ", "\t"] {
+        for marker in ["", "*"] {
+            for state in ["Running", "Stopped", "Installing"] {
+                for version in [1_u8, 2_u8] {
+                    let line =
+                        format!("{indentation}{marker} Custom WSL One  {state}  {version}\r\n");
+                    assert_eq!(
+                        parse_wsl_distributions(&line),
+                        vec![("Custom WSL One".to_owned(), Some(version))],
+                        "line={line:?}"
+                    );
+                }
+            }
+        }
+    }
+    assert!(parse_wsl_distributions("NAME STATE VERSION\r\nmalformed\r\n").is_empty());
+    assert_eq!(
+        parse_wsl_distributions("Ubuntu Running unknown\r\n"),
+        vec![("Ubuntu".to_owned(), None)]
+    );
+}
+
+#[test]
 fn provider_discovery_classifies_windows_and_wsl_project_paths() {
     let windows = classify_project_path(r"E:\luthfi\project\rtk-wsl");
     assert_eq!(windows.kind, ProjectLocationKind::Windows);

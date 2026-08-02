@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "protocol": "xuva-core-public-corpus-matrix-summary-v1",
+  "recorded_at": "2026-08-02",
+  "coverage_valid": true,
+  "rounds_per_variant": 10,
+  "measured_zero_exit_samples": 480,
+  "observed_raw_output_classes": ["small", "medium", "large"],
+  "host": {
+    "platform": "win32",
+    "release": "10.0.26200",
+    "version": "Windows 11 Pro",
+    "architecture": "x64",
+    "cpu_model": "12th Gen Intel(R) Core(TM) i7-1255U",
+    "logical_cpu_count": 8,
+    "node": "v22.23.2"
+  },
+  "xuva": {
+    "version": "0.4.4",
+    "source_commit": "66d1b239c9972c4b9938e894cfe47bc39075c04f",
+    "target": "x86_64-pc-windows-msvc",
+    "profile": "release",
+    "sha256": "2096bf9413e159b795a3b470e0ddb82ee3c39410f2fd5d8edff67b253d7befb2"
+  },
+  "native_rtk": {
+    "version": "0.43.0",
+    "sha256": "a715e989bcebfc208f388cf5adaaa9953cbf1127b081bc09c4ef02e7d7fea39f"
+  },
+  "tokenizer": "tiktoken==0.12.0/o200k_base",
+  "artifacts": {
+    "matrix_sha256": "a55faedc3a1a7af0108eee1baf8b0f291beb242acb9723619b522d45452383af",
+    "pytest_sha256": "8c26e89d86fafc9290897e6d3fe8cd582597cfddffe0e0b2b83eb22c9adac27c",
+    "typescript_sha256": "f62816fd1ffdc7d3d7e09d384b3b51cc6b939e82ce704a438c57bd7bd3946ba5",
+    "ripgrep_sha256": "e7a9e64e10b2b3ceb984221cf8a538e304f29d78159d7946bea5d4cf63936c1c"
+  },
+  "corpora": [
+    {
+      "id": "pytest-8.4.0",
+      "commit": "315b3ae798fe38264b3ab2312dced212c46f1e21",
+      "checkout_scope": ["src", "testing", "doc"],
+      "rows": [
+        {"workload":"git-status","output_class":"small","raw_output_bytes":20,"raw_ms":100.605,"native_rtk_ms":216.36,"xuva_forced_ms":222.709,"xuva_auto_ms":156.661,"raw_tokens":6,"auto_tokens":6},
+        {"workload":"git-log-100","output_class":"small","raw_output_bytes":38,"raw_ms":97.964,"native_rtk_ms":152.996,"xuva_forced_ms":181.956,"xuva_auto_ms":139.392,"raw_tokens":14,"auto_tokens":14},
+        {"workload":"rg-focused","output_class":"medium","raw_output_bytes":7348,"raw_ms":106.07,"native_rtk_ms":155.264,"xuva_forced_ms":173.942,"xuva_auto_ms":142.647,"raw_tokens":1990,"auto_tokens":1990},
+        {"workload":"rg-broad","output_class":"large","raw_output_bytes":2586983,"raw_ms":90.762,"native_rtk_ms":267.46,"xuva_forced_ms":272.463,"xuva_auto_ms":452.577,"raw_tokens":687067,"auto_tokens":6213}
+      ]
+    },
+    {
+      "id": "typescript-5.9.3",
+      "commit": "c63de15a992d37f0d6cec03ac7631872838602cb",
+      "checkout_scope": ["src"],
+      "rows": [
+        {"workload":"git-status","output_class":"small","raw_output_bytes":20,"raw_ms":168.893,"native_rtk_ms":367.009,"xuva_forced_ms":464.592,"xuva_auto_ms":144.526,"raw_tokens":6,"auto_tokens":6},
+        {"workload":"git-log-100","output_class":"small","raw_output_bytes":38,"raw_ms":81.736,"native_rtk_ms":149.837,"xuva_forced_ms":176.307,"xuva_auto_ms":118.086,"raw_tokens":18,"auto_tokens":18},
+        {"workload":"rg-focused","output_class":"medium","raw_output_bytes":16026,"raw_ms":102.098,"native_rtk_ms":180.521,"xuva_forced_ms":186.345,"xuva_auto_ms":160.543,"raw_tokens":3864,"auto_tokens":3864},
+        {"workload":"rg-broad","output_class":"large","raw_output_bytes":16155191,"raw_ms":158.202,"native_rtk_ms":1097.599,"xuva_forced_ms":1185.928,"xuva_auto_ms":1156.948,"raw_tokens":4225359,"auto_tokens":4683}
+      ]
+    },
+    {
+      "id": "ripgrep-14.1.1",
+      "commit": "4649aa9700619f94cf9c66876e9549d83420e16c",
+      "checkout_scope": ["crates", "tests"],
+      "rows": [
+        {"workload":"git-status","output_class":"small","raw_output_bytes":20,"raw_ms":97.296,"native_rtk_ms":224.006,"xuva_forced_ms":233.135,"xuva_auto_ms":122.995,"raw_tokens":6,"auto_tokens":6},
+        {"workload":"git-log-100","output_class":"small","raw_output_bytes":15,"raw_ms":67.354,"native_rtk_ms":116.654,"xuva_forced_ms":128.94,"xuva_auto_ms":114.529,"raw_tokens":11,"auto_tokens":11},
+        {"workload":"rg-focused","output_class":"small","raw_output_bytes":382,"raw_ms":60.626,"native_rtk_ms":119.743,"xuva_forced_ms":143.737,"xuva_auto_ms":86.864,"raw_tokens":119,"auto_tokens":119},
+        {"workload":"rg-broad","output_class":"large","raw_output_bytes":440774,"raw_ms":51.792,"native_rtk_ms":165.708,"xuva_forced_ms":166.046,"xuva_auto_ms":68.864,"raw_tokens":137700,"auto_tokens":137700}
+      ]
+    }
+  ],
+  "failure_contract": {
+    "corpora_checked": 3,
+    "raw_exit_code": 128,
+    "xuva_explicit_raw_exit_code": 128,
+    "stdout_and_stderr_byte_identical": true
+  },
+  "cache_semantics": {
+    "first_observation": "Fresh isolated XUVA state; operating-system and external-tool caches were uncontrolled.",
+    "measured": "Rotating observations after one successful first observation per candidate variant.",
+    "policy": "Context-bound policy imported into isolated XUVA state only after candidate measurement."
+  },
+  "limitations": [
+    "These are host-, binary-, corpus-, checkout-scope-, command-form-, and cache-semantics-specific samples, not universal speed claims.",
+    "TypeScript used a sparse src checkout and is not presented as a complete repository checkout.",
+    "WSL1 RTK was unavailable in the local preflight, so this record does not claim WSL1 benchmark coverage."
+  ]
+}

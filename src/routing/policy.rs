@@ -139,7 +139,7 @@ mod tests {
 
     fn valid_evidence() -> RoutePolicyEvidence {
         RoutePolicyEvidence {
-            key: "rg".to_owned(),
+            key: "rg:v1:fixture".to_owned(),
             raw_median_ms: 10.0,
             candidate_median_ms: 20.0,
             token_savings_percent: 25.0,
@@ -178,6 +178,9 @@ mod tests {
         let mut invalid_key = valid_evidence();
         invalid_key.key = "rg\nmalformed".to_owned();
         assert!(validate(&policy_with(invalid_key)).is_err());
+        let mut legacy_broad_rg = valid_evidence();
+        legacy_broad_rg.key = "rg".to_owned();
+        assert!(validate(&policy_with(legacy_broad_rg)).is_err());
         let mut invalid_context = policy_with(valid_evidence());
         invalid_context.context_signature = "not-hex-signatur".to_owned();
         assert!(validate(&invalid_context).is_err());
@@ -198,7 +201,7 @@ mod tests {
                     sample_count: 5,
                 },
                 RoutePolicyEvidence {
-                    key: "rg".to_owned(),
+                    key: "rg:v1:fixture".to_owned(),
                     raw_median_ms: 20.0,
                     candidate_median_ms: 30.0,
                     token_savings_percent: 80.0,
@@ -219,7 +222,7 @@ mod tests {
                     sample_count: 5,
                 },
                 RoutePolicyEvidence {
-                    key: "rg".to_owned(),
+                    key: "rg:v1:fixture".to_owned(),
                     raw_median_ms: 5.0,
                     candidate_median_ms: 10.0,
                     token_savings_percent: 90.0,
@@ -234,12 +237,12 @@ mod tests {
                 .iter()
                 .map(|evidence| evidence.key.as_str())
                 .collect::<Vec<_>>(),
-            vec!["cargo:check", "npm:run-list", "rg"]
+            vec!["cargo:check", "npm:run-list", "rg:v1:fixture"]
         );
         let rg = merged
             .evidence
             .iter()
-            .find(|evidence| evidence.key == "rg")
+            .find(|evidence| evidence.key == "rg:v1:fixture")
             .expect("new measurement replaces rg");
         assert_eq!(rg.token_savings_percent, 90.0);
         assert_eq!(

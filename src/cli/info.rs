@@ -26,4 +26,12 @@ pub(crate) fn print_adapter_info(config: &Config) {
             "off"
         }
     );
+    println!(
+        "calibration={}",
+        if config.calibration_enabled {
+            "local-opaque-bounded"
+        } else {
+            "off"
+        }
+    );
 }

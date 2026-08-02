@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { arch, cpus, platform, release, version as osVersion } from "node:os";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { adapterContractId, outputHash, outputSizeClass } from "./benchmark-contract.mjs";
 import { isolatedBenchmarkState } from "./isolated-state.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -30,8 +32,13 @@ const settings = {
   focusedPattern: process.argv.includes("--focused-pattern") ? option("--focused-pattern") : "graphVersion",
   broadPattern: process.argv.includes("--broad-pattern") ? option("--broad-pattern") : "function|const|class|require|module",
 };
-if (!Number.isInteger(settings.rounds) || settings.rounds < 1) {
-    throw new Error("--rounds must be a positive integer");
+if (!Number.isInteger(settings.rounds) || settings.rounds < 5) {
+  throw new Error("--rounds must be an integer of at least 5");
+}
+const expectedAdapterContract = adapterContractId();
+
+function fileHash(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
 const preflight = JSON.parse(readFileSync(settings.preflight, "utf8"));
@@ -154,10 +161,11 @@ function summarize(samples, rawTokens) {
     exit_codes: [...new Set(samples.map((sample) => sample.exit_code))],
     signals: [...new Set(samples.map((sample) => sample.signal))],
     output_bytes: output.length,
+    output_size_class: outputSizeClass(output.length),
     o200k_tokens: tokens,
     tokens_saved_vs_raw: rawTokens - tokens,
     token_savings_percent: rawTokens === 0 ? 0 : Number((((rawTokens - tokens) / rawTokens) * 100).toFixed(1)),
-    output_hashes: [...new Set(samples.map((sample) => createHash("sha256").update(sample.stdout).update(sample.stderr).digest("hex")))],
+    output_hashes: [...new Set(samples.map((sample) => outputHash(sample.stdout, sample.stderr)))],
   };
 }
 
@@ -175,13 +183,13 @@ const variants = (workload) => ({
 });
 
 const allSamples = [];
+const firstObservations = [];
 for (const workload of selectedWorkloads) {
   const entries = Object.entries(variants(workload));
-  for (const [, variant] of entries) {
-    requireSuccessful(
-      await execute(variant.file, variant.args, variant.environment),
-      `${workload.id} warm-up`,
-    );
+  for (const [name, variant] of entries) {
+    const observation = await execute(variant.file, variant.args, variant.environment);
+    requireSuccessful(observation, `${workload.id} first observation`);
+    firstObservations.push({ workload: workload.id, variant: name, ...observation });
   }
   for (let round = 0; round < settings.rounds; round += 1) {
     const rotated = entries.slice(round % entries.length).concat(entries.slice(0, round % entries.length));
@@ -205,12 +213,17 @@ const candidateSummaries = selectedWorkloads.map((workload) => {
 });
 
 mkdirSync(dirname(settings.output), { recursive: true });
-const policyKey = {
-  "git-status": "git:status",
-  "git-log-100": "git:log",
-  "rg-focused": "rg",
-  "rg-broad": "rg",
-};
+const policyKey = {};
+for (const workload of selectedWorkloads) {
+  const keyResult = await execute(settings.wad, ["policy", "key", ...workload.rtk], {
+    XUVA_NATIVE_RTK_PATH: settings.nativeRtk,
+    XUVA_STATE_DIR: isolatedWadState,
+  });
+  requireSuccessful(keyResult, `${workload.id} policy key`);
+  const match = /^key=([a-z0-9:._-]{1,128})\r?\n?$/.exec(keyResult.stdout.toString("utf8"));
+  if (!match) throw new Error(`${workload.id} returned an invalid policy key`);
+  policyKey[workload.id] = match[1];
+}
 const policyEvidence = Object.values(candidateSummaries.reduce((grouped, { workload, variants }) => {
   const key = policyKey[workload];
   const evidence = {
@@ -241,7 +254,7 @@ const policyContext = await execute(settings.wad, ["policy", "context"], {
 requireSuccessful(policyContext, "policy context");
 const parsedPolicyContext = JSON.parse(policyContext.stdout.toString("utf8"));
 if (parsedPolicyContext?.schema_version !== 2
-  || parsedPolicyContext?.manifest_version !== "rtk:0.43.0:protocol-1"
+  || parsedPolicyContext?.manifest_version !== expectedAdapterContract
   || typeof parsedPolicyContext?.context_signature !== "string"
   || parsedPolicyContext.context_signature.length !== 16) {
   throw new Error("WAD policy context is not compatible with the P16 policy contract");
@@ -296,11 +309,42 @@ const summaries = selectedWorkloads.map((workload) => {
   return { workload: workload.id, variants: perVariant };
 });
 
+const missingRevision = "xuva-benchmark-deliberately-missing-ref";
+const failureArgs = ["rev-parse", "--verify", `${missingRevision}^{commit}`];
+const rawFailure = await execute(rawGit, failureArgs);
+const xuvaFailure = await execute(settings.wad, ["--route", "raw", rawGit, ...failureArgs], {
+  XUVA_STATE_DIR: isolatedWadState,
+});
+if (rawFailure.exit_code === 0 || rawFailure.signal !== null
+  || xuvaFailure.exit_code !== rawFailure.exit_code || xuvaFailure.signal !== null
+  || outputHash(rawFailure.stdout, rawFailure.stderr) !== outputHash(xuvaFailure.stdout, xuvaFailure.stderr)) {
+  throw new Error("explicit raw failure propagation differs from the direct Windows command");
+}
+const failureContract = {
+  command_family: "git-revision-miss",
+  expected: "non-zero exit with byte-identical stdout and stderr",
+  raw: rawFailure,
+  xuva_explicit_raw: xuvaFailure,
+};
+
 writeFileSync(settings.output, JSON.stringify({
-  schema_version: 2,
-  protocol: "four-way-core-v2",
+  schema_version: 3,
+  protocol: "four-way-core-v3",
   tokenizer: "o200k_base",
   tokenizer_package: `tiktoken==${tokenizerVersion()}`,
+  host: {
+    platform: platform(),
+    release: release(),
+    version: osVersion(),
+    architecture: arch(),
+    cpu_model: cpus()[0]?.model || "unknown",
+    logical_cpu_count: cpus().length,
+    node: process.version,
+  },
+  binary_identity: {
+    native_rtk_sha256: fileHash(settings.nativeRtk),
+    xuva_sha256: fileHash(settings.wad),
+  },
   rounds: settings.rounds,
   workloads: selectedWorkloads.map((workload) => workload.id),
   corpus: settings.repo,
@@ -310,8 +354,33 @@ writeFileSync(settings.output, JSON.stringify({
   native_rtk: settings.nativeRtk,
   rtk_wad: settings.wad,
   isolated_wad_state: isolatedWadState,
+  cache_semantics: {
+    first_observation: "first process observation in a fresh isolated XUVA state; operating-system and external-tool caches are uncontrolled",
+    measured: "rotating warm-process observations after one successful first observation per variant",
+    policy_state: "generated policy is imported only after candidate measurement",
+  },
   route_policy: policyOutput,
   summaries,
+  first_observations: firstObservations.map(({ stdout, stderr, ...sample }) => ({
+    ...sample,
+    stdout_sha256: createHash("sha256").update(stdout).digest("hex"),
+    stderr_sha256: createHash("sha256").update(stderr).digest("hex"),
+    stdout_bytes: stdout.length,
+    stderr_bytes: stderr.length,
+  })),
+  failure_contract: Object.fromEntries(Object.entries(failureContract).map(([key, value]) => {
+    if (key === "raw" || key === "xuva_explicit_raw") {
+      const { stdout, stderr, ...sample } = value;
+      return [key, {
+        ...sample,
+        stdout_sha256: createHash("sha256").update(stdout).digest("hex"),
+        stderr_sha256: createHash("sha256").update(stderr).digest("hex"),
+        stdout_bytes: stdout.length,
+        stderr_bytes: stderr.length,
+      }];
+    }
+    return [key, value];
+  })),
   samples: allSamples.map(({ stdout, stderr, ...sample }) => ({
     ...sample,
     stdout_sha256: createHash("sha256").update(stdout).digest("hex"),

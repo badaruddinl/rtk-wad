@@ -53,6 +53,9 @@ jobs:
       - name: Test
         run: cargo test --locked --lib --bins -- --test-threads=1
 
+      - name: Test benchmark contracts
+        run: node --test benchmarks/benchmark-contract.test.mjs
+
       - name: Audit locked dependencies
         shell: pwsh
         run: |

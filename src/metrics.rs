@@ -50,18 +50,23 @@ pub(crate) fn xuva_data_root() -> PathBuf {
 pub(crate) struct XuvaMetrics {
     ledger_path: PathBuf,
     scratch_path: PathBuf,
+    persist_ledger: bool,
 }
 
 impl XuvaMetrics {
     pub(crate) fn begin() -> Result<Self, String> {
-        Self::begin_with_tracker(true)
+        Self::begin_with_tracker(true, true)
     }
 
     pub(crate) fn begin_unmeasured() -> Result<Self, String> {
-        Self::begin_with_tracker(false)
+        Self::begin_with_tracker(false, true)
     }
 
-    fn begin_with_tracker(with_tracker: bool) -> Result<Self, String> {
+    pub(crate) fn begin_calibration() -> Result<Self, String> {
+        Self::begin_with_tracker(true, false)
+    }
+
+    fn begin_with_tracker(with_tracker: bool, persist_ledger: bool) -> Result<Self, String> {
         let root = xuva_data_root();
         fs::create_dir_all(&root)
             .map_err(|error| format!("unable to create local XUVA state directory: {error}"))?;
@@ -80,6 +85,7 @@ impl XuvaMetrics {
         let metrics = Self {
             ledger_path,
             scratch_path,
+            persist_ledger,
         };
         if with_tracker {
             let tracker_template = root.join(TRACKER_TEMPLATE_NAME);
@@ -90,7 +96,9 @@ impl XuvaMetrics {
                 .map_err(|error| format!("unable to prepare temporary RTK metrics: {error}"))?;
             state::secure_private_path(&metrics.scratch_path, "temporary RTK metrics")?;
         }
-        metrics.initialize_ledger()?;
+        if metrics.persist_ledger {
+            metrics.initialize_ledger()?;
+        }
         Ok(metrics)
     }
 
@@ -137,7 +145,21 @@ impl XuvaMetrics {
         elapsed: Duration,
         exit_code: i32,
     ) -> Result<TokenTotals, String> {
+        if !matches!(route, "raw" | "native-rtk" | "wsl1" | "wsl2")
+            || command_family.is_empty()
+            || command_family.len() > 64
+            || !command_family.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'-' | b'_' | b'.' | b':')
+            })
+        {
+            return Err("refusing to persist an unsafe metrics dimension".to_owned());
+        }
         let totals = read_upstream_totals(&self.scratch_path)?;
+        if !self.persist_ledger {
+            return Ok(totals);
+        }
         let measured = i64::from(totals.commands > 0);
         let mut connection = open_database(&self.ledger_path, "local metrics ledger")?;
         let transaction = connection
@@ -460,6 +482,7 @@ mod tests {
         XuvaMetrics {
             ledger_path: ledger_path.clone(),
             scratch_path: root.join("initial-scratch.sqlite"),
+            persist_ledger: true,
         }
         .initialize_ledger()
         .expect("ledger initializes");
@@ -472,6 +495,7 @@ mod tests {
                     XuvaMetrics {
                         ledger_path,
                         scratch_path,
+                        persist_ledger: true,
                     }
                     .finish("raw", "fixture", Duration::from_millis(1), 0)
                 })
@@ -564,6 +588,7 @@ mod tests {
         let result = XuvaMetrics {
             ledger_path: root.join("ledger.sqlite"),
             scratch_path: scratch.clone(),
+            persist_ledger: true,
         }
         .finish("raw", "fixture", Duration::ZERO, 1);
         assert!(result.is_err());
@@ -610,6 +635,7 @@ mod tests {
         let metrics = XuvaMetrics {
             ledger_path: ledger.clone(),
             scratch_path: root.join("scratch.sqlite"),
+            persist_ledger: true,
         };
         metrics.initialize_ledger().expect("ledger initializes");
         let connection = open_database(&ledger, "test ledger").expect("ledger opens");

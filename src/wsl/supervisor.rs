@@ -17,6 +17,15 @@ use crate::wsl::test_hooks::{
 };
 use crate::wsl::valid_installation_id;
 
+// Launch integrity is enforced by the nonce-bound attestation and permit, not
+// by a short wall-clock deadline. A loaded or newly activated WSL host can take
+// more than ten seconds to publish the attestation while still behaving
+// correctly. Keep the wait bounded for availability, but leave enough room for
+// real host scheduling without ever authorizing an unattested child.
+const LAUNCH_ATTESTATION_TIMEOUT_SECONDS: u64 = 60;
+const LAUNCH_ATTESTATION_TIMEOUT: Duration =
+    Duration::from_secs(LAUNCH_ATTESTATION_TIMEOUT_SECONDS);
+
 pub(crate) fn wait_for_wsl1_child(
     mut child: Child,
     config: &Config,
@@ -201,12 +210,14 @@ pub(crate) fn wait_for_wsl1_child(
                 }
             }
         }
-        if !authorized && started.elapsed() >= Duration::from_secs(10) {
+        if !authorized && started.elapsed() >= LAUNCH_ATTESTATION_TIMEOUT {
             let _ =
                 stop_cancelled_wsl1_child(&mut child, config, accepted_installation_id.as_deref());
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
-                "WSL1 child did not attest its dedicated-runtime identity within 10 seconds",
+                format!(
+                    "WSL1 child did not attest its dedicated-runtime identity within {LAUNCH_ATTESTATION_TIMEOUT_SECONDS} seconds"
+                ),
             ));
         }
         thread::sleep(Duration::from_millis(20));
@@ -263,11 +274,13 @@ pub(crate) fn wait_for_wsl_child(
                         cancellation_started = Some(Instant::now());
                     }
                 },
-                Ok(false) if launched_at.elapsed() < Duration::from_secs(10) => {}
+                Ok(false) if launched_at.elapsed() < LAUNCH_ATTESTATION_TIMEOUT => {}
                 Ok(false) => {
                     pending_error = Some(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
-                        "WSL2 child did not attest its private cancellation token within 10 seconds",
+                        format!(
+                            "WSL2 child did not attest its private cancellation token within {LAUNCH_ATTESTATION_TIMEOUT_SECONDS} seconds"
+                        ),
                     ));
                     cancellation_started = Some(Instant::now());
                 }
@@ -346,11 +359,12 @@ pub(crate) fn wait_for_wsl_child(
                     None
                 }
             };
-            let cleanup_proven = matches!(group_state, Some(LinuxProcessGroupState::Gone))
-                || matches!(
-                    (group_state, completion),
-                    (Some(LinuxProcessGroupState::TokenUnavailable), Some(_))
-                );
+            let cleanup_proven = wsl2_cancellation_finalized(
+                authorized,
+                proxy_status.is_some(),
+                group_state,
+                completion,
+            );
             if cleanup_proven {
                 let status = if let Some(status) = proxy_status {
                     status
@@ -401,5 +415,75 @@ pub(crate) fn wait_for_wsl_child(
             }
         }
         thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wsl2_cancellation_finalized(
+    authorized: bool,
+    proxy_exited: bool,
+    group_state: Option<LinuxProcessGroupState>,
+    completion: Option<i32>,
+) -> bool {
+    matches!(group_state, Some(LinuxProcessGroupState::Gone))
+        || matches!(
+            (group_state, completion),
+            (Some(LinuxProcessGroupState::TokenUnavailable), Some(_))
+        )
+        || (!authorized
+            && proxy_exited
+            && matches!(group_state, Some(LinuxProcessGroupState::TokenUnavailable)))
+    // Before `authorized` becomes true, the parent has not atomically
+    // published the nonce-bound permit and the embedded launcher cannot start
+    // the target. Once the Windows proxy is reaped, an unavailable token is
+    // therefore sufficient proof that there is no authorized target to reap.
+    // Authorized launches still require exact group death or the durable
+    // completion attestation above.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LinuxProcessGroupState, wsl2_cancellation_finalized};
+
+    #[test]
+    fn pre_authorization_proxy_exit_proves_no_target_was_launched() {
+        assert!(wsl2_cancellation_finalized(
+            false,
+            true,
+            Some(LinuxProcessGroupState::TokenUnavailable),
+            None,
+        ));
+    }
+
+    #[test]
+    fn authorized_launch_remains_fail_closed_without_cleanup_proof() {
+        assert!(!wsl2_cancellation_finalized(
+            true,
+            true,
+            Some(LinuxProcessGroupState::TokenUnavailable),
+            None,
+        ));
+        assert!(!wsl2_cancellation_finalized(
+            true,
+            true,
+            Some(LinuxProcessGroupState::Alive),
+            Some(0),
+        ));
+        assert!(!wsl2_cancellation_finalized(true, true, None, Some(0)));
+    }
+
+    #[test]
+    fn exact_group_death_or_completion_remains_cleanup_proof() {
+        assert!(wsl2_cancellation_finalized(
+            true,
+            false,
+            Some(LinuxProcessGroupState::Gone),
+            None,
+        ));
+        assert!(wsl2_cancellation_finalized(
+            true,
+            true,
+            Some(LinuxProcessGroupState::TokenUnavailable),
+            Some(137),
+        ));
     }
 }

@@ -2,6 +2,7 @@
 
 XUVA metrics are disabled unless `XUVA_METRICS=on` or `XUVA_METRICS=local` is
 set explicitly. Metrics remain local; XUVA has no upload path for this data.
+This opt-in ledger is independent from default-local adaptive calibration.
 
 ## Stored data
 
@@ -9,7 +10,8 @@ The durable ledger stores only:
 
 - timestamp;
 - selected route;
-- bounded command family (for example `git:status`);
+- bounded lowercase executable basename, with an allowlisted Git subcommand when
+  available (for example `git:status`);
 - aggregate input, output, and avoided-token counts reported by RTK;
 - elapsed milliseconds and exit code;
 - whether RTK produced a measurement.
@@ -30,6 +32,10 @@ and metrics files require persistent ACL support and grant access only to the
 current user, `SYSTEM`, and local administrators. Metrics fail closed on a
 Windows filesystem that cannot persist ACLs.
 
+An explicit executable path is reduced to its basename before insertion. Unsafe
+characters or oversized names become `unknown`, and the ledger rejects any
+dimension outside its bounded route/family grammar as defense in depth.
+
 ## User controls
 
 ```powershell
@@ -41,3 +47,12 @@ xuva metrics purge
 Unset `XUVA_METRICS` (or set it to `off`) to use the zero-ledger fast path.
 `xuva metrics purge` removes only the metrics ledger, tracker template, and
 scratch files; policy, calibration, provider, and setup state are preserved.
+
+Eligible adaptive commands can still update bounded opaque calibration evidence
+while metrics are off. They never create `metrics-v1.sqlite`; set
+`XUVA_CALIBRATION=off` to disable calibration reads, temporary measurement, and
+writes as a separate control.
+
+When metrics are enabled, direct and optimistic raw fast paths record the same
+bounded aggregate row as planned execution. When metrics are off, those paths
+do not initialize the ledger or scratch directory.

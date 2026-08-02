@@ -1,20 +1,34 @@
 name: Windows WSL Process Contract
 
 on:
+  push:
+    branches: [master, development]
+  pull_request:
+    branches: [master, development]
+  schedule:
+    - cron: '23 18 * * *'
   workflow_dispatch:
   workflow_call:
 
 permissions:
   contents: read
 
+concurrency:
+  group: windows-wsl-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   process-contract-wsl2:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Windows, WSL]
+    timeout-minutes: 45
     env:
       XUVA_WSL2_TEST_DISTRO: Ubuntu
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Require exact Windows Rust
         shell: powershell
@@ -40,12 +54,16 @@ jobs:
         run: rustup.exe run 1.97.1 cargo test --locked --test process_contract -- --test-threads=1
 
   process-contract-wsl1:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Windows, WSL]
+    timeout-minutes: 45
     env:
       XUVA_WSL1_TEST_DISTRO: Ubuntu-RTK-WSL1
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Require exact Windows Rust
         shell: powershell

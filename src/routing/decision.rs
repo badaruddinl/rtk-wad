@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 
 use crate::adapters::rtk::{CommandSurface, command_surface};
-use crate::command::{CommandAccess, classify};
+use crate::command::{CommandAccess, classify, has_typed_wsl_path, rg_workload_key};
 use crate::config::{Config, ExecutionEnvironment, GitMode, PolicyObjective, Route};
 use crate::paths::windows_path_to_wsl_path;
 use crate::providers::resolution::requires_raw_posix_provider;
@@ -14,12 +14,8 @@ pub(crate) fn command_family(arguments: &[OsString]) -> &str {
         .unwrap_or("unknown")
 }
 
-pub(crate) fn is_wsl_path(value: &OsString) -> bool {
-    value.to_string_lossy().starts_with('/')
-}
-
 pub(crate) fn has_wsl_path(arguments: &[OsString]) -> bool {
-    arguments.iter().any(is_wsl_path)
+    has_typed_wsl_path(arguments)
 }
 
 pub(crate) fn is_verified_read_only_git(arguments: &[OsString]) -> bool {
@@ -56,7 +52,7 @@ pub(crate) fn route_policy_key(arguments: &[OsString]) -> Option<String> {
             .git
             .and_then(|git| git.subcommand(arguments).map(str::to_owned))
             .map(|subcommand| format!("git:{subcommand}")),
-        "rg" => Some("rg".to_owned()),
+        "rg" => rg_workload_key(arguments),
         "cargo" => arguments
             .get(1)
             .and_then(|subcommand| subcommand.to_str())

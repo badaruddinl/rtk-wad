@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { adapterContractId } from "./benchmark-contract.mjs";
 import { isolatedBenchmarkState } from "./isolated-state.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -38,6 +39,7 @@ function tokenizerPackage() {
 const rawNpm = process.env.RTK_WAD_BENCH_NPM || 'npm.cmd';
 const npmPath = isAbsolute(rawNpm) ? `${dirname(rawNpm)};${process.env.Path || ''}` : (process.env.Path || '');
 const state = isolatedBenchmarkState(settings.output);
+const expectedAdapterContract = adapterContractId();
 const wadEnvironment = { XUVA_NATIVE_RTK_PATH: settings.nativeRtk, XUVA_STATE_DIR: state, Path: npmPath };
 function execute(variant) {
   return new Promise((done, fail) => {
@@ -99,7 +101,7 @@ const rawTokens = tokens(Buffer.concat([firstRaw.stdout, firstRaw.stderr]));
 const context = await execute({ file: settings.wad, args: ['policy', 'context'], environment: wadEnvironment });
 requireSuccess(context, 'policy context');
 const parsedContext = JSON.parse(context.stdout.toString('utf8'));
-if (parsedContext?.schema_version !== 2 || parsedContext?.manifest_version !== '0.43.0' || typeof parsedContext?.context_signature !== 'string' || parsedContext.context_signature.length !== 16) throw new Error('WAD policy context is not compatible with P16');
+if (parsedContext?.schema_version !== 2 || parsedContext?.manifest_version !== expectedAdapterContract || typeof parsedContext?.context_signature !== 'string' || parsedContext.context_signature.length !== 16) throw new Error('XUVA policy context does not match the authoritative adapter manifest');
 const candidate = summarize(samples.filter((sample) => sample.variant === 'rtk_wad_native_candidate'), rawTokens);
 const policy = { schema_version: 2, manifest_version: parsedContext.manifest_version, context_signature: parsedContext.context_signature, evidence: [{ key: 'npm:run-list', raw_median_ms: summarize(samples.filter((sample) => sample.variant === 'raw'), rawTokens).median_ms, candidate_median_ms: candidate.median_ms, token_savings_percent: candidate.token_savings_percent, sample_count: settings.rounds }] };
 const policyPath = settings.output.replace(/\.json$/i, '.route-policy.json');

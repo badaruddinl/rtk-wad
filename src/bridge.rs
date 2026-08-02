@@ -155,8 +155,37 @@ fn decode_base64(encoded: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{bridge_windows_cwd_is_valid, wsl_bridge_request};
+    use super::{bridge_windows_cwd_is_valid, decode_wsl_bridge_fields, wsl_bridge_request};
     use std::ffi::OsString;
+
+    fn encode_fields(fields: &[&str]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut bytes = Vec::new();
+        for field in fields {
+            bytes.extend_from_slice(field.as_bytes());
+            bytes.push(0);
+        }
+        let mut encoded = String::new();
+        for chunk in bytes.chunks(3) {
+            let first = chunk[0];
+            let second = chunk.get(1).copied().unwrap_or(0);
+            let third = chunk.get(2).copied().unwrap_or(0);
+            encoded.push(ALPHABET[(first >> 2) as usize] as char);
+            encoded.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+            encoded.push(if chunk.len() > 1 {
+                ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char
+            } else {
+                '='
+            });
+            encoded.push(if chunk.len() > 2 {
+                ALPHABET[(third & 0x3f) as usize] as char
+            } else {
+                '='
+            });
+        }
+        encoded
+    }
 
     #[test]
     fn bridge_cwd_accepts_only_exact_drive_or_matching_unc_mappings() {
@@ -191,5 +220,56 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.contains("normalized absolute Linux paths"));
+    }
+
+    #[test]
+    fn generated_bridge_payloads_round_trip_literal_utf8_fields() {
+        let literals = [
+            "",
+            "plain",
+            "with spaces",
+            "quote\"single'",
+            "dollar$pipe|amp&semi;",
+            "back\\slash/forward",
+            "unicode-λ-雪",
+        ];
+        for literal in literals {
+            let fields = [
+                "v3",
+                "Ubuntu",
+                "runner",
+                "/home/runner/work",
+                r"\\wsl.localhost\Ubuntu\home\runner\work",
+                "",
+                "auto",
+                "rg",
+                literal,
+            ];
+            let encoded = encode_fields(&fields);
+            assert_eq!(
+                decode_wsl_bridge_fields(&encoded).expect("generated payload decodes"),
+                fields.map(str::to_owned)
+            );
+        }
+    }
+
+    #[test]
+    fn corrupted_bridge_payload_bytes_fail_closed_without_panicking() {
+        let encoded = encode_fields(&["v3", "Ubuntu", "runner", "/work", "", "", "auto", "rg"]);
+        for index in 0..encoded.len() {
+            if encoded.as_bytes()[index] == b'=' {
+                continue;
+            }
+            let mut corrupted = encoded.clone().into_bytes();
+            corrupted[index] = b'!';
+            let corrupted = String::from_utf8(corrupted).expect("ASCII corruption remains UTF-8");
+            assert!(
+                decode_wsl_bridge_fields(&corrupted).is_err(),
+                "index={index}"
+            );
+        }
+        for truncated in 1..=3 {
+            assert!(decode_wsl_bridge_fields(&encoded[..encoded.len() - truncated]).is_err());
+        }
     }
 }
