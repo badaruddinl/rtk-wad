@@ -6,27 +6,23 @@ pub(crate) enum CommandAccess {
     MutatingOrUnknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct GitCommand {
-    pub(crate) subcommand: Option<String>,
+    subcommand_index: Option<usize>,
     pub(crate) access: CommandAccess,
     pub(crate) uses_wsl_directory: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ClassifiedCommand {
-    pub(crate) family: String,
     pub(crate) git: Option<GitCommand>,
 }
 
 pub(crate) fn classify(arguments: &[OsString]) -> ClassifiedCommand {
-    let family = arguments
-        .first()
-        .and_then(|argument| argument.to_str())
-        .unwrap_or("unknown")
-        .to_owned();
-    let git = (family == "git").then(|| classify_git(arguments));
-    ClassifiedCommand { family, git }
+    let is_git = arguments.first().and_then(|argument| argument.to_str()) == Some("git");
+    ClassifiedCommand {
+        git: is_git.then(|| classify_git(arguments)),
+    }
 }
 
 fn classify_git(arguments: &[OsString]) -> GitCommand {
@@ -37,7 +33,7 @@ fn classify_git(arguments: &[OsString]) -> GitCommand {
                 && matches!(option.to_str(), Some("--version" | "-v" | "--help" | "-h"))
     ) {
         return GitCommand {
-            subcommand: None,
+            subcommand_index: None,
             access: CommandAccess::ReadOnly,
             uses_wsl_directory: false,
         };
@@ -80,7 +76,7 @@ fn classify_git(arguments: &[OsString]) -> GitCommand {
             CommandAccess::MutatingOrUnknown
         };
         return GitCommand {
-            subcommand: Some(value.to_owned()),
+            subcommand_index: Some(index),
             access,
             uses_wsl_directory,
         };
@@ -90,7 +86,7 @@ fn classify_git(arguments: &[OsString]) -> GitCommand {
 
 fn unknown_git(uses_wsl_directory: bool) -> GitCommand {
     GitCommand {
-        subcommand: None,
+        subcommand_index: None,
         access: CommandAccess::MutatingOrUnknown,
         uses_wsl_directory,
     }
@@ -152,6 +148,23 @@ fn is_wsl_path(value: &OsString) -> bool {
     value.to_string_lossy().starts_with('/')
 }
 
+impl ClassifiedCommand {
+    pub(crate) fn family<'a>(&self, arguments: &'a [OsString]) -> &'a str {
+        arguments
+            .first()
+            .and_then(|argument| argument.to_str())
+            .unwrap_or("unknown")
+    }
+}
+
+impl GitCommand {
+    pub(crate) fn subcommand<'a>(&self, arguments: &'a [OsString]) -> Option<&'a str> {
+        arguments
+            .get(self.subcommand_index?)
+            .and_then(|argument| argument.to_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,7 +175,7 @@ mod tests {
 
     #[test]
     fn git_global_options_are_parsed_before_the_subcommand() {
-        let classified = classify(&args(&[
+        let arguments = args(&[
             "git",
             "-c",
             "alias.status=commit",
@@ -170,9 +183,10 @@ mod tests {
             "/mnt/e/work",
             "status",
             "commit",
-        ]));
+        ]);
+        let classified = classify(&arguments);
         let git = classified.git.expect("Git is classified");
-        assert_eq!(git.subcommand.as_deref(), Some("status"));
+        assert_eq!(git.subcommand(&arguments), Some("status"));
         assert_eq!(git.access, CommandAccess::ReadOnly);
         assert!(git.uses_wsl_directory);
     }
@@ -190,10 +204,9 @@ mod tests {
 
     #[test]
     fn unknown_global_options_fail_closed() {
-        let git = classify(&args(&["git", "--future-option", "status"]))
-            .git
-            .expect("Git is classified");
-        assert_eq!(git.subcommand, None);
+        let arguments = args(&["git", "--future-option", "status"]);
+        let git = classify(&arguments).git.expect("Git is classified");
+        assert_eq!(git.subcommand(&arguments), None);
         assert_eq!(git.access, CommandAccess::MutatingOrUnknown);
     }
 

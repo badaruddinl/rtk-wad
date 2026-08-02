@@ -214,8 +214,11 @@ mod tests {
         ]));
     }
 }
+pub(crate) mod execution;
 pub(crate) mod info;
+pub(crate) mod invocation;
 pub(crate) mod metrics_command;
+pub(crate) mod planning;
 pub(crate) mod policy_command;
 pub(crate) mod runtime;
 #[cfg(test)]

@@ -54,7 +54,7 @@ pub(crate) fn route_policy_key(arguments: &[OsString]) -> Option<String> {
     match command_family(arguments) {
         "git" => classify(arguments)
             .git
-            .and_then(|git| git.subcommand)
+            .and_then(|git| git.subcommand(arguments).map(str::to_owned))
             .map(|subcommand| format!("git:{subcommand}")),
         "rg" => Some("rg".to_owned()),
         "cargo" => arguments
