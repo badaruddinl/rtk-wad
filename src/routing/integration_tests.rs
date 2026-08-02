@@ -214,6 +214,29 @@ fn xuva_auto_route_keeps_mutations_raw_and_read_only_commands_structured() {
 }
 
 #[test]
+fn path_shaped_patterns_do_not_force_linux_execution() {
+    let slash_pattern = vec![
+        OsString::from("rg"),
+        OsString::from("/api/"),
+        OsString::from("src"),
+    ];
+    assert_eq!(
+        auto_route(&slash_pattern, Some(r"E:\work"), None).0,
+        Route::NativeRtk
+    );
+
+    let revision = vec![
+        OsString::from("git"),
+        OsString::from("show"),
+        OsString::from("/release/"),
+    ];
+    assert_eq!(
+        auto_route(&revision, Some(r"E:\work"), None).0,
+        Route::NativeRtk
+    );
+}
+
+#[test]
 fn policy_uses_measured_savings_without_permitting_git_mutations() {
     let context = adaptive_context_signature(&default_config());
     let policy = RoutePolicyFile {

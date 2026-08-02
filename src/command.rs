@@ -1,5 +1,11 @@
 use std::ffi::OsString;
 
+mod arguments;
+
+#[cfg(test)]
+pub(crate) use arguments::ArgumentSemantic;
+pub(crate) use arguments::{PathArgument, argument_contract, has_typed_wsl_path};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CommandAccess {
     ReadOnly,
@@ -221,5 +227,44 @@ mod tests {
             .git
             .expect("Git is classified");
         assert_eq!(read_only.access, CommandAccess::ReadOnly);
+    }
+
+    #[test]
+    fn data_that_looks_like_a_linux_path_is_not_a_typed_path() {
+        let rg = args(&["rg", "/api/", "src"]);
+        assert_eq!(
+            argument_contract("rg", &rg[1..], 0).semantic,
+            ArgumentSemantic::Pattern
+        );
+        assert_eq!(
+            argument_contract("rg", &rg[1..], 1).semantic,
+            ArgumentSemantic::PathList
+        );
+        assert!(!has_typed_wsl_path(&rg));
+
+        let git = args(&["git", "show", "/release/"]);
+        assert_eq!(
+            argument_contract("git", &git[1..], 1).semantic,
+            ArgumentSemantic::Revision
+        );
+        assert!(!has_typed_wsl_path(&git));
+    }
+
+    #[test]
+    fn only_explicit_path_positions_affect_wsl_routing() {
+        assert!(has_typed_wsl_path(&args(&["rg", "pattern", "/mnt/c/src"])));
+        assert!(has_typed_wsl_path(&args(&[
+            "git",
+            "status",
+            "--",
+            "/mnt/c/src/file.rs"
+        ])));
+        assert!(has_typed_wsl_path(&args(&[
+            "git",
+            "-C",
+            "/tmp/repo",
+            "status"
+        ])));
+        assert!(has_typed_wsl_path(&args(&["/bin/sh", "-c", "true"])));
     }
 }
