@@ -27,6 +27,18 @@ try {
     ) {
         throw "Every release version boundary must use the canonical Cargo version reader."
     }
+
+    $testGateFiles = @(
+        ".github\workflows\windows-ci.yml",
+        ".github\workflows\release-provenance.yml",
+        "scripts\verify-release.ps1"
+    )
+    foreach ($relativePath in $testGateFiles) {
+        $testGate = Get-Content -LiteralPath (Join-Path $RepositoryRoot $relativePath) -Raw
+        if ($testGate -notmatch 'cargo(?:Path)?\s+test\s+--locked\s+--lib\s+--bins') {
+            throw "$relativePath must execute both library and binary unit tests."
+        }
+    }
     if (
         $releaseWorkflow -match '(?m)^\s*path:\s*gated-dist\s*$' -or
         $releaseWorkflow -match 'DistributionDirectory\s+gated-dist' -or

@@ -98,7 +98,7 @@ jobs:
         run: |
           cargo fmt --all --check
           cargo clippy --locked --all-targets -- -D warnings
-          cargo test --locked --bins
+          cargo test --locked --lib --bins -- --test-threads=1
           cargo install cargo-audit --version 0.22.2 --locked
           cargo audit
           cargo install cargo-cyclonedx --version 0.5.9 --locked
