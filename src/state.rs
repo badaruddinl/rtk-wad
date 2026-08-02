@@ -13,6 +13,16 @@ static STATE_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const STATE_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const STATE_LOCK_RETRY: Duration = Duration::from_millis(10);
 
+pub(crate) fn secure_private_path(path: &Path, label: &str) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("unable to inspect {label} permissions: {error}"))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!("refusing to secure symlinked {label}"));
+    }
+    set_private_path_permissions(path, metadata.is_dir())
+        .map_err(|error| format!("unable to secure {label}: {error}"))
+}
+
 pub(crate) fn write_json_atomic<T: Serialize>(
     destination: &Path,
     value: &T,
@@ -252,10 +262,25 @@ fn set_private_permissions(file: &File, _path: &Path, label: &str) -> Result<(),
         .map_err(|error| format!("unable to secure {label}: {error}"))
 }
 
+#[cfg(unix)]
+fn set_private_path_permissions(path: &Path, directory: bool) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(
+        path,
+        fs::Permissions::from_mode(if directory { 0o700 } else { 0o600 }),
+    )
+}
+
 #[cfg(windows)]
 fn set_private_permissions(_file: &File, path: &Path, label: &str) -> Result<(), String> {
-    windows::set_private_permissions(path)
+    windows::set_private_permissions(path, false)
         .map_err(|error| format!("unable to secure {label}: {error}"))
+}
+
+#[cfg(windows)]
+fn set_private_path_permissions(path: &Path, directory: bool) -> std::io::Result<()> {
+    windows::set_private_permissions(path, directory)
 }
 
 #[cfg(unix)]
@@ -403,7 +428,7 @@ mod windows {
         }
     }
 
-    pub(super) fn set_private_permissions(path: &Path) -> io::Result<()> {
+    pub(super) fn set_private_permissions(path: &Path, directory: bool) -> io::Result<()> {
         if !volume_supports_persistent_acls(path)? {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -411,10 +436,12 @@ mod windows {
             ));
         }
         let user_sid = current_user_sid_string()?;
-        let descriptor_text: Vec<u16> =
-            format!("D:P(A;;FA;;;{user_sid})(A;;FA;;;SY)(A;;FA;;;BA)\0")
-                .encode_utf16()
-                .collect();
+        let inheritance = if directory { "OICI" } else { "" };
+        let descriptor_text: Vec<u16> = format!(
+            "D:P(A;{inheritance};FA;;;{user_sid})(A;{inheritance};FA;;;SY)(A;{inheritance};FA;;;BA)\0"
+        )
+        .encode_utf16()
+        .collect();
         let mut descriptor = ptr::null_mut();
         // SAFETY: the input is a valid null-terminated SDDL string and output points to storage.
         let converted = unsafe {

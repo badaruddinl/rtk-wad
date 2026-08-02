@@ -310,9 +310,16 @@ safe set (`CI`, color controls, `TERM`, and `RUST_BACKTRACE`), boolean
 listed in the comma-separated `XUVA_ENV_ALLOWLIST`. Credential-like names are
 rejected even when they resemble a feature gate or appear in the allowlist.
 
-Local aggregate metrics are enabled by default and never leave the workstation.
-Set `XUVA_METRICS=off` for a zero-ledger fast path; XUVA then skips both the
-SQLite metrics write and local calibration updates for that invocation.
+Local aggregate metrics are **off by default**. Enable them explicitly with
+`XUVA_METRICS=on`. XUVA stores only route, command family, token totals,
+duration, and exit code; command arguments, project paths, parse input, and
+error text are never persisted. Scratch databases are private and removed by
+an RAII guard, including their WAL/SHM sidecars. The aggregate ledger retains
+at most the newest 10,000 invocations.
+
+Use `xuva metrics status` to inspect the privacy contract and totals, or
+`xuva metrics purge` to delete all local metrics artifacts. See the full
+[local metrics privacy contract](docs/METRICS_PRIVACY.md).
 
 Build identity is inspectable without WSL or provider discovery:
 

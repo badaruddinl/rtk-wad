@@ -28,6 +28,9 @@ fn main_exit() -> ExitCode {
     if let Some(result) = lifecycle::command(&original_arguments) {
         return result;
     }
+    if let Some(result) = cli::metrics_command::command(&original_arguments) {
+        return result;
+    }
     let bridge = match wsl_bridge_request(&original_arguments) {
         Ok(bridge) => bridge,
         Err(error) => {

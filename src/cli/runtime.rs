@@ -123,6 +123,9 @@ pub(crate) fn run_cli(arguments: Vec<OsString>, config: &Config) -> ExitCode {
     {
         return setup_command(&arguments, config);
     }
+    if let Some(result) = crate::cli::metrics_command::command(&arguments) {
+        return result;
+    }
     if let Some(result) = crate::cli::policy_command::command(&arguments, config) {
         return result;
     }

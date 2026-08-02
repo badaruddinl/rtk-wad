@@ -97,6 +97,10 @@ pub(crate) fn print_help() {
     println!("    List the embedded adapter command contract.");
     println!("  xuva self-update --check");
     println!("    Check for a newer stable release without installing it.");
+    println!("  xuva metrics status");
+    println!("    Show the opt-in local aggregate metrics privacy contract.");
+    println!("  xuva metrics purge");
+    println!("    Delete all local metrics files.");
     println!();
     println!("Lifecycle");
     println!("  xuva install --status");
@@ -211,6 +215,7 @@ mod tests {
     }
 }
 pub(crate) mod info;
+pub(crate) mod metrics_command;
 pub(crate) mod policy_command;
 pub(crate) mod runtime;
 #[cfg(test)]
