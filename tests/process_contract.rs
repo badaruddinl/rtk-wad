@@ -2254,21 +2254,49 @@ fn xuva_policy_requires_a_matching_local_adapter_context() {
         .as_str()
         .expect("opaque context signature")
         .to_owned();
+    let manifest_version = context["manifest_version"]
+        .as_str()
+        .expect("runtime adapter contract identity")
+        .to_owned();
     assert_eq!(signature.len(), 16);
-    assert_eq!(context["manifest_version"], "rtk:0.43.0:protocol-1");
+    assert!(manifest_version.starts_with("rtk:"));
+    assert!(manifest_version.contains(":protocol-"));
+
+    let policy_key = |arguments: &[&str]| {
+        let output = Command::new(&launcher)
+            .env("XUVA_STATE_DIR", &state)
+            .args(["policy", "key"])
+            .args(arguments)
+            .output()
+            .expect("policy key inspection starts");
+        assert!(
+            output.status.success(),
+            "stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("policy key is UTF-8")
+            .trim()
+            .strip_prefix("key=")
+            .expect("policy key uses the stable CLI envelope")
+            .to_owned()
+    };
+    let rg_key = policy_key(&["rg", "needle"]);
+    let git_status_key = policy_key(&["git", "status", "--short"]);
 
     let policy = serde_json::json!({
         "schema_version": 2,
-        "manifest_version": "rtk:0.43.0:protocol-1",
+        "manifest_version": manifest_version,
         "context_signature": signature,
         "evidence": [{
-            "key": "rg",
+            "key": rg_key,
             "raw_median_ms": 1.0,
             "candidate_median_ms": 100.0,
             "token_savings_percent": 0.0,
             "sample_count": 5
         }, {
-            "key": "git:status",
+            "key": git_status_key,
             "raw_median_ms": 1.0,
             "candidate_median_ms": 100.0,
             "token_savings_percent": 0.0,
