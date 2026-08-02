@@ -200,4 +200,11 @@ fn test_route_policy_validation() {
         policy.route_for("git:status", "invalid_context", PolicyObjective::Balanced),
         None
     );
+    let mut invalid_policy = policy;
+    invalid_policy.evidence[0].token_savings_percent = 100.1;
+    assert_eq!(
+        invalid_policy.route_for("git:status", &context, PolicyObjective::Balanced),
+        None,
+        "direct policy objects must fail closed even when the loader was bypassed"
+    );
 }

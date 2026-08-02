@@ -10,7 +10,8 @@ use crate::state;
 
 use super::{
     CALIBRATION_MAX_SAMPLES, CALIBRATION_SCHEMA_VERSION, CalibrationEntry, CalibrationFile,
-    CalibrationPlan, NativeCalibrationSample,
+    CalibrationPlan, MAX_CALIBRATION_ENTRIES, NativeCalibrationSample, valid_context_signature,
+    valid_evidence_key,
 };
 
 fn path() -> PathBuf {
@@ -18,15 +19,20 @@ fn path() -> PathBuf {
 }
 
 pub(crate) fn validate(file: &CalibrationFile) -> Result<(), String> {
-    if file.schema_version != CALIBRATION_SCHEMA_VERSION {
+    if file.schema_version != CALIBRATION_SCHEMA_VERSION
+        || file.entries.len() > MAX_CALIBRATION_ENTRIES
+    {
         return Err("calibration state uses an unsupported schema version".to_owned());
     }
     let mut signatures = HashSet::new();
     for entry in &file.entries {
-        if entry.signature.len() != 16
-            || entry.key.trim().is_empty()
+        if !valid_context_signature(&entry.signature)
+            || !valid_evidence_key(&entry.key)
             || entry.manifest_version != adapter_contract_id()
-            || entry.context_signature.len() != 16
+            || !valid_context_signature(&entry.context_signature)
+            || entry.raw_samples_ms.len() > CALIBRATION_MAX_SAMPLES
+            || entry.native_samples.len() > CALIBRATION_MAX_SAMPLES
+            || (entry.raw_samples_ms.is_empty() && entry.native_samples.is_empty())
             || !entry
                 .raw_samples_ms
                 .iter()
@@ -184,6 +190,50 @@ mod tests {
     use crate::routing::{median, select_adaptive_route};
 
     use super::*;
+
+    fn valid_entry() -> CalibrationEntry {
+        CalibrationEntry {
+            signature: "0123456789abcdef".to_owned(),
+            key: "rg".to_owned(),
+            manifest_version: adapter_contract_id(),
+            context_signature: "fedcba9876543210".to_owned(),
+            raw_samples_ms: vec![1.0],
+            native_samples: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn validation_rejects_empty_or_oversized_calibration_evidence() {
+        let mut empty = valid_entry();
+        empty.raw_samples_ms.clear();
+        assert!(
+            validate(&CalibrationFile {
+                schema_version: CALIBRATION_SCHEMA_VERSION,
+                entries: vec![empty],
+            })
+            .is_err()
+        );
+
+        let mut oversized = valid_entry();
+        oversized.raw_samples_ms = vec![1.0; CALIBRATION_MAX_SAMPLES + 1];
+        assert!(
+            validate(&CalibrationFile {
+                schema_version: CALIBRATION_SCHEMA_VERSION,
+                entries: vec![oversized],
+            })
+            .is_err()
+        );
+
+        let mut invalid_signature = valid_entry();
+        invalid_signature.signature = "zzzzzzzzzzzzzzzz".to_owned();
+        assert!(
+            validate(&CalibrationFile {
+                schema_version: CALIBRATION_SCHEMA_VERSION,
+                entries: vec![invalid_signature],
+            })
+            .is_err()
+        );
+    }
 
     #[test]
     fn stale_adapter_contract_is_discarded_without_failing() {

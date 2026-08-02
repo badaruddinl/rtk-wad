@@ -14,6 +14,11 @@ use crate::config::{Config, PolicyObjective, Route};
 pub(crate) const ROUTE_POLICY_SCHEMA_VERSION: u32 = 2;
 pub(crate) const CALIBRATION_SCHEMA_VERSION: u32 = 3;
 pub(crate) const CALIBRATION_MAX_SAMPLES: usize = 5;
+pub(crate) const MAX_POLICY_EVIDENCE: usize = 4_096;
+pub(crate) const MAX_CALIBRATION_ENTRIES: usize = 4_096;
+pub(crate) const MIN_POLICY_SAMPLE_COUNT: u32 = 5;
+pub(crate) const MAX_POLICY_SAMPLE_COUNT: u32 = 1_000_000;
+pub(crate) const MAX_POLICY_KEY_LENGTH: usize = 128;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct RoutePolicyFile {
@@ -32,6 +37,31 @@ pub(crate) struct RoutePolicyEvidence {
     pub(crate) candidate_median_ms: f64,
     pub(crate) token_savings_percent: f64,
     pub(crate) sample_count: u32,
+}
+
+pub(crate) fn valid_evidence_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= MAX_POLICY_KEY_LENGTH
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'.' | b'_' | b'-'))
+}
+
+pub(crate) fn valid_context_signature(signature: &str) -> bool {
+    signature.len() == 16 && signature.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+impl RoutePolicyEvidence {
+    pub(crate) fn is_valid(&self) -> bool {
+        valid_evidence_key(&self.key)
+            && (MIN_POLICY_SAMPLE_COUNT..=MAX_POLICY_SAMPLE_COUNT).contains(&self.sample_count)
+            && self.raw_median_ms.is_finite()
+            && self.candidate_median_ms.is_finite()
+            && self.token_savings_percent.is_finite()
+            && self.raw_median_ms >= 0.0
+            && self.candidate_median_ms >= 0.0
+            && (-100.0..=100.0).contains(&self.token_savings_percent)
+    }
 }
 
 #[derive(Serialize)]
@@ -60,7 +90,9 @@ impl RoutePolicyFile {
         if self.schema_version != ROUTE_POLICY_SCHEMA_VERSION
             || self.manifest_version != adapter_contract_id()
             || self.context_signature != context_signature
-            || evidence.sample_count < 5
+            || !valid_context_signature(context_signature)
+            || self.evidence.len() > MAX_POLICY_EVIDENCE
+            || !evidence.is_valid()
         {
             return None;
         }
