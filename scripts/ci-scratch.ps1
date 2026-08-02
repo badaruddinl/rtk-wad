@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('prepare', 'cleanup')]
+    [ValidateSet('prepare', 'restore-temp', 'cleanup')]
     [string]$Mode,
 
     [ValidateRange(1048576, [long]::MaxValue)]
@@ -65,6 +65,25 @@ function Remove-VerifiedScratchTree {
     }
 }
 
+function Restore-RunnerTemp {
+    param([Parameter(Mandatory = $true)][string]$Scratch)
+
+    if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+        throw 'RUNNER_TEMP is required to restore the runner filesystem semantics.'
+    }
+    $runnerTemp = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP)
+    if ($runnerTemp -eq $Scratch -or
+        $runnerTemp.StartsWith(
+            $Scratch + [System.IO.Path]::DirectorySeparatorChar,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "RUNNER_TEMP must remain outside verified CI scratch: $runnerTemp"
+    }
+    $env:TEMP = $runnerTemp
+    $env:TMP = $runnerTemp
+    Export-GitHubEnvironment @("TEMP=$runnerTemp", "TMP=$runnerTemp")
+}
+
 if ($Mode -eq 'prepare') {
     if ($env:GITHUB_RUN_ID -notmatch '^[0-9]+$' -or
         $env:GITHUB_RUN_ATTEMPT -notmatch '^[0-9]+$' -or
@@ -104,18 +123,9 @@ if ([string]::IsNullOrWhiteSpace($env:XUVA_CI_SCRATCH)) {
 }
 
 $scratch = Assert-ScratchPath $env:XUVA_CI_SCRATCH
-if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
-    $runnerTemp = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP)
-    if ($runnerTemp -eq $scratch -or
-        $runnerTemp.StartsWith(
-            $scratch + [System.IO.Path]::DirectorySeparatorChar,
-            [System.StringComparison]::OrdinalIgnoreCase
-        )) {
-        throw "RUNNER_TEMP must remain outside verified CI scratch: $runnerTemp"
-    }
-    $env:TEMP = $runnerTemp
-    $env:TMP = $runnerTemp
-    Export-GitHubEnvironment @("TEMP=$runnerTemp", "TMP=$runnerTemp")
+Restore-RunnerTemp $scratch
+if ($Mode -eq 'restore-temp') {
+    exit 0
 }
 if (Test-Path -LiteralPath $scratch -PathType Container) {
     Remove-VerifiedScratchTree $scratch

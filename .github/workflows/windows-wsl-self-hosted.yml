@@ -60,6 +60,14 @@ jobs:
           wsl.exe -d Ubuntu --exec /usr/bin/env true
           if ($LASTEXITCODE -ne 0) { throw 'Ubuntu WSL2 smoke check failed.' }
 
+      - name: Build the WSL2 process contract
+        shell: powershell
+        run: rustup.exe run 1.97.1 cargo test --locked --test process_contract --no-run
+
+      - name: Restore WSL2 runtime filesystem semantics
+        shell: powershell
+        run: .\scripts\ci-scratch.ps1 -Mode restore-temp
+
       - name: Run the WSL2 process contract
         shell: powershell
         run: rustup.exe run 1.97.1 cargo test --locked --test process_contract -- --test-threads=1
@@ -102,11 +110,21 @@ jobs:
             throw "Ubuntu-RTK-WSL1 is not proven to be WSL 1.`n$inventory"
           }
 
-      - name: Validate the dedicated runtime and run the WSL1 process contract
+      - name: Build the WSL1 process contract
         shell: powershell
         run: |
           rustup.exe run 1.97.1 cargo build --locked --bin xuva
           if ($LASTEXITCODE -ne 0) { throw 'Unable to build the WSL1 contract binary.' }
+          rustup.exe run 1.97.1 cargo test --locked --test process_contract --no-run
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to build the WSL1 process contract.' }
+
+      - name: Restore WSL1 runtime filesystem semantics
+        shell: powershell
+        run: .\scripts\ci-scratch.ps1 -Mode restore-temp
+
+      - name: Validate the dedicated runtime and run the WSL1 process contract
+        shell: powershell
+        run: |
           $env:XUVA_WSL_BACKEND = 'wsl1'
           $env:XUVA_WSL_DISTRO = $env:XUVA_WSL1_TEST_DISTRO
           $launcher = Join-Path $env:CARGO_TARGET_DIR 'debug\xuva.exe'

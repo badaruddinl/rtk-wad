@@ -56,9 +56,10 @@ try {
     }
     if (
         [regex]::Matches($wslContractWorkflow, 'scripts\\ci-scratch\.ps1 -Mode prepare').Count -ne 2 -or
+        [regex]::Matches($wslContractWorkflow, 'scripts\\ci-scratch\.ps1 -Mode restore-temp').Count -ne 2 -or
         [regex]::Matches($wslContractWorkflow, 'scripts\\ci-scratch\.ps1 -Mode cleanup').Count -ne 2
     ) {
-        throw 'Both WSL process-contract jobs must prepare and reclaim isolated build scratch.'
+        throw 'Both WSL process-contract jobs must prepare scratch, restore runtime temp, and reclaim scratch.'
     }
     if ($wslContractWorkflow -match '\.\\target\\debug\\xuva\.exe') {
         throw 'The WSL1 doctor gate must execute the launcher from CARGO_TARGET_DIR.'
