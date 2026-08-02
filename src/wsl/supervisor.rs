@@ -359,11 +359,12 @@ pub(crate) fn wait_for_wsl_child(
                     None
                 }
             };
-            let cleanup_proven = matches!(group_state, Some(LinuxProcessGroupState::Gone))
-                || matches!(
-                    (group_state, completion),
-                    (Some(LinuxProcessGroupState::TokenUnavailable), Some(_))
-                );
+            let cleanup_proven = wsl2_cancellation_finalized(
+                authorized,
+                proxy_status.is_some(),
+                group_state,
+                completion,
+            );
             if cleanup_proven {
                 let status = if let Some(status) = proxy_status {
                     status
@@ -414,5 +415,75 @@ pub(crate) fn wait_for_wsl_child(
             }
         }
         thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wsl2_cancellation_finalized(
+    authorized: bool,
+    proxy_exited: bool,
+    group_state: Option<LinuxProcessGroupState>,
+    completion: Option<i32>,
+) -> bool {
+    matches!(group_state, Some(LinuxProcessGroupState::Gone))
+        || matches!(
+            (group_state, completion),
+            (Some(LinuxProcessGroupState::TokenUnavailable), Some(_))
+        )
+        || (!authorized
+            && proxy_exited
+            && matches!(group_state, Some(LinuxProcessGroupState::TokenUnavailable)))
+    // Before `authorized` becomes true, the parent has not atomically
+    // published the nonce-bound permit and the embedded launcher cannot start
+    // the target. Once the Windows proxy is reaped, an unavailable token is
+    // therefore sufficient proof that there is no authorized target to reap.
+    // Authorized launches still require exact group death or the durable
+    // completion attestation above.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LinuxProcessGroupState, wsl2_cancellation_finalized};
+
+    #[test]
+    fn pre_authorization_proxy_exit_proves_no_target_was_launched() {
+        assert!(wsl2_cancellation_finalized(
+            false,
+            true,
+            Some(LinuxProcessGroupState::TokenUnavailable),
+            None,
+        ));
+    }
+
+    #[test]
+    fn authorized_launch_remains_fail_closed_without_cleanup_proof() {
+        assert!(!wsl2_cancellation_finalized(
+            true,
+            true,
+            Some(LinuxProcessGroupState::TokenUnavailable),
+            None,
+        ));
+        assert!(!wsl2_cancellation_finalized(
+            true,
+            true,
+            Some(LinuxProcessGroupState::Alive),
+            Some(0),
+        ));
+        assert!(!wsl2_cancellation_finalized(true, true, None, Some(0)));
+    }
+
+    #[test]
+    fn exact_group_death_or_completion_remains_cleanup_proof() {
+        assert!(wsl2_cancellation_finalized(
+            true,
+            false,
+            Some(LinuxProcessGroupState::Gone),
+            None,
+        ));
+        assert!(wsl2_cancellation_finalized(
+            true,
+            true,
+            Some(LinuxProcessGroupState::TokenUnavailable),
+            Some(137),
+        ));
     }
 }
