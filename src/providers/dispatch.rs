@@ -175,22 +175,14 @@ pub(crate) fn explicit_executable_plan(
         environment_policy: dispatcher::EnvironmentPolicy::Isolated,
         interactive: false,
     };
-    let candidate = match installed_wsl_distributions()
-        .into_iter()
-        .find(|(distro, _)| distro == &config.distro)
-        .and_then(|(_, version)| version)
-    {
-        Some(1) => dispatcher::RouteCandidate::Wsl1 {
-            distro: config.distro.clone(),
-            executable: OsString::from(&executable),
-            cwd: PathBuf::from(&cwd),
-        },
-        _ => dispatcher::RouteCandidate::Wsl2 {
-            distro: config.distro.clone(),
-            executable: OsString::from(&executable),
-            cwd: PathBuf::from(&cwd),
-        },
-    };
+    let distributions = installed_wsl_distributions();
+    let version = verified_explicit_wsl_version(&distributions, &config.distro, value)?;
+    let candidate = explicit_wsl_route_candidate(
+        &config.distro,
+        OsString::from(&executable),
+        PathBuf::from(&cwd),
+        version,
+    )?;
     Ok(Some((
         dispatcher::ExecutionPlan {
             request,
@@ -202,6 +194,49 @@ pub(crate) fn explicit_executable_plan(
         },
         "explicit WSL executable path".to_owned(),
     )))
+}
+
+pub(crate) fn verified_explicit_wsl_version(
+    distributions: &[(String, Option<u8>)],
+    distro: &str,
+    executable: &str,
+) -> Result<u8, String> {
+    let (_, version) = distributions
+        .iter()
+        .find(|(candidate, _)| candidate == distro)
+        .ok_or_else(|| {
+            format!(
+                "explicit Linux executable `{executable}` cannot run because configured distro `{distro}` is not installed"
+            )
+        })?;
+    version.ok_or_else(|| {
+        format!(
+            "explicit Linux executable `{executable}` cannot run because the WSL version of distro `{distro}` could not be verified"
+        )
+    })
+}
+
+pub(crate) fn explicit_wsl_route_candidate(
+    distro: &str,
+    executable: OsString,
+    cwd: PathBuf,
+    version: u8,
+) -> Result<dispatcher::RouteCandidate, String> {
+    match version {
+        1 => Ok(dispatcher::RouteCandidate::Wsl1 {
+            distro: distro.to_owned(),
+            executable,
+            cwd,
+        }),
+        2 => Ok(dispatcher::RouteCandidate::Wsl2 {
+            distro: distro.to_owned(),
+            executable,
+            cwd,
+        }),
+        unsupported => Err(format!(
+            "configured distro `{distro}` reports unsupported WSL version `{unsupported}`"
+        )),
+    }
 }
 
 pub(crate) fn windows_tool_is_usable(

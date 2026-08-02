@@ -1,4 +1,40 @@
+use crate::providers::dispatch::{explicit_wsl_route_candidate, verified_explicit_wsl_version};
 use crate::test_support::*;
+
+#[test]
+fn explicit_wsl_candidate_requires_an_exact_supported_version() {
+    let candidate = |version| {
+        explicit_wsl_route_candidate(
+            "Ubuntu",
+            OsString::from("/usr/bin/rg"),
+            PathBuf::from("/mnt/e/work"),
+            version,
+        )
+    };
+
+    assert!(matches!(
+        candidate(1),
+        Ok(dispatcher::RouteCandidate::Wsl1 { .. })
+    ));
+    assert!(matches!(
+        candidate(2),
+        Ok(dispatcher::RouteCandidate::Wsl2 { .. })
+    ));
+    assert!(candidate(0).is_err());
+    assert!(candidate(3).is_err());
+}
+
+#[test]
+fn explicit_wsl_version_must_be_present_and_verified() {
+    let distributions = vec![("Known".to_owned(), Some(2)), ("Unknown".to_owned(), None)];
+
+    assert_eq!(
+        verified_explicit_wsl_version(&distributions, "Known", "/usr/bin/rg"),
+        Ok(2)
+    );
+    assert!(verified_explicit_wsl_version(&distributions, "Unknown", "/usr/bin/rg").is_err());
+    assert!(verified_explicit_wsl_version(&distributions, "Missing", "/usr/bin/rg").is_err());
+}
 
 #[test]
 fn provider_planning_retains_the_next_eligible_route_for_pre_start_fallback() {
