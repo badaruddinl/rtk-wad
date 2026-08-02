@@ -101,18 +101,21 @@ finish() {
         /bin/rm -f -- "$completion_staging"
         exit 125
     fi
-    cleanup
-    publish_completion "$completion_status" || {
+    if publish_completion "$completion_status"; then
+        # Preserve the cancellation identity until the atomic completion
+        # record is visible to the Windows parent.
+        cleanup
+    else
         /bin/rm -f -- "$completion_staging"
         printf 'xuva-plan: unable to publish completion attestation\n' >&2
         completion_status=125
-    }
+    fi
     exit "$completion_status"
 }
 trap finish EXIT
 trap ':' INT TERM
 case "$launch_delay" in
-    0|1|2|3|4|5) ;;
+    0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15) ;;
     *) printf 'xuva-plan: invalid test launch delay\n' >&2; exit 1 ;;
 esac
 case "$completion_override" in

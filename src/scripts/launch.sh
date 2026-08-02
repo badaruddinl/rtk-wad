@@ -103,12 +103,16 @@ finish() {
         /bin/rm -f -- "$completion_staging"
         exit 125
     fi
-    cleanup
-    publish_completion "$completion_status" || {
+    if publish_completion "$completion_status"; then
+        # Never remove the process-group identity before the durable
+        # completion proof exists. If publication fails, retain the token so
+        # the parent can still prove that its exact group is gone.
+        cleanup
+    else
         /bin/rm -f -- "$completion_staging"
         printf 'xuva: unable to publish completion attestation\n' >&2
         completion_status=125
-    }
+    fi
     exit "$completion_status"
 }
 trap finish EXIT
@@ -117,7 +121,7 @@ trap finish EXIT
 # cancellation identity before all group members have stopped.
 trap ':' INT TERM
 case "$launch_delay" in
-    0|1|2|3|4|5) ;;
+    0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15) ;;
     *) printf 'xuva: invalid test launch delay\n' >&2; exit 1 ;;
 esac
 case "$completion_override" in

@@ -17,6 +17,15 @@ use crate::wsl::test_hooks::{
 };
 use crate::wsl::valid_installation_id;
 
+// Launch integrity is enforced by the nonce-bound attestation and permit, not
+// by a short wall-clock deadline. A loaded or newly activated WSL host can take
+// more than ten seconds to publish the attestation while still behaving
+// correctly. Keep the wait bounded for availability, but leave enough room for
+// real host scheduling without ever authorizing an unattested child.
+const LAUNCH_ATTESTATION_TIMEOUT_SECONDS: u64 = 60;
+const LAUNCH_ATTESTATION_TIMEOUT: Duration =
+    Duration::from_secs(LAUNCH_ATTESTATION_TIMEOUT_SECONDS);
+
 pub(crate) fn wait_for_wsl1_child(
     mut child: Child,
     config: &Config,
@@ -201,12 +210,14 @@ pub(crate) fn wait_for_wsl1_child(
                 }
             }
         }
-        if !authorized && started.elapsed() >= Duration::from_secs(10) {
+        if !authorized && started.elapsed() >= LAUNCH_ATTESTATION_TIMEOUT {
             let _ =
                 stop_cancelled_wsl1_child(&mut child, config, accepted_installation_id.as_deref());
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
-                "WSL1 child did not attest its dedicated-runtime identity within 10 seconds",
+                format!(
+                    "WSL1 child did not attest its dedicated-runtime identity within {LAUNCH_ATTESTATION_TIMEOUT_SECONDS} seconds"
+                ),
             ));
         }
         thread::sleep(Duration::from_millis(20));
@@ -263,11 +274,13 @@ pub(crate) fn wait_for_wsl_child(
                         cancellation_started = Some(Instant::now());
                     }
                 },
-                Ok(false) if launched_at.elapsed() < Duration::from_secs(10) => {}
+                Ok(false) if launched_at.elapsed() < LAUNCH_ATTESTATION_TIMEOUT => {}
                 Ok(false) => {
                     pending_error = Some(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
-                        "WSL2 child did not attest its private cancellation token within 10 seconds",
+                        format!(
+                            "WSL2 child did not attest its private cancellation token within {LAUNCH_ATTESTATION_TIMEOUT_SECONDS} seconds"
+                        ),
                     ));
                     cancellation_started = Some(Instant::now());
                 }

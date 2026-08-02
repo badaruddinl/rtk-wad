@@ -41,7 +41,7 @@ pub(crate) fn test_wsl2_launch_delay_seconds() -> u8 {
     env::var("XUVA_TEST_WSL2_LAUNCH_DELAY_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u8>().ok())
-        .filter(|value| *value <= 5)
+        .filter(|value| *value <= 15)
         .unwrap_or(0)
 }
 

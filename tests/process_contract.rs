@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
     Mutex, MutexGuard, OnceLock,
@@ -118,6 +118,20 @@ fn process_contract_guard() -> MutexGuard<'static, ()> {
 fn unique_temp_directory(label: &str) -> PathBuf {
     let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!("xuva-{label}-{}-{nonce}", std::process::id()))
+}
+
+fn remove_temp_directory(directory: &Path, context: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match std::fs::remove_dir_all(directory) {
+            Ok(()) => return,
+            Err(error) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(100));
+                let _ = error;
+            }
+            Err(error) => panic!("{context} remains locked: {error}"),
+        }
+    }
 }
 
 #[test]
@@ -451,17 +465,7 @@ fn maps_a_temp_windows_worktree_to_the_wsl_current_directory() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected);
-    let cleanup_deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match std::fs::remove_dir_all(&directory) {
-            Ok(()) => break,
-            Err(error) if Instant::now() < cleanup_deadline => {
-                thread::sleep(Duration::from_millis(100));
-                let _ = error;
-            }
-            Err(error) => panic!("temporary Windows worktree remains locked: {error}"),
-        }
-    }
+    remove_temp_directory(&directory, "temporary Windows worktree");
 }
 
 #[test]
@@ -1226,7 +1230,7 @@ fn provider_cache_ignores_project_revision_until_explicit_refresh() {
         .args(["which", "go", "--refresh"])
         .output()
         .expect("refreshed provider lookup starts");
-    std::fs::remove_dir_all(&directory).expect("temporary Git project is removed");
+    remove_temp_directory(&directory, "temporary Git project");
 
     assert!(first.status.success());
     assert!(
@@ -3030,11 +3034,18 @@ fn ctrl_break_releases_the_global_lock_for_waiting_children() {
         .stderr(Stdio::from(first_stderr_file))
         .spawn()
         .expect("first launcher starts");
-    let ready_deadline = Instant::now() + Duration::from_secs(45);
+    let ready_deadline = Instant::now() + Duration::from_secs(75);
     while !ready_file.exists() {
+        if let Some(status) = first.try_wait().expect("first status is available") {
+            let stderr = std::fs::read_to_string(&first_stderr_path)
+                .expect("first stderr is readable after early exit");
+            panic!(
+                "launcher exited before becoming cancellation-ready: status={status}; stderr={stderr}"
+            );
+        }
         assert!(
             Instant::now() < ready_deadline,
-            "launcher did not register its Ctrl+Break handler"
+            "launcher did not become cancellation-ready"
         );
         thread::sleep(Duration::from_millis(25));
     }
@@ -3227,6 +3238,37 @@ fn immediate_ctrl_break_cannot_authorize_a_wsl2_target_before_token_creation() {
         "after-wsl2-immediate-cancel"
     );
     std::fs::remove_dir_all(directory).expect("WSL2 immediate-cancel fixture is removed");
+}
+
+#[test]
+fn wsl2_bounded_attestation_delay_survives_slow_host_startup() {
+    if std::env::var_os("XUVA_WSL1_TEST_DISTRO").is_some() {
+        return;
+    }
+    let _guard = process_contract_guard();
+    let started = Instant::now();
+    let output = command("/usr/bin/printf")
+        .args(["%s", "authorized-after-attestation"])
+        .env("XUVA_TEST_MODE", "1")
+        .env("XUVA_TEST_WSL2_LAUNCH_DELAY_SECONDS", "12")
+        .env("XUVA_METRICS", "off")
+        .output()
+        .expect("delayed-attestation WSL2 launcher starts");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "authorized-after-attestation"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_secs(10),
+        "the test-only pre-attestation delay was not exercised"
+    );
 }
 
 #[test]
@@ -3750,11 +3792,23 @@ fn ctrl_break_cancels_from_a_temp_windows_worktree() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("launcher starts from the temporary Windows worktree");
-    let ready_deadline = Instant::now() + Duration::from_secs(45);
+    let ready_deadline = Instant::now() + Duration::from_secs(75);
     while !ready_file.exists() {
+        if let Some(status) = child.try_wait().expect("launcher status is available") {
+            let mut stderr = String::new();
+            child
+                .stderr
+                .take()
+                .expect("stderr is piped")
+                .read_to_string(&mut stderr)
+                .expect("stderr reads after early exit");
+            panic!(
+                "launcher exited before becoming cancellation-ready: status={status}; stderr={stderr}"
+            );
+        }
         assert!(
             Instant::now() < ready_deadline,
-            "launcher did not register its Ctrl+Break handler"
+            "launcher did not become cancellation-ready"
         );
         thread::sleep(Duration::from_millis(25));
     }
@@ -3777,17 +3831,7 @@ fn ctrl_break_cancels_from_a_temp_windows_worktree() {
         !status.success(),
         "interrupted launcher unexpectedly succeeded"
     );
-    let cleanup_deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match std::fs::remove_dir_all(&directory) {
-            Ok(()) => break,
-            Err(error) if Instant::now() < cleanup_deadline => {
-                thread::sleep(Duration::from_millis(100));
-                let _ = error;
-            }
-            Err(error) => panic!("temporary Windows worktree remains locked: {error}"),
-        }
-    }
+    remove_temp_directory(&directory, "temporary Windows worktree");
 }
 
 #[test]
