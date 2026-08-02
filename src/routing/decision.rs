@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 
 use crate::adapters::rtk::{CommandSurface, command_surface};
-use crate::command::{CommandAccess, classify, has_typed_wsl_path};
+use crate::command::{CommandAccess, classify, has_typed_wsl_path, rg_workload_key};
 use crate::config::{Config, ExecutionEnvironment, GitMode, PolicyObjective, Route};
 use crate::paths::windows_path_to_wsl_path;
 use crate::providers::resolution::requires_raw_posix_provider;
@@ -52,7 +52,7 @@ pub(crate) fn route_policy_key(arguments: &[OsString]) -> Option<String> {
             .git
             .and_then(|git| git.subcommand(arguments).map(str::to_owned))
             .map(|subcommand| format!("git:{subcommand}")),
-        "rg" => Some("rg".to_owned()),
+        "rg" => rg_workload_key(arguments),
         "cargo" => arguments
             .get(1)
             .and_then(|subcommand| subcommand.to_str())

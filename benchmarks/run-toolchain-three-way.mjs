@@ -147,7 +147,11 @@ if (settings.policyKey) {
   requireSuccess(context, 'policy context');
   const parsed = JSON.parse(context.stdout.toString('utf8'));
   if (parsed?.schema_version !== 2 || parsed?.manifest_version !== '0.43.0' || typeof parsed?.context_signature !== 'string' || parsed.context_signature.length !== 16) throw new Error('WAD policy context is not compatible with P16');
-  policy = { schema_version: 2, manifest_version: parsed.manifest_version, context_signature: parsed.context_signature, evidence: [{ key: settings.policyKey, raw_median_ms: summarize(samples.filter((sample) => sample.variant === 'raw'), rawTokens).median_ms, candidate_median_ms: candidateSummary.median_ms, token_savings_percent: candidateSummary.token_savings_percent, sample_count: settings.rounds }] };
+  const keyResult = await execute({ file: settings.wad, args: ['policy', 'key', settings.tool, ...settings.args], environment: wadEnvironment });
+  requireSuccess(keyResult, 'policy key');
+  const keyMatch = /^key=([a-z0-9:._-]{1,128})\r?\n?$/.exec(keyResult.stdout.toString('utf8'));
+  if (!keyMatch || keyMatch[1] !== settings.policyKey) throw new Error('--policy-key must exactly match `xuva policy key` for this workload shape');
+  policy = { schema_version: 2, manifest_version: parsed.manifest_version, context_signature: parsed.context_signature, evidence: [{ key: keyMatch[1], raw_median_ms: summarize(samples.filter((sample) => sample.variant === 'raw'), rawTokens).median_ms, candidate_median_ms: candidateSummary.median_ms, token_savings_percent: candidateSummary.token_savings_percent, sample_count: settings.rounds }] };
   const policyPath = settings.output.replace(/\.json$/i, '.route-policy.json');
   mkdirSync(dirname(settings.output), { recursive: true });
   writeFileSync(policyPath, JSON.stringify(policy, null, 2));

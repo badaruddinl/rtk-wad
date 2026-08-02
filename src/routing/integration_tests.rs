@@ -249,6 +249,8 @@ fn path_shaped_patterns_do_not_force_linux_execution() {
 #[test]
 fn policy_uses_measured_savings_without_permitting_git_mutations() {
     let context = adaptive_context_signature(&default_config());
+    let rg_arguments = [OsString::from("rg"), OsString::from("needle")];
+    let rg_key = route_policy_key(&rg_arguments).expect("rg workload shape has a policy key");
     let policy = RoutePolicyFile {
         schema_version: ROUTE_POLICY_SCHEMA_VERSION,
         manifest_version: adapter_contract_id(),
@@ -262,7 +264,7 @@ fn policy_uses_measured_savings_without_permitting_git_mutations() {
                 sample_count: 5,
             },
             RoutePolicyEvidence {
-                key: "rg".to_owned(),
+                key: rg_key,
                 raw_median_ms: 10.0,
                 candidate_median_ms: 30.0,
                 token_savings_percent: 80.0,
@@ -320,7 +322,7 @@ fn policy_uses_measured_savings_without_permitting_git_mutations() {
     );
     assert_eq!(
         auto_route_with_context(
-            &[OsString::from("rg"), OsString::from("needle")],
+            &rg_arguments,
             Some(r"E:\work"),
             Some(&policy),
             Some(&context),
@@ -434,12 +436,14 @@ fn adaptive_evidence_is_bound_to_manifest_and_local_adapter_context() {
     different.native_rtk_path = r"C:\tools\other-rtk.exe".to_owned();
     assert_ne!(context, adaptive_context_signature(&different));
 
+    let rg_arguments = [OsString::from("rg"), OsString::from("needle")];
+    let rg_key = route_policy_key(&rg_arguments).expect("rg workload shape has a policy key");
     let policy = RoutePolicyFile {
         schema_version: ROUTE_POLICY_SCHEMA_VERSION,
         manifest_version: adapter_contract_id(),
         context_signature: context.clone(),
         evidence: vec![RoutePolicyEvidence {
-            key: "rg".to_owned(),
+            key: rg_key.clone(),
             raw_median_ms: 10.0,
             candidate_median_ms: 20.0,
             token_savings_percent: 0.0,
@@ -447,12 +451,61 @@ fn adaptive_evidence_is_bound_to_manifest_and_local_adapter_context() {
         }],
     };
     assert_eq!(
-        policy.route_for("rg", &context, PolicyObjective::Balanced),
+        policy.route_for(&rg_key, &context, PolicyObjective::Balanced),
         Some(Route::Raw)
     );
     assert_eq!(
-        policy.route_for("rg", "0123456789abcdef", PolicyObjective::Balanced),
+        policy.route_for(&rg_key, "0123456789abcdef", PolicyObjective::Balanced),
         None
+    );
+}
+
+#[test]
+fn rg_policy_evidence_applies_only_to_the_exact_opaque_workload_shape() {
+    let context = adaptive_context_signature(&default_config());
+    let focused = [
+        OsString::from("rg"),
+        OsString::from("RegexBuilder"),
+        OsString::from("src"),
+    ];
+    let broad = [
+        OsString::from("rg"),
+        OsString::from("fn|struct|impl|use|pub"),
+        OsString::from("src"),
+    ];
+    let focused_key = route_policy_key(&focused).expect("focused shape is eligible");
+    let broad_key = route_policy_key(&broad).expect("broad shape is eligible");
+    assert_ne!(focused_key, broad_key);
+    let policy = RoutePolicyFile {
+        schema_version: ROUTE_POLICY_SCHEMA_VERSION,
+        manifest_version: adapter_contract_id(),
+        context_signature: context.clone(),
+        evidence: vec![RoutePolicyEvidence {
+            key: broad_key,
+            raw_median_ms: 5.0,
+            candidate_median_ms: 50.0,
+            token_savings_percent: 0.0,
+            sample_count: 5,
+        }],
+    };
+
+    assert_eq!(
+        authorized_policy_route(
+            &focused,
+            Some(&policy),
+            Some(&context),
+            PolicyObjective::Latency,
+        ),
+        None
+    );
+    assert_eq!(
+        authorized_policy_route(
+            &broad,
+            Some(&policy),
+            Some(&context),
+            PolicyObjective::Latency,
+        ),
+        Some(Route::Raw)
     );
 }
 

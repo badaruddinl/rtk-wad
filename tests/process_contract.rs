@@ -2330,6 +2330,33 @@ fn xuva_policy_requires_a_matching_local_adapter_context() {
 }
 
 #[test]
+fn policy_key_reports_only_the_opaque_exact_workload_shape() {
+    let _guard = process_contract_guard();
+    let output = Command::new(launcher())
+        .args([
+            "policy",
+            "key",
+            "rg",
+            "fn|struct|impl|use|pub",
+            r"C:\\private\\project",
+        ])
+        .output()
+        .expect("policy key inspection starts");
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let key = String::from_utf8_lossy(&output.stdout);
+    assert!(key.starts_with("key=rg:v1:"));
+    assert!(key.contains(":p-alt-"));
+    assert!(!key.contains("struct"));
+    assert!(!key.contains("private"));
+    assert!(!key.contains("project"));
+}
+
+#[test]
 fn xuva_generic_setup_is_diagnostic_only_and_never_creates_an_install_transaction() {
     let _guard = process_contract_guard();
     let (launcher, directory) = xuva_launcher();

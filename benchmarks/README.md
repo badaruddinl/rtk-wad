@@ -231,6 +231,11 @@ such a narrow policy rule. Each command has a 60-second default process-tree
 deadline; pass `--timeout-ms` to record a stricter or looser operational limit.
 A timeout is a failed measurement and never becomes release evidence.
 
+The toolchain runner verifies `--policy-key` against `xuva policy key` before it
+writes or imports evidence. The core runner obtains every key directly from the
+same binary, so focused and broad `rg` results cannot be merged unless their
+opaque structural shapes are actually identical.
+
 `--skip-warmup` is permitted only after one successful raw and one successful
 WAD warm-up have been run separately and recorded in the release note. It
 exists for slow workloads whose complete three-way execution would exceed the

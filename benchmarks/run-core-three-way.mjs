@@ -205,12 +205,17 @@ const candidateSummaries = selectedWorkloads.map((workload) => {
 });
 
 mkdirSync(dirname(settings.output), { recursive: true });
-const policyKey = {
-  "git-status": "git:status",
-  "git-log-100": "git:log",
-  "rg-focused": "rg",
-  "rg-broad": "rg",
-};
+const policyKey = {};
+for (const workload of selectedWorkloads) {
+  const keyResult = await execute(settings.wad, ["policy", "key", ...workload.rtk], {
+    XUVA_NATIVE_RTK_PATH: settings.nativeRtk,
+    XUVA_STATE_DIR: isolatedWadState,
+  });
+  requireSuccessful(keyResult, `${workload.id} policy key`);
+  const match = /^key=([a-z0-9:._-]{1,128})\r?\n?$/.exec(keyResult.stdout.toString("utf8"));
+  if (!match) throw new Error(`${workload.id} returned an invalid policy key`);
+  policyKey[workload.id] = match[1];
+}
 const policyEvidence = Object.values(candidateSummaries.reduce((grouped, { workload, variants }) => {
   const key = policyKey[workload];
   const evidence = {

@@ -1,10 +1,12 @@
 use std::ffi::OsString;
 
 mod arguments;
+mod workload;
 
 #[cfg(test)]
 pub(crate) use arguments::ArgumentSemantic;
 pub(crate) use arguments::{PathArgument, argument_contract, has_typed_wsl_path};
+pub(crate) use workload::rg_workload_key;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CommandAccess {

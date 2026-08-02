@@ -5,6 +5,7 @@ use crate::PRODUCT_COMMAND;
 use crate::cli_exit::CliExit as ExitCode;
 use crate::config::Config;
 use crate::routing::calibration::print as print_calibration;
+use crate::routing::decision::route_policy_key;
 use crate::routing::policy::{import as import_route_policy, load as load_route_policy};
 use crate::routing::policy_context_report;
 
@@ -35,6 +36,18 @@ pub(crate) fn command(arguments: &[OsString], config: &Config) -> Option<ExitCod
                 }
             },
         );
+    }
+    if arguments.get(1).is_some_and(|argument| argument == "key") && arguments.len() >= 3 {
+        return Some(match route_policy_key(&arguments[2..]) {
+            Some(key) => {
+                println!("key={key}");
+                ExitCode::SUCCESS
+            }
+            None => {
+                eprintln!("xuva: command shape is not eligible for adaptive policy evidence");
+                ExitCode::FAILURE
+            }
+        });
     }
     if arguments.len() == 1 || arguments.get(1).is_some_and(|argument| argument == "show") {
         match load_route_policy() {
@@ -68,7 +81,7 @@ pub(crate) fn command(arguments: &[OsString], config: &Config) -> Option<ExitCod
         );
     }
     eprintln!(
-        "{PRODUCT_COMMAND}: usage: {PRODUCT_COMMAND} policy [show|context] | policy import <evidence.json>"
+        "{PRODUCT_COMMAND}: usage: {PRODUCT_COMMAND} policy [show|context] | policy key <command> [args...] | policy import <evidence.json>"
     );
     Some(ExitCode::FAILURE)
 }

@@ -84,6 +84,12 @@ Import merges evidence by its command key and atomically replaces only a key
 that was measured again. A later Node or Cargo benchmark therefore preserves
 existing Git and search evidence in the same local policy file.
 
+Inspect the exact key before producing evidence with `xuva policy key <command>
+[args...]`. Ripgrep keys contain only bounded structural categories: pattern
+source and syntax/size buckets, operand-count buckets, output/matcher/case/layout
+modes, and filter-count buckets. They never contain pattern or path text. An
+unknown form has no key, and legacy broad `rg` evidence is rejected.
+
 For at least five samples, the default `balanced` objective selects native RTK
 when measured token saving is 25% or more. The comparison uses end-to-end XUVA
 latency, including dispatcher and local-accounting cost. When measured saving

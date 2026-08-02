@@ -54,6 +54,7 @@ pub(crate) fn valid_context_signature(signature: &str) -> bool {
 impl RoutePolicyEvidence {
     pub(crate) fn is_valid(&self) -> bool {
         valid_evidence_key(&self.key)
+            && self.key != "rg"
             && (MIN_POLICY_SAMPLE_COUNT..=MAX_POLICY_SAMPLE_COUNT).contains(&self.sample_count)
             && self.raw_median_ms.is_finite()
             && self.candidate_median_ms.is_finite()
