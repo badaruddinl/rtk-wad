@@ -307,6 +307,54 @@ mod tests {
     }
 
     #[test]
+    fn generated_path_shaped_data_never_changes_argument_semantics() {
+        let patterns = [
+            "/api/",
+            "/release/",
+            r"C:\existing",
+            r"\\server\share",
+            "fn|struct",
+        ];
+        let roots = ["src", r"C:\src", "/mnt/c/src"];
+        for pattern in patterns {
+            for root in roots {
+                let arguments = args(&["rg", pattern, root]);
+                assert_eq!(
+                    argument_contract("rg", &arguments[1..], 0).semantic,
+                    ArgumentSemantic::Pattern,
+                    "pattern={pattern}; root={root}"
+                );
+                assert_eq!(
+                    argument_contract("rg", &arguments[1..], 1).semantic,
+                    ArgumentSemantic::PathList,
+                    "pattern={pattern}; root={root}"
+                );
+                assert_eq!(has_typed_wsl_path(&arguments), root.starts_with('/'));
+            }
+        }
+
+        let ambiguous = args(&["rg", "--literal-looking-data", "src"]);
+        assert_eq!(
+            argument_contract("rg", &ambiguous[1..], 0).semantic,
+            ArgumentSemantic::Opaque,
+            "an unknown option must fail closed instead of being reclassified as data"
+        );
+
+        for revision in patterns {
+            let revision_arguments = args(&["git", "show", revision]);
+            assert_eq!(
+                argument_contract("git", &revision_arguments[1..], 1).semantic,
+                ArgumentSemantic::Revision
+            );
+            let pathspec_arguments = args(&["git", "status", "--", revision]);
+            assert_eq!(
+                argument_contract("git", &pathspec_arguments[1..], 2).semantic,
+                ArgumentSemantic::PathList
+            );
+        }
+    }
+
+    #[test]
     fn metric_family_is_bounded_to_basename_and_allowlisted_subcommands() {
         let explicit = args(&[r"C:\\Users\\alice\\Tools\\RG.EXE", "secret-pattern"]);
         assert_eq!(classify(&explicit).metric_family(&explicit), "rg");
