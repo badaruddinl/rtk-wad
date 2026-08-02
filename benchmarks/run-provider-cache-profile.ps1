@@ -31,11 +31,11 @@ $outputDirectory = Split-Path -Parent $outputPath
 New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
 $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("rtk-wad-provider-cache-" + [guid]::NewGuid())
 $temporaryBase = [System.IO.Path]::GetTempPath()
-$previousState = $env:RTK_WAD_STATE_DIR
+$previousState = $env:XUVA_STATE_DIR
 
 try {
     New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
-    $env:RTK_WAD_STATE_DIR = $temporaryRoot
+    $env:XUVA_STATE_DIR = $temporaryRoot
     $cold = Invoke-Measured $Wad @('go', 'version')
     $warm = 1..$WarmRuns | ForEach-Object { Invoke-Measured $Wad @('go', 'version') }
     $raw = 1..$WarmRuns | ForEach-Object { Invoke-Measured $RawGo @('version') }
@@ -57,7 +57,7 @@ try {
     Write-Output "Wrote $outputPath"
 }
 finally {
-    $env:RTK_WAD_STATE_DIR = $previousState
+    $env:XUVA_STATE_DIR = $previousState
     if ((Test-Path -LiteralPath $temporaryRoot) -and $temporaryRoot.StartsWith($temporaryBase, [System.StringComparison]::OrdinalIgnoreCase)) {
         Remove-Item -LiteralPath $temporaryRoot -Recurse -Force
     }

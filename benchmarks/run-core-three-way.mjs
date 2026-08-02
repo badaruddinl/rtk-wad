@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { isolatedBenchmarkState } from "./isolated-state.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -49,7 +50,7 @@ if (!matchingNativeRtk) {
 
 const rawGit = process.env.RTK_WAD_BENCH_GIT || "git.exe";
 const rawRg = process.env.RTK_WAD_BENCH_RG || "rg.exe";
-const isolatedWadState = resolve(dirname(settings.output), `${basename(settings.output, ".json")}.wad-state`);
+const isolatedWadState = isolatedBenchmarkState(settings.output);
 const searchRoots = (settings.searchRoots || ["src", "tests", "test", "docs"])
   .filter((candidate) => existsSync(resolve(settings.repo, candidate)));
 if (searchRoots.length === 0) {

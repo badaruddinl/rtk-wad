@@ -119,6 +119,10 @@ jobs:
         shell: pwsh
         run: .\tests\public-corpus-provision-contract.ps1
 
+      - name: Run benchmark runner state contract
+        shell: pwsh
+        run: .\tests\benchmark-runner-contract.ps1
+
       - name: Run isolated install and recovery contract
         shell: pwsh
         run: .\tests\packaging-contract.ps1

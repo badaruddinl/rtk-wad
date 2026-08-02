@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { isolatedBenchmarkState } from "./isolated-state.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const option = (name) => {
@@ -54,8 +55,8 @@ const rawVariant = /\.(cmd|bat)$/i.test(rawExecutable)
   ? { file: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', rawExecutable, ...settings.args] }
   : { file: rawExecutable, args: settings.args };
 const rawToolPath = isAbsolute(rawExecutable) ? `${dirname(rawExecutable)};${process.env.Path || ''}` : (process.env.Path || '');
-const state = resolve(dirname(settings.output), `${basename(settings.output, '.json')}.wad-state`);
-const wadEnvironment = { RTK_WAD_STATE_DIR: state, RTK_WAD_NATIVE_RTK_PATH: settings.nativeRtk, Path: rawToolPath };
+const state = isolatedBenchmarkState(settings.output);
+const wadEnvironment = { XUVA_STATE_DIR: state, XUVA_NATIVE_RTK_PATH: settings.nativeRtk, Path: rawToolPath };
 
 function execute(variant) {
   return new Promise((done, fail) => {
@@ -63,7 +64,7 @@ function execute(variant) {
     let timedOut = false;
     const child = spawn(variant.file, variant.args, {
       cwd: settings.repo,
-      env: { ...process.env, RTK_WAD_NATIVE_RTK_PATH: settings.nativeRtk, ...variant.environment },
+      env: { ...process.env, XUVA_NATIVE_RTK_PATH: settings.nativeRtk, ...variant.environment },
       shell: false,
       windowsHide: true,
     });
