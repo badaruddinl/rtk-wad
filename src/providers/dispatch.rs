@@ -22,7 +22,7 @@ use crate::providers::model::{
     AdapterKind, BinaryIdentity, ProjectLocation, ProjectLocationKind, ProviderCandidate,
     ProviderResolution, WindowsToolProbe,
 };
-use crate::providers::probe::cached_or_discovered_tool;
+use crate::providers::probe::{cached_or_discovered_tool, complete_cached_wsl_discovery};
 use crate::providers::resolution::{
     requires_raw_posix_provider, resolve_tool_provider_from_discovery_with_user,
     windows_probe_has_compatible_provider, windows_provider_has_compatible_semantics,
@@ -335,14 +335,52 @@ pub(crate) fn provider_dispatch_decision(
         );
     }
     let (discovery, cache) = cached_or_discovered_tool(tool, config, false, true, false);
-    let resolution = resolve_tool_provider_from_discovery_with_user(
+    let mut resolution = resolve_tool_provider_from_discovery_with_user(
         tool,
-        project,
+        project.clone(),
         discovery,
         cache,
         config.user.as_deref(),
     );
+    if !resolution.availability.wsl_probe_complete
+        && !partial_inventory_has_usable_candidate(arguments, config, &resolution)
+    {
+        trace(format!(
+            "provider discovery continuing beyond an unusable partial {tool} inventory"
+        ));
+        let (discovery, cache) =
+            complete_cached_wsl_discovery(tool, config, resolution.availability, false);
+        resolution = resolve_tool_provider_from_discovery_with_user(
+            tool,
+            project,
+            discovery,
+            cache,
+            config.user.as_deref(),
+        );
+    }
     provider_dispatch_decision_from_resolution(arguments, config, static_route, resolution)
+}
+
+pub(crate) fn partial_inventory_has_usable_candidate(
+    arguments: &[OsString],
+    config: &Config,
+    resolution: &ProviderResolution,
+) -> bool {
+    let tool = arguments
+        .first()
+        .and_then(|argument| argument.to_str())
+        .unwrap_or_default();
+    let pin_windows_git = resolution.project.kind == ProjectLocationKind::Windows
+        && tool == "git"
+        && !is_verified_read_only_git(arguments);
+    resolution.candidates.iter().any(|candidate| {
+        candidate.usable
+            && candidate.has_consistent_location()
+            && (!pin_windows_git || candidate.is_windows())
+            && (config.output_adapter != OutputAdapterPreference::Rtk
+                || candidate.supports_adapter(AdapterKind::Rtk))
+            && (resolution.project.kind != ProjectLocationKind::Wsl || candidate.is_wsl())
+    })
 }
 
 pub(crate) fn provider_dispatch_decision_from_resolution(

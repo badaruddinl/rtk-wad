@@ -1,4 +1,7 @@
-use crate::providers::dispatch::{explicit_wsl_route_candidate, verified_explicit_wsl_version};
+use crate::providers::dispatch::{
+    explicit_wsl_route_candidate, partial_inventory_has_usable_candidate,
+    verified_explicit_wsl_version,
+};
 use crate::test_support::*;
 
 #[test]
@@ -34,6 +37,97 @@ fn explicit_wsl_version_must_be_present_and_verified() {
     );
     assert!(verified_explicit_wsl_version(&distributions, "Unknown", "/usr/bin/rg").is_err());
     assert!(verified_explicit_wsl_version(&distributions, "Missing", "/usr/bin/rg").is_err());
+}
+
+#[test]
+fn partial_wsl_inventory_is_decisive_only_with_a_usable_wsl_candidate() {
+    let raw_config = Config::from_lookup(|name| match name {
+        "XUVA_OUTPUT_ADAPTER" => Some("raw".to_owned()),
+        _ => None,
+    })
+    .expect("raw adapter configuration is valid");
+    let mut wsl_candidate = ProviderCandidate {
+        host: ProviderHost::Wsl2,
+        adapters: vec![AdapterKind::Raw],
+        distro: Some("Ubuntu-A".to_owned()),
+        wsl_version: Some(2),
+        executable: "/usr/bin/go".to_owned(),
+        executable_identity: Some(fixture_binary_identity("/usr/bin/go")),
+        rtk: None,
+        rtk_identity: None,
+        project_path: None,
+        usable: false,
+        reason: "project mapping failed".to_owned(),
+    };
+    let windows_candidate = ProviderCandidate {
+        host: ProviderHost::Windows,
+        adapters: vec![AdapterKind::Raw],
+        distro: None,
+        wsl_version: None,
+        executable: r"C:\Tools\go.exe".to_owned(),
+        executable_identity: Some(fixture_binary_identity(r"C:\Tools\go.exe")),
+        rtk: None,
+        rtk_identity: None,
+        project_path: Some(r"C:\work".to_owned()),
+        usable: true,
+        reason: "Windows fallback".to_owned(),
+    };
+    let mut resolution = ProviderResolution {
+        schema_version: PROVIDER_CACHE_SCHEMA_VERSION,
+        tool: "go".to_owned(),
+        cache: "miss",
+        project: ProjectLocation {
+            kind: ProjectLocationKind::Wsl,
+            path: "/home/test/work".to_owned(),
+            distro: Some("Ubuntu-A".to_owned()),
+            windows_path: Some(r"C:\work".to_owned()),
+        },
+        availability: ProviderCacheEntry {
+            tool: "go".to_owned(),
+            observed_unix_seconds: 1,
+            inspection_level: InspectionLevel::Identity,
+            context_signature: "fixture".to_owned(),
+            windows: WindowsToolProbe {
+                executable: None,
+                native_rtk: None,
+                executable_version: None,
+                version_probe_status: ProbeStatus::NotRequested,
+                executable_capabilities: Vec::new(),
+                executable_identity: None,
+                native_rtk_identity: None,
+            },
+            wsl_probe_complete: false,
+            wsl: Vec::new(),
+        },
+        candidates: vec![windows_candidate, wsl_candidate.clone()],
+        recommended: Some(0),
+        diagnosis: "fixture".to_owned(),
+        install: "disabled",
+    };
+    let arguments = [OsString::from("go"), OsString::from("version")];
+
+    assert!(
+        !partial_inventory_has_usable_candidate(&arguments, &raw_config, &resolution),
+        "a Windows fallback must not hide an unprobed WSL provider for a WSL project"
+    );
+    wsl_candidate.project_path = Some("/home/test/work".to_owned());
+    wsl_candidate.usable = true;
+    resolution.candidates[1] = wsl_candidate;
+    assert!(partial_inventory_has_usable_candidate(
+        &arguments,
+        &raw_config,
+        &resolution
+    ));
+
+    let rtk_config = Config::from_lookup(|name| match name {
+        "XUVA_OUTPUT_ADAPTER" => Some("rtk".to_owned()),
+        _ => None,
+    })
+    .expect("RTK adapter configuration is valid");
+    assert!(
+        !partial_inventory_has_usable_candidate(&arguments, &rtk_config, &resolution),
+        "a raw-only partial candidate must not conclude RTK discovery"
+    );
 }
 
 #[test]

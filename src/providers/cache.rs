@@ -9,6 +9,7 @@ use crate::state;
 
 pub(crate) const PROVIDER_CACHE_SCHEMA_VERSION: u32 = 6;
 pub(crate) const PROVIDER_CACHE_TTL_SECONDS: u64 = 300;
+const MAX_PROVIDER_CACHE_ENTRIES: usize = 128;
 
 pub(crate) fn provider_cache_path() -> PathBuf {
     xuva_data_root().join("provider-cache-v6.json")
@@ -46,8 +47,7 @@ pub(crate) fn update_provider_cache(discovered: &ProviderCacheEntry) -> Result<(
         "provider cache",
         |path| Ok(load_provider_cache_from(path)),
         |cache| {
-            cache.entries.retain(|entry| entry.tool != discovered.tool);
-            cache.entries.push(discovered.clone());
+            merge_provider_cache_entry(cache, discovered.clone());
             Ok(())
         },
         |cache| {
@@ -58,6 +58,24 @@ pub(crate) fn update_provider_cache(discovered: &ProviderCacheEntry) -> Result<(
             }
         },
     )
+}
+
+pub(crate) fn merge_provider_cache_entry(
+    cache: &mut ProviderCacheFile,
+    discovered: ProviderCacheEntry,
+) {
+    cache.entries.retain(|entry| {
+        entry.tool != discovered.tool || entry.context_signature != discovered.context_signature
+    });
+    cache.entries.push(discovered);
+    cache
+        .entries
+        .sort_by_key(|entry| entry.observed_unix_seconds);
+    if cache.entries.len() > MAX_PROVIDER_CACHE_ENTRIES {
+        cache
+            .entries
+            .drain(..cache.entries.len() - MAX_PROVIDER_CACHE_ENTRIES);
+    }
 }
 
 pub(crate) fn cache_entry_is_fresh(

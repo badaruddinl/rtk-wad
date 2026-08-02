@@ -213,6 +213,64 @@ pub(crate) fn discover_tool(
     }
 }
 
+pub(crate) fn complete_wsl_discovery(
+    tool: &str,
+    config: &Config,
+    mut discovered: ProviderCacheEntry,
+    inspect_versions: bool,
+) -> ProviderCacheEntry {
+    let mut distros = installed_wsl_distributions();
+    distros.sort_by_key(|(distro, version)| {
+        if distro == &config.distro {
+            0
+        } else if *version == Some(2) {
+            1
+        } else {
+            2
+        }
+    });
+    for (distro, version) in &distros {
+        if discovered.wsl.iter().any(|probe| probe.distro == *distro) {
+            continue;
+        }
+        discovered.wsl.push(probe_wsl_tool(
+            distro,
+            *version,
+            config.user.as_deref(),
+            tool,
+            config.extra_path.as_deref(),
+            inspect_versions,
+        ));
+    }
+    discovered.observed_unix_seconds = unix_seconds();
+    discovered.inspection_level = if inspect_versions {
+        InspectionLevel::Version
+    } else {
+        discovered.inspection_level
+    };
+    discovered.context_signature = discovery_context_signature(config, true);
+    discovered.wsl_probe_complete = distros
+        .iter()
+        .all(|(distro, _)| discovered.wsl.iter().any(|probe| probe.distro == *distro));
+    discovered
+}
+
+pub(crate) fn complete_cached_wsl_discovery(
+    tool: &str,
+    config: &Config,
+    discovered: ProviderCacheEntry,
+    inspect_versions: bool,
+) -> (ProviderCacheEntry, &'static str) {
+    if discovered.wsl_probe_complete {
+        return (discovered, "hit");
+    }
+    let completed = complete_wsl_discovery(tool, config, discovered, inspect_versions);
+    if let Err(error) = update_provider_cache(&completed) {
+        trace(format!("completed provider cache was not saved: {error}"));
+    }
+    (completed, "miss")
+}
+
 pub(crate) fn cached_or_discovered_tool(
     tool: &str,
     config: &Config,
