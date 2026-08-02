@@ -2,6 +2,7 @@
 
 XUVA metrics are disabled unless `XUVA_METRICS=on` or `XUVA_METRICS=local` is
 set explicitly. Metrics remain local; XUVA has no upload path for this data.
+This opt-in ledger is independent from default-local adaptive calibration.
 
 ## Stored data
 
@@ -41,3 +42,8 @@ xuva metrics purge
 Unset `XUVA_METRICS` (or set it to `off`) to use the zero-ledger fast path.
 `xuva metrics purge` removes only the metrics ledger, tracker template, and
 scratch files; policy, calibration, provider, and setup state are preserved.
+
+Eligible adaptive commands can still update bounded opaque calibration evidence
+while metrics are off. They never create `metrics-v1.sqlite`; set
+`XUVA_CALIBRATION=off` to disable calibration reads, temporary measurement, and
+writes as a separate control.

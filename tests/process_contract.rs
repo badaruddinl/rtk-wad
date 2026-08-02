@@ -1643,7 +1643,7 @@ fn xuva_calibrates_safe_commands_across_natural_invocations() {
         Command::new(&launcher)
             .current_dir(&directory)
             .env("XUVA_STATE_DIR", &state)
-            .env("XUVA_METRICS", "on")
+            .env("XUVA_METRICS", "off")
             .env("XUVA_NATIVE_RTK_PATH", &fake_rtk)
             .args(["git", "status", "--short"])
             .output()
@@ -1679,7 +1679,10 @@ fn xuva_calibrates_safe_commands_across_natural_invocations() {
     assert!(recorded.contains("\"raw_samples_ms\": ["));
     assert!(recorded.contains("\"native_samples\": ["));
     assert!(!recorded.contains("git status"));
-    assert!(state.join("metrics-v1.sqlite").exists());
+    assert!(
+        !state.join("metrics-v1.sqlite").exists(),
+        "default-private calibration must not create the opt-in metrics ledger"
+    );
     assert!(
         std::fs::read_dir(state.join("scratch"))
             .expect("metrics scratch directory exists")

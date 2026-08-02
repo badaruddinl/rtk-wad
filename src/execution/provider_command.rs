@@ -82,7 +82,7 @@ pub(crate) fn provider_exec_command(arguments: &[OsString], config: &Config) -> 
         return ExitCode::FAILURE;
     }
     let started = Instant::now();
-    let metrics = begin_invocation_metrics(config, &plan.adapter);
+    let metrics = begin_invocation_metrics(config, &plan.adapter, false);
     let result = run_execution_plan(&plan, config, metrics.as_ref());
     if needs_console_handler {
         console::uninstall();

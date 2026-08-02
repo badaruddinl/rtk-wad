@@ -55,7 +55,8 @@ pub(crate) fn resolve_policy(request: InvocationRequest) -> PolicyResolvedInvoca
     let started = Instant::now();
     let policy_eligible =
         request.requested_route == Route::Auto && route_policy_key(&request.arguments).is_some();
-    let calibration_eligible = request.requested_route == Route::Auto
+    let calibration_eligible = request.config.calibration_enabled
+        && request.requested_route == Route::Auto
         && routing::is_calibration_candidate(&request.arguments);
     let adaptive_context = if policy_eligible || calibration_eligible {
         adaptive_context_signature(&request.config)
@@ -288,5 +289,26 @@ mod tests {
         assert!(planned.execution_plan.is_none());
         assert!(planned.fallback_execution_plans.is_empty());
         assert!(planned.provider_missing.is_none());
+    }
+
+    #[test]
+    fn disabled_calibration_never_loads_or_plans_local_evidence() {
+        let config =
+            Config::from_lookup(|name| (name == "XUVA_CALIBRATION").then(|| "off".to_owned()))
+                .expect("calibration can be disabled");
+        let request = invocation::parse(
+            vec![
+                OsString::from("git"),
+                OsString::from("status"),
+                OsString::from("--short"),
+            ],
+            &config,
+        )
+        .expect("invocation parses");
+
+        let mut resolved = resolve_policy(request);
+        assert!(!resolved.calibration_eligible);
+        complete_calibration(&mut resolved);
+        assert!(resolved.calibration.is_none());
     }
 }

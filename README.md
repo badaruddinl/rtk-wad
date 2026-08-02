@@ -197,6 +197,12 @@ command_family=rg
 Use `xuva policy show` and `xuva calibration show` to inspect the local
 evidence behind later decisions.
 
+Adaptive calibration is local, opaque, bounded, and **on by default**. It is
+independent from the opt-in aggregate metrics ledger: `XUVA_METRICS=off` does
+not prevent safe eligible commands from learning, and calibration never creates
+`metrics-v1.sqlite`. Set `XUVA_CALIBRATION=off` to disable both calibration
+reads and writes.
+
 Set `XUVA_POLICY_OBJECTIVE=latency`, `balanced`, or `tokens` to choose the
 evidence objective. `balanced` is the default and retains the documented 25%
 token-saving threshold; `latency` chooses the lower measured median, while
@@ -316,6 +322,11 @@ duration, and exit code; command arguments, project paths, parse input, and
 error text are never persisted. Scratch databases are private and removed by
 an RAII guard, including their WAL/SHM sidecars. The aggregate ledger retains
 at most the newest 10,000 invocations.
+
+This ledger is separate from adaptive calibration. A native calibration sample
+may use a private temporary RTK counter database, but it persists only bounded
+opaque evidence in `calibration-v3.json` and removes the temporary database at
+the end of the invocation.
 
 Use `xuva metrics status` to inspect the privacy contract and totals, or
 `xuva metrics purge` to delete all local metrics artifacts. See the full

@@ -21,11 +21,17 @@ use crate::{adapters, dispatcher};
 pub(crate) fn begin_invocation_metrics(
     config: &Config,
     adapter: &dispatcher::OutputAdapter,
+    calibration_sample: bool,
 ) -> Option<XuvaMetrics> {
-    if !config.metrics_enabled {
+    if !config.metrics_enabled && !calibration_sample {
         return None;
     }
-    let result = if matches!(adapter, dispatcher::OutputAdapter::Raw) {
+    let result = if !config.metrics_enabled {
+        if matches!(adapter, dispatcher::OutputAdapter::Raw) {
+            return None;
+        }
+        XuvaMetrics::begin_calibration()
+    } else if matches!(adapter, dispatcher::OutputAdapter::Raw) {
         XuvaMetrics::begin_unmeasured()
     } else {
         XuvaMetrics::begin()
@@ -33,7 +39,7 @@ pub(crate) fn begin_invocation_metrics(
     match result {
         Ok(metrics) => Some(metrics),
         Err(error) => {
-            eprintln!("xuva: metrics disabled for this invocation: {error}");
+            eprintln!("xuva: local invocation accounting is unavailable: {error}");
             None
         }
     }

@@ -174,6 +174,7 @@ pub(crate) struct Config {
     pub(crate) output_adapter: OutputAdapterPreference,
     pub(crate) environment_allowlist: Vec<String>,
     pub(crate) metrics_enabled: bool,
+    pub(crate) calibration_enabled: bool,
     pub(crate) policy_objective: PolicyObjective,
 }
 
@@ -250,6 +251,11 @@ impl Config {
             None | Some("off") => false,
             Some(_) => return Err("XUVA_METRICS must be local, on, or off".to_owned()),
         };
+        let calibration_enabled = match lookup("XUVA_CALIBRATION").as_deref() {
+            None | Some("local") | Some("on") => true,
+            Some("off") => false,
+            Some(_) => return Err("XUVA_CALIBRATION must be local, on, or off".to_owned()),
+        };
         let policy_objective = PolicyObjective::parse(
             &lookup("XUVA_POLICY_OBJECTIVE").unwrap_or_else(|| DEFAULT_POLICY_OBJECTIVE.to_owned()),
         )?;
@@ -282,6 +288,7 @@ impl Config {
             output_adapter,
             environment_allowlist,
             metrics_enabled,
+            calibration_enabled,
             policy_objective,
         })
     }

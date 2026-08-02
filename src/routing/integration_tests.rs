@@ -82,6 +82,7 @@ fn canonical_xuva_configuration_is_adaptive_by_default() {
     assert_eq!(xuva.backend, WslBackend::Auto);
     assert_eq!(xuva.route_preference, Route::Auto);
     assert!(!xuva.metrics_enabled);
+    assert!(xuva.calibration_enabled);
 
     for enabled in ["local", "on"] {
         let metrics =
@@ -91,6 +92,15 @@ fn canonical_xuva_configuration_is_adaptive_by_default() {
     }
     assert!(
         Config::from_lookup(|name| { (name == "XUVA_METRICS").then(|| "remote".to_owned()) })
+            .is_err()
+    );
+
+    let calibration_off =
+        Config::from_lookup(|name| (name == "XUVA_CALIBRATION").then(|| "off".to_owned()))
+            .expect("calibration can be disabled explicitly");
+    assert!(!calibration_off.calibration_enabled);
+    assert!(
+        Config::from_lookup(|name| { (name == "XUVA_CALIBRATION").then(|| "remote".to_owned()) })
             .is_err()
     );
 }

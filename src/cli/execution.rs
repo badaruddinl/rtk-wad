@@ -69,7 +69,11 @@ pub(crate) fn execute(planned: PlannedInvocation) -> ExitCode {
     {
         return exit;
     }
-    let metrics = begin_invocation_metrics(&planned.request.config, &planned.selected_adapter);
+    let metrics = begin_invocation_metrics(
+        &planned.request.config,
+        &planned.selected_adapter,
+        planned.calibration.is_some(),
+    );
     let mut executed_route = planned.route;
     let result = if let Some(plan) = planned.execution_plan.as_ref() {
         let mut result = run_execution_plan(plan, &planned.request.config, metrics.as_ref());
@@ -154,15 +158,19 @@ pub(crate) fn execute(planned: PlannedInvocation) -> ExitCode {
         ) {
             Ok(totals) => totals,
             Err(error) => {
-                eprintln!("xuva: metrics were not recorded: {error}");
+                let surface = if planned.request.config.metrics_enabled {
+                    "metrics"
+                } else {
+                    "calibration token counters"
+                };
+                eprintln!("xuva: {surface} were not recorded: {error}");
                 TokenTotals::default()
             }
         }
     } else {
         TokenTotals::default()
     };
-    if planned.request.config.metrics_enabled
-        && let Some(plan) = &planned.calibration
+    if let Some(plan) = &planned.calibration
         && let Err(error) = record_calibration(plan, executed_route, elapsed, exit_code, totals)
     {
         eprintln!("xuva: local calibration was not recorded: {error}");

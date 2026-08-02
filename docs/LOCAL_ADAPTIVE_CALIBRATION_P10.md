@@ -70,10 +70,9 @@ The selection is intentionally simple and auditable:
 3. With insufficient latency evidence, the candidate sequence supplies the
    next required natural observation.
 
-Raw execution is recorded as an invocation in `gain`, but WAD does not
-tokenize raw output or manufacture a raw token estimate. This keeps the raw
-hot path lightweight and avoids introducing a different tokenizer as fake
-ground truth.
+Raw calibration stores only elapsed time. XUVA does not tokenize raw output or
+manufacture a raw token estimate. The opt-in `gain` ledger is separate: it
+records the invocation only when `XUVA_METRICS=on`.
 
 ## Local state and privacy
 
@@ -90,6 +89,12 @@ It does **not** contain the project path, argument text, command output,
 environment, or raw-output token counts. `xuva calibration show` exposes
 only the category, opaque signature, phase, route, sample counts, and native
 token-saving percentage.
+
+Calibration is enabled by default and is independent from aggregate metrics.
+With `XUVA_METRICS=off`, an eligible native sample may create a private
+temporary RTK counter database, but it is removed after the invocation and no
+metrics ledger is created. Set `XUVA_CALIBRATION=off` to skip calibration state
+reads, temporary measurement, and writes entirely.
 
 ## Validation gates
 
