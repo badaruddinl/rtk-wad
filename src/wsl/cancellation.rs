@@ -214,13 +214,8 @@ pub(crate) fn send_linux_signal(
 ) -> std::io::Result<bool> {
     let mut command = Command::new("wsl.exe");
     command.args(cancel_arguments(config, token, signal));
-    let output = process::run_bounded(
-        &mut command,
-        None,
-        Duration::from_secs(1),
-        process::PROBE_OUTPUT_LIMIT,
-    )?;
-    Ok(output.status.success())
+    let status = process::run_status_bounded(&mut command, Duration::from_secs(1))?;
+    Ok(status.success())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -248,19 +243,13 @@ pub(crate) fn linux_process_group_state(
     ]);
     let mut command = Command::new("wsl.exe");
     command.args(arguments);
-    let output = process::run_bounded(
-        &mut command,
-        None,
-        Duration::from_secs(1),
-        process::PROBE_OUTPUT_LIMIT,
-    )?;
-    match output.status.code() {
+    let status = process::run_status_bounded(&mut command, Duration::from_secs(1))?;
+    match status.code() {
         Some(0) => Ok(LinuxProcessGroupState::Alive),
         Some(1) => Ok(LinuxProcessGroupState::Gone),
         Some(4) => Ok(LinuxProcessGroupState::TokenUnavailable),
         code => Err(std::io::Error::other(format!(
-            "unable to verify the Linux process group (probe exit {code:?}): {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            "unable to verify the Linux process group (probe exit {code:?})"
         ))),
     }
 }

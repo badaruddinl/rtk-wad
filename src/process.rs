@@ -81,6 +81,17 @@ mod job {
 
     impl ProcessJob {
         pub(crate) fn assign(child: &std::process::Child) -> io::Result<Self> {
+            Self::assign_with_limits(child, true)
+        }
+
+        pub(crate) fn assign_for_timeout(child: &std::process::Child) -> io::Result<Self> {
+            Self::assign_with_limits(child, false)
+        }
+
+        fn assign_with_limits(
+            child: &std::process::Child,
+            kill_on_close: bool,
+        ) -> io::Result<Self> {
             // SAFETY: all pointers are null or point to initialized FFI structs
             // for the duration of each call. The returned handle is owned here.
             unsafe {
@@ -89,7 +100,9 @@ mod job {
                     return Err(io::Error::last_os_error());
                 }
                 let mut limits = ExtendedLimitInformation::default();
-                limits.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                if kill_on_close {
+                    limits.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                }
                 if SetInformationJobObject(
                     handle,
                     JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
@@ -155,6 +168,50 @@ pub(crate) struct BoundedOutput {
     pub(crate) stderr: Vec<u8>,
     pub(crate) stdout_truncated: bool,
     pub(crate) stderr_truncated: bool,
+}
+
+/// Waits for a bounded child whose protocol is carried entirely by its exit
+/// status. Stdio is deliberately disconnected before spawn: Windows/WSL can
+/// keep inherited pipe handles alive after the direct proxy has exited, while
+/// status-only control probes have no output payload to drain.
+pub(crate) fn run_status_bounded(
+    command: &mut Command,
+    timeout: Duration,
+) -> io::Result<ExitStatus> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = command.spawn()?;
+    #[cfg(windows)]
+    let process_job = match job::ProcessJob::assign_for_timeout(&child) {
+        Ok(job) => Some(job),
+        Err(error) => {
+            terminate_process_tree(&mut child, None);
+            let _ = child.wait();
+            return Err(io::Error::other(format!(
+                "unable to supervise the bounded subprocess tree: {error}"
+            )));
+        }
+    };
+    #[cfg(not(windows))]
+    let process_job: Option<()> = None;
+
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if started.elapsed() >= timeout {
+            terminate_process_tree(&mut child, process_job.as_ref());
+            let _ = child.wait();
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("child process timed out after {} ms", timeout.as_millis()),
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn drain_bounded(mut reader: impl Read, limit: usize) -> io::Result<(Vec<u8>, bool)> {
@@ -321,6 +378,63 @@ mod tests {
         )
         .expect_err("the stalled child must time out");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn status_runner_does_not_wait_for_descendant_lifetime() {
+        let root =
+            std::env::temp_dir().join(format!("xuva-status-descendant-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("status fixture directory is created");
+        let descendant = root.join("xuva-status-descendant.exe");
+        let ping = std::env::var_os("SYSTEMROOT")
+            .map(std::path::PathBuf::from)
+            .expect("SYSTEMROOT is available")
+            .join("System32")
+            .join("ping.exe");
+        std::fs::copy(ping, &descendant).expect("status descendant is copied");
+        let parent_script = root.join("parent.cmd");
+        std::fs::write(
+            &parent_script,
+            format!(
+                "@start \"\" /b \"{}\" -n 2 127.0.0.1\r\n@exit /b 7\r\n",
+                descendant.display()
+            ),
+        )
+        .expect("status parent fixture is written");
+
+        let mut command = Command::new("cmd.exe");
+        command.args(["/d", "/c"]).arg(&parent_script);
+        let started = Instant::now();
+        let status = run_status_bounded(&mut command, Duration::from_secs(2))
+            .expect("status-only fixture completes");
+        assert_eq!(status.code(), Some(7));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let cleanup_deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if std::fs::remove_file(&descendant).is_ok() {
+                break;
+            }
+            assert!(
+                Instant::now() < cleanup_deadline,
+                "short-lived status descendant did not exit naturally"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+        std::fs::remove_dir_all(root).expect("status fixture directory is removed");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn status_runner_terminates_a_stalled_child_at_the_deadline() {
+        let mut command = Command::new("cmd.exe");
+        command.args(["/d", "/s", "/c", "ping -n 30 127.0.0.1 >nul"]);
+        let started = Instant::now();
+        let error = run_status_bounded(&mut command, Duration::from_millis(50))
+            .expect_err("stalled status-only child must time out");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[cfg(windows)]
