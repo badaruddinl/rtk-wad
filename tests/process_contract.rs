@@ -1572,7 +1572,12 @@ fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
     std::fs::remove_dir_all(&directory).expect("temporary Windows worktree is removed");
     let _ = std::fs::remove_dir_all(&state);
 
-    assert!(explain.status.success());
+    assert!(
+        explain.status.success(),
+        "route explanation failed: stdout={}; stderr={}",
+        String::from_utf8_lossy(&explain.stdout),
+        String::from_utf8_lossy(&explain.stderr)
+    );
     let explain_stdout = String::from_utf8_lossy(&explain.stdout);
     assert!(explain_stdout.contains("route=wsl2"));
     assert!(explain_stdout.contains("output_adapter=raw"));
@@ -1913,7 +1918,12 @@ fn xuva_resolve_verifies_wsl_project_paths_for_windows_providers() {
             .args(["-d", &distro, "--exec", "id", "-un"])
             .output()
             .expect("selected WSL user is inspected");
-        assert!(user.status.success());
+        assert!(
+            user.status.success(),
+            "{distro} user lookup failed: stdout={}; stderr={}",
+            String::from_utf8_lossy(&user.stdout),
+            String::from_utf8_lossy(&user.stderr)
+        );
         let user = String::from_utf8_lossy(&user.stdout).trim().to_owned();
         assert!(!user.is_empty());
         let mounted = Command::new(&launcher)
