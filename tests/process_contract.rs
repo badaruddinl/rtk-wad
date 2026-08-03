@@ -1461,8 +1461,11 @@ fn dispatches_each_remaining_supported_wsl_only_toolchain_raw() {
 fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
     let _guard = process_contract_guard();
     let nonce = XUVA_LAUNCHER_NONCE.fetch_add(1, Ordering::Relaxed);
-    let fixture = format!("/tmp/xuva-p7-go-contract-{}-{nonce}", std::process::id());
-    assert!(fixture.starts_with("/tmp/xuva-p7-go-contract-"));
+    let fixture = format!(
+        "/var/tmp/xuva-p7-go-contract-{}-{nonce}",
+        std::process::id()
+    );
+    assert!(fixture.starts_with("/var/tmp/xuva-p7-go-contract-"));
     let identity = Command::new("wsl.exe")
         .args(["-d", "Ubuntu", "--exec", "id", "-un"])
         .output()
@@ -1543,13 +1546,18 @@ fn wsl_only_go_preserves_route_cwd_arguments_and_exit_code() {
             "--exec",
             "sh",
             "-c",
-            r###"printf '%s\n' '#!/bin/sh' 'printf "go fixture identity changed substantially\\n"' 'exit 42' > "$1/go"; chmod 755 "$1/go""###,
+            r###"printf '%s\n' '#!/bin/sh' 'printf "go fixture identity changed substantially\\n"' 'exit 42' > "$1/go.next"; chmod 755 "$1/go.next"; mv -f -- "$1/go.next" "$1/go""###,
             "xuva-p7-go-contract-mutate",
             &fixture,
         ])
         .output()
         .expect("temporary WSL Go fixture mutation starts");
-    assert!(mutate.status.success());
+    assert!(
+        mutate.status.success(),
+        "fixture mutation failed: stdout={}; stderr={}",
+        String::from_utf8_lossy(&mutate.stdout),
+        String::from_utf8_lossy(&mutate.stderr)
+    );
     let mut which_after_mutation = Command::new(launcher());
     configure(&mut which_after_mutation);
     let which_after_mutation = which_after_mutation
