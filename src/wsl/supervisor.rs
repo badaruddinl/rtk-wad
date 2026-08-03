@@ -25,6 +25,7 @@ use crate::wsl::valid_installation_id;
 const LAUNCH_ATTESTATION_TIMEOUT_SECONDS: u64 = 60;
 const LAUNCH_ATTESTATION_TIMEOUT: Duration =
     Duration::from_secs(LAUNCH_ATTESTATION_TIMEOUT_SECONDS);
+const CANCELLATION_CONTROL_PROBE_INTERVAL: Duration = Duration::from_millis(250);
 
 pub(crate) fn wait_for_wsl1_child(
     mut child: Child,
@@ -241,6 +242,9 @@ pub(crate) fn wait_for_wsl_child(
     let mut proxy_exited_at = None;
     let mut test_proxy_killed = false;
     let mut test_proxy_reap_deferred = false;
+    let mut next_cancellation_control_probe = None;
+    let mut last_group_state = None;
+    let mut last_group_probe_error = None;
     let test_defer_proxy_reap = test_defer_wsl2_proxy_reap_until_cleanup();
     if test_defer_proxy_reap {
         trace("test hook armed deferred WSL2 proxy reap");
@@ -323,23 +327,37 @@ pub(crate) fn wait_for_wsl_child(
                 let _ = child.kill();
                 test_proxy_killed = true;
             }
-            if !interrupt_sent && send_linux_signal(config, token, "INT").unwrap_or(false) {
-                trace("sent SIGINT to the isolated Linux process group");
-                interrupt_sent = true;
-            }
-            if elapsed >= Duration::from_millis(1_500)
-                && !terminate_sent
-                && send_linux_signal(config, token, "TERM").unwrap_or(false)
-            {
-                trace("escalated cancellation to SIGTERM inside Linux");
-                terminate_sent = true;
-            }
-            if elapsed >= Duration::from_secs(3)
-                && !kill_sent
-                && send_linux_signal(config, token, "KILL").unwrap_or(false)
-            {
-                trace("escalated cancellation to SIGKILL inside Linux");
-                kill_sent = true;
+            let now = Instant::now();
+            if next_cancellation_control_probe.is_none_or(|deadline| now >= deadline) {
+                next_cancellation_control_probe = Some(now + CANCELLATION_CONTROL_PROBE_INTERVAL);
+                if !interrupt_sent && send_linux_signal(config, token, "INT").unwrap_or(false) {
+                    trace("sent SIGINT to the isolated Linux process group");
+                    interrupt_sent = true;
+                }
+                if elapsed >= Duration::from_millis(1_500)
+                    && !terminate_sent
+                    && send_linux_signal(config, token, "TERM").unwrap_or(false)
+                {
+                    trace("escalated cancellation to SIGTERM inside Linux");
+                    terminate_sent = true;
+                }
+                if elapsed >= Duration::from_secs(3)
+                    && !kill_sent
+                    && send_linux_signal(config, token, "KILL").unwrap_or(false)
+                {
+                    trace("escalated cancellation to SIGKILL inside Linux");
+                    kill_sent = true;
+                }
+                match linux_process_group_state(config, token) {
+                    Ok(state) => {
+                        last_group_state = Some(state);
+                        last_group_probe_error = None;
+                    }
+                    Err(error) => {
+                        last_group_state = None;
+                        last_group_probe_error = Some(error);
+                    }
+                }
             }
             let completion = match launch_guard.completion_status() {
                 Ok(status) => status,
@@ -350,19 +368,10 @@ pub(crate) fn wait_for_wsl_child(
                     None
                 }
             };
-            let group_state = match linux_process_group_state(config, token) {
-                Ok(state) => Some(state),
-                Err(error) => {
-                    if pending_error.is_none() {
-                        pending_error = Some(error);
-                    }
-                    None
-                }
-            };
             let cleanup_proven = wsl2_cancellation_finalized(
                 authorized,
                 proxy_status.is_some(),
-                group_state,
+                last_group_state,
                 completion,
             );
             if cleanup_proven {
@@ -394,17 +403,21 @@ pub(crate) fn wait_for_wsl_child(
                 trace(format!(
                     "reaped WSL2 Windows proxy with {status} after failed cleanup proof"
                 ));
-                let cleanup_error = std::io::Error::other(match group_state {
-                    Some(LinuxProcessGroupState::Alive) => {
+                let cleanup_error = std::io::Error::other(match last_group_state {
+                    Some(LinuxProcessGroupState::Alive) =>
                         "Linux process group survived SIGINT, SIGTERM, and SIGKILL escalation"
-                    }
-                    Some(LinuxProcessGroupState::TokenUnavailable) => {
+                            .to_owned(),
+                    Some(LinuxProcessGroupState::TokenUnavailable) =>
                         "WSL2 cancellation token disappeared without a completion attestation"
-                    }
-                    Some(LinuxProcessGroupState::Gone) => {
-                        "WSL2 cleanup completed without a reapable Windows proxy"
-                    }
-                    None => "unable to prove WSL2 process-group cleanup after proxy exit",
+                            .to_owned(),
+                    Some(LinuxProcessGroupState::Gone) =>
+                        "WSL2 cleanup completed without a reapable Windows proxy".to_owned(),
+                    None => last_group_probe_error.as_ref().map_or_else(
+                        || "unable to prove WSL2 process-group cleanup after proxy exit".to_owned(),
+                        |error| format!(
+                            "unable to prove WSL2 process-group cleanup after proxy exit: {error}"
+                        ),
+                    ),
                 });
                 return Err(match pending_error {
                     Some(error) => std::io::Error::other(format!(
