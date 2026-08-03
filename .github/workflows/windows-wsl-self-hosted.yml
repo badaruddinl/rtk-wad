@@ -13,6 +13,13 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_BUILD_OVERRIDE_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+
 concurrency:
   group: windows-wsl-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -29,6 +36,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Prepare isolated WSL2 build scratch
+        shell: powershell
+        run: .\scripts\ci-scratch.ps1 -Mode prepare
 
       - name: Require exact Windows Rust
         shell: powershell
@@ -49,9 +60,22 @@ jobs:
           wsl.exe -d Ubuntu --exec /usr/bin/env true
           if ($LASTEXITCODE -ne 0) { throw 'Ubuntu WSL2 smoke check failed.' }
 
+      - name: Build the WSL2 process contract
+        shell: powershell
+        run: rustup.exe run 1.97.1 cargo test --locked --test process_contract --no-run
+
+      - name: Restore WSL2 runtime filesystem semantics
+        shell: powershell
+        run: .\scripts\ci-scratch.ps1 -Mode restore-temp
+
       - name: Run the WSL2 process contract
         shell: powershell
         run: rustup.exe run 1.97.1 cargo test --locked --test process_contract -- --test-threads=1
+
+      - name: Reclaim WSL2 contract build artifacts
+        if: always()
+        shell: powershell
+        run: .\scripts\ci-scratch.ps1 -Mode cleanup
 
   process-contract-wsl1:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -64,6 +88,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Prepare isolated WSL1 build scratch
+        shell: powershell
+        run: .\scripts\ci-scratch.ps1 -Mode prepare
 
       - name: Require exact Windows Rust
         shell: powershell
@@ -82,17 +110,33 @@ jobs:
             throw "Ubuntu-RTK-WSL1 is not proven to be WSL 1.`n$inventory"
           }
 
-      - name: Validate the dedicated runtime and run the WSL1 process contract
+      - name: Build the WSL1 process contract
         shell: powershell
         run: |
           rustup.exe run 1.97.1 cargo build --locked --bin xuva
           if ($LASTEXITCODE -ne 0) { throw 'Unable to build the WSL1 contract binary.' }
+          rustup.exe run 1.97.1 cargo test --locked --test process_contract --no-run
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to build the WSL1 process contract.' }
+
+      - name: Restore WSL1 runtime filesystem semantics
+        shell: powershell
+        run: .\scripts\ci-scratch.ps1 -Mode restore-temp
+
+      - name: Validate the dedicated runtime and run the WSL1 process contract
+        shell: powershell
+        run: |
           $env:XUVA_WSL_BACKEND = 'wsl1'
           $env:XUVA_WSL_DISTRO = $env:XUVA_WSL1_TEST_DISTRO
-          $doctor = ((& .\target\debug\xuva.exe doctor wc --refresh | Out-String) -replace [char]0, '')
+          $launcher = Join-Path $env:CARGO_TARGET_DIR 'debug\xuva.exe'
+          $doctor = ((& $launcher doctor wc --refresh | Out-String) -replace [char]0, '')
           if ($LASTEXITCODE -ne 0 -or
               $doctor -notmatch '(?m)^inspected_distro=Ubuntu-RTK-WSL1;user=[^;]+;wsl_version=1;dedicated=true;installation_id=[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12};') {
             throw "The XUVA contract binary did not validate the dedicated WSL1 runtime.`n$doctor"
           }
           rustup.exe run 1.97.1 cargo test --locked --test process_contract -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'The WSL1 process contract failed.' }
+
+      - name: Reclaim WSL1 contract build artifacts
+        if: always()
+        shell: powershell
+        run: .\scripts\ci-scratch.ps1 -Mode cleanup
